@@ -5,23 +5,20 @@ declare(strict_types=1);
 namespace Vaulter\Sheets\Types;
 
 use Packman\Attributes\Api;
-use Vaulter\Documents\Content\OpaqueContent;
-use Vaulter\Documents\Content\OpaqueJsonCodec;
 use Vaulter\Documents\Contracts\DocumentCodec;
 use Vaulter\Documents\Contracts\DocumentContent;
 use Vaulter\Documents\Contracts\DocumentType;
+use Vaulter\Documents\Contracts\RequiresCommandWrite;
+use Vaulter\Sheets\Content\WorkbookCodec;
 use Vaulter\Documents\Data\Types\DocumentFeatures;
 use Vaulter\Documents\Data\Types\DocumentViewer;
 
-/**
- * A spreadsheet workbook owned by the Univer editor; the server stores its JSON
- * snapshot as is (schema v1). Single-user: Univer collaboration is a separate
- * engine, not the Yjs lane.
- */
 #[Api]
-final readonly class SpreadsheetDocumentType implements DocumentType
+final readonly class SpreadsheetDocumentType implements DocumentType, RequiresCommandWrite
 {
     public const string KEY = 'vaulter/spreadsheet';
+
+    public function __construct(private WorkbookCodec $workbookCodec) {}
 
     public function key(): string
     {
@@ -35,17 +32,17 @@ final readonly class SpreadsheetDocumentType implements DocumentType
 
     public function schemaVersion(): int
     {
-        return 1;
+        return 2;
     }
 
     public function codec(): DocumentCodec
     {
-        return new OpaqueJsonCodec;
+        return $this->workbookCodec;
     }
 
     public function defaultContent(): DocumentContent
     {
-        return OpaqueContent::fromArray([]);
+        return WorkbookCodec::blank();
     }
 
     public function viewer(): DocumentViewer

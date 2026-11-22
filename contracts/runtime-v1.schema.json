@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vaulter.invalid/sheets/runtime-v1.schema.json",
+  "title": "vaulter-sheets runtime wire v1 (PHP owner <-> Node runtime)",
+  "description": "Normative text: plan/spec/implementation/sheets-runtime-wire.md. Target copy: vaulter-sheets/contracts/runtime-v1.schema.json. Strict decoding rules (duplicate keys, lossy integers) cannot be expressed in JSON Schema and are checked by the decoders.",
+  "oneOf": [
+    {"$ref": "#/$defs/applyRequest"},
+    {"$ref": "#/$defs/readRequest"},
+    {"$ref": "#/$defs/candidateResponse"},
+    {"$ref": "#/$defs/readResponse"},
+    {"$ref": "#/$defs/errorResponse"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "oneBased": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+    "base": {
+      "type": "object", "additionalProperties": false, "required": ["generation", "position", "sha256"],
+      "properties": {
+        "generation": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "position": {"type": "integer", "minimum": 0},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "profile": {
+      "type": "object", "additionalProperties": false, "required": ["id", "engine", "plugins"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "engine": {"type": "string", "pattern": "^.+@[0-9]+\\.[0-9]+\\.[0-9]+.*$"},
+        "plugins": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["name", "version"],
+            "properties": {"name": {"type": "string", "minLength": 1}, "version": {"type": "string", "minLength": 1}}
+          }
+        }
+      }
+    },
+    "table": {
+      "type": "object", "additionalProperties": false, "required": ["table_id", "sheet_id", "header_row", "columns", "rows"],
+      "properties": {
+        "table_id": {"$ref": "#/$defs/id"},
+        "sheet_id": {"$ref": "#/$defs/id"},
+        "header_row": {"$ref": "#/$defs/oneBased"},
+        "columns": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["column_id", "column"],
+            "properties": {"column_id": {"$ref": "#/$defs/id"}, "column": {"$ref": "#/$defs/oneBased"}}
+          }
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["row_id", "row"],
+            "properties": {"row_id": {"$ref": "#/$defs/id"}, "row": {"$ref": "#/$defs/oneBased"}}
+          }
+        }
+      }
+    },
+    "workbook": {
+      "type": "object", "additionalProperties": false, "required": ["format_version", "profile", "native", "tables"],
+      "properties": {
+        "format_version": {"const": 2},
+        "profile": {"$ref": "#/$defs/profile"},
+        "native": {"type": "object", "description": "Full engine snapshot from the engine's own save(), including plugin resources"},
+        "tables": {"type": "array", "items": {"$ref": "#/$defs/table"}}
+      }
+    },
+    "content": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": false, "required": ["number"], "properties": {"number": {"type": "number"}}},
+        {"type": "object", "additionalProperties": false, "required": ["text"], "properties": {"text": {"type": "string"}}},
+        {"type": "object", "additionalProperties": false, "required": ["boolean"], "properties": {"boolean": {"type": "boolean"}}},
+        {"type": "object", "additionalProperties": false, "required": ["formula"], "properties": {"formula": {"type": "string", "pattern": "^="}}}
+      ]
+    },
+    "literal": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "object", "additionalProperties": false, "required": ["number"], "properties": {"number": {"type": "number"}}},
+        {"type": "object", "additionalProperties": false, "required": ["text"], "properties": {"text": {"type": "string"}}}
+      ]
+    },
+    "cellAddress": {
+      "sheet_id": {"$ref": "#/$defs/id"}, "row": {"$ref": "#/$defs/oneBased"}, "column": {"$ref": "#/$defs/oneBased"}
+    },
+    "command": {
+      "oneOf": [
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "row", "column", "expected", "value"],
+          "properties": {"kind": {"const": "set_number"}, "sheet_id": {"$ref": "#/$defs/id"}, "row": {"$ref": "#/$defs/oneBased"}, "column": {"$ref": "#/$defs/oneBased"}, "expected": {"$ref": "#/$defs/content"}, "value": {"type": "number"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "row", "column", "expected", "value"],
+          "properties": {"kind": {"const": "set_text"}, "sheet_id": {"$ref": "#/$defs/id"}, "row": {"$ref": "#/$defs/oneBased"}, "column": {"$ref": "#/$defs/oneBased"}, "expected": {"$ref": "#/$defs/content"}, "value": {"type": "string"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "row", "column", "expected", "formula"],
+          "properties": {"kind": {"const": "set_formula"}, "sheet_id": {"$ref": "#/$defs/id"}, "row": {"$ref": "#/$defs/oneBased"}, "column": {"$ref": "#/$defs/oneBased"}, "expected": {"$ref": "#/$defs/content"}, "formula": {"type": "string", "pattern": "^="}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "row", "column", "expected", "values"],
+          "properties": {
+            "kind": {"const": "set_values"}, "sheet_id": {"$ref": "#/$defs/id"}, "row": {"$ref": "#/$defs/oneBased"}, "column": {"$ref": "#/$defs/oneBased"},
+            "expected": {"type": "array", "minItems": 1, "items": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/content"}}},
+            "values": {"type": "array", "minItems": 1, "items": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/literal"}}}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "row", "count"],
+          "properties": {
+            "kind": {"const": "insert_row_before"}, "sheet_id": {"$ref": "#/$defs/id"}, "row": {"$ref": "#/$defs/oneBased"}, "count": {"$ref": "#/$defs/oneBased"},
+            "new_row_ids": {"type": "object", "additionalProperties": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/id"}}}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["kind", "sheet_id", "table_id", "scope", "row_ids", "destination_column_id", "expression", "expected_destination"],
+          "properties": {
+            "kind": {"const": "fill_formula"}, "sheet_id": {"$ref": "#/$defs/id"}, "table_id": {"$ref": "#/$defs/id"},
+            "scope": {"enum": ["fixed_members", "current_rows"]},
+            "row_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
+            "destination_column_id": {"$ref": "#/$defs/id"},
+            "expression": {
+              "type": "object", "additionalProperties": false, "required": ["op", "left_column_id", "right_column_id"],
+              "properties": {"op": {"const": "subtract"}, "left_column_id": {"$ref": "#/$defs/id"}, "right_column_id": {"$ref": "#/$defs/id"}}
+            },
+            "expected_destination": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/content"}}
+          }
+        }
+      ]
+    },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "max_commands": {"type": "integer", "minimum": 1},
+        "max_cells_per_command": {"type": "integer", "minimum": 1},
+        "calculation_timeout_ms": {"type": "integer", "minimum": 1}
+      }
+    },
+    "range": {
+      "type": "object", "additionalProperties": false, "required": ["sheet_id", "range"],
+      "properties": {"sheet_id": {"$ref": "#/$defs/id"}, "range": {"type": "string", "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$|^[1-9][0-9]*:[1-9][0-9]*$"}}
+    },
+    "readback": {
+      "type": "object", "additionalProperties": false, "required": ["sheet_id", "a1", "row", "column", "formula", "value"],
+      "properties": {
+        "sheet_id": {"$ref": "#/$defs/id"}, "a1": {"type": "string"}, "row": {"$ref": "#/$defs/oneBased"}, "column": {"$ref": "#/$defs/oneBased"},
+        "formula": {"type": ["string", "null"]}, "value": {"type": ["number", "string", "boolean", "null"]}
+      }
+    },
+    "calculation": {
+      "type": "object", "additionalProperties": false, "required": ["state", "source_sha256"],
+      "properties": {"state": {"const": "ready"}, "source_sha256": {"$ref": "#/$defs/sha256"}}
+    },
+    "applyRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "request_id", "operation", "base", "profile_id", "workbook", "commands"],
+      "properties": {
+        "version": {"const": 1}, "request_id": {"$ref": "#/$defs/id"}, "operation": {"const": "apply"},
+        "base": {"$ref": "#/$defs/base"}, "profile_id": {"$ref": "#/$defs/id"}, "workbook": {"$ref": "#/$defs/workbook"},
+        "commands": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/command"}},
+        "limits": {"$ref": "#/$defs/limits"}
+      }
+    },
+    "readRequest": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "request_id", "operation", "base", "profile_id", "workbook", "selector"],
+      "properties": {
+        "version": {"const": 1}, "request_id": {"$ref": "#/$defs/id"}, "operation": {"enum": ["read", "recalculate"]},
+        "base": {"$ref": "#/$defs/base"}, "profile_id": {"$ref": "#/$defs/id"}, "workbook": {"$ref": "#/$defs/workbook"},
+        "selector": {
+          "type": "object", "additionalProperties": false, "required": ["ranges"],
+          "properties": {"ranges": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/range"}}}
+        },
+        "limits": {"$ref": "#/$defs/limits"}
+      }
+    },
+    "candidateResponse": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "request_id", "ok", "operation", "base_sha256", "workbook", "candidate_sha256", "changed_ranges", "calculation", "checks"],
+      "properties": {
+        "version": {"const": 1}, "request_id": {"$ref": "#/$defs/id"}, "ok": {"const": true}, "operation": {"enum": ["apply", "recalculate"]},
+        "base_sha256": {"$ref": "#/$defs/sha256"}, "workbook": {"$ref": "#/$defs/workbook"}, "candidate_sha256": {"$ref": "#/$defs/sha256"},
+        "changed_ranges": {"type": "array", "items": {"$ref": "#/$defs/range"}},
+        "calculation": {"$ref": "#/$defs/calculation"},
+        "checks": {
+          "type": "object", "additionalProperties": false, "required": ["resources_preserved", "cells"],
+          "properties": {"resources_preserved": {"type": "array", "items": {"type": "string"}}, "cells": {"type": "array", "items": {"$ref": "#/$defs/readback"}}}
+        }
+      }
+    },
+    "readResponse": {
+      "type": "object", "additionalProperties": false,
+      "required": ["version", "request_id", "ok", "operation", "base_sha256", "calculation", "data"],
+      "properties": {
+        "version": {"const": 1}, "request_id": {"$ref": "#/$defs/id"}, "ok": {"const": true}, "operation": {"const": "read"},
+        "base_sha256": {"$ref": "#/$defs/sha256"}, "calculation": {"$ref": "#/$defs/calculation"},
+        "data": {
+          "type": "object", "additionalProperties": false, "required": ["ranges"],
+          "properties": {
+            "ranges": {
+              "type": "array",
+              "items": {
+                "type": "object", "additionalProperties": false, "required": ["sheet_id", "range", "cells"],
+                "properties": {"sheet_id": {"$ref": "#/$defs/id"}, "range": {"type": "string"}, "cells": {"type": "array", "items": {"$ref": "#/$defs/readback"}}}
+              }
+            }
+          }
+        }
+      }
+    },
+    "errorResponse": {
+      "type": "object", "additionalProperties": false, "required": ["version", "request_id", "ok", "error"],
+      "properties": {
+        "version": {"const": 1}, "request_id": {"oneOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]}, "ok": {"const": false},
+        "error": {
+          "type": "object", "additionalProperties": false, "required": ["code", "message"],
+          "properties": {
+            "code": {"enum": ["invalid_message", "unsupported_version", "profile_mismatch", "base_mismatch", "unsupported_command", "unsupported_content", "unknown_target", "identity_required", "precondition_failed", "scope_changed", "limit_exceeded", "calculation_timeout"]},
+            "message": {"type": "string"},
+            "detail": {"type": "object"}
+          }
+        }
+      }
+    }
+  }
+}

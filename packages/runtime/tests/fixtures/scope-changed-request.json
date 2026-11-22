@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "request_id": "sheet-2#1",
+  "operation": "apply",
+  "base": {
+    "generation": 1,
+    "position": 12,
+    "sha256": "365e347a22d1b7429d3df2d29ba8e6b88724e48323791b8234f3b3647b60ae81"
+  },
+  "profile_id": "univer-oss-basic-1",
+  "workbook": {
+    "format_version": 2,
+    "profile": {
+      "id": "univer-oss-basic-1",
+      "engine": "@univerjs/core@1.5.2",
+      "plugins": [
+        {
+          "name": "@univerjs/docs",
+          "version": "1.5.2"
+        },
+        {
+          "name": "@univerjs/engine-formula",
+          "version": "1.5.2"
+        },
+        {
+          "name": "@univerjs/engine-render",
+          "version": "1.5.2"
+        },
+        {
+          "name": "@univerjs/sheets",
+          "version": "1.5.2"
+        },
+        {
+          "name": "@univerjs/sheets-formula",
+          "version": "1.5.2"
+        },
+        {
+          "name": "@univerjs/sheets-numfmt",
+          "version": "1.5.2"
+        }
+      ]
+    },
+    "native": {
+      "id": "budget-8",
+      "sheetOrder": [
+        "expenses"
+      ],
+      "name": "budget-8",
+      "appVersion": "1.5.2",
+      "locale": "enUS",
+      "styles": {},
+      "sheets": {
+        "expenses": {
+          "cellData": {
+            "0": {
+              "1": {
+                "t": 1,
+                "v": "План"
+              },
+              "2": {
+                "t": 1,
+                "v": "Факт"
+              },
+              "3": {
+                "t": 1,
+                "v": "Отклонение"
+              }
+            },
+            "1": {
+              "1": {
+                "t": 2,
+                "v": 100
+              },
+              "2": {
+                "t": 2,
+                "v": 120
+              }
+            },
+            "2": {
+              "1": {
+                "v": 40,
+                "t": 2
+              },
+              "2": {
+                "v": 55,
+                "t": 2
+              }
+            },
+            "3": {
+              "1": {
+                "t": 2,
+                "v": 200
+              },
+              "2": {
+                "t": 2,
+                "v": 180
+              }
+            }
+          },
+          "columnCount": 20,
+          "columnData": {},
+          "columnHeader": {
+            "height": 20,
+            "hidden": 0
+          },
+          "defaultColumnWidth": 88,
+          "defaultRowHeight": 24,
+          "freeze": {
+            "startColumn": -1,
+            "startRow": -1,
+            "xSplit": 0,
+            "ySplit": 0
+          },
+          "hidden": 0,
+          "id": "expenses",
+          "mergeData": [],
+          "name": "Расходы",
+          "rightToLeft": 0,
+          "rowCount": 101,
+          "rowData": {},
+          "rowHeader": {
+            "hidden": 0,
+            "width": 46
+          },
+          "scrollLeft": 0,
+          "scrollTop": 0,
+          "showGridlines": 1,
+          "tabColor": "",
+          "zoomRatio": 1
+        }
+      },
+      "resources": [
+        {
+          "name": "SHEET_RANGE_PROTECTION_PLUGIN",
+          "data": ""
+        },
+        {
+          "name": "SHEET_AuthzIoMockService_PLUGIN",
+          "data": "{}"
+        },
+        {
+          "name": "SHEET_WORKSHEET_PROTECTION_PLUGIN",
+          "data": "{}"
+        },
+        {
+          "name": "SHEET_WORKSHEET_PROTECTION_POINT_PLUGIN",
+          "data": "{}"
+        },
+        {
+          "name": "SHEET_DEFINED_NAME_PLUGIN",
+          "data": "{}"
+        },
+        {
+          "name": "SHEET_RANGE_THEME_MODEL_PLUGIN",
+          "data": "{}"
+        }
+      ],
+      "calculationSettings": {
+        "iterativeCalculation": false,
+        "maxIterations": 100,
+        "maxChange": 0.001
+      }
+    },
+    "tables": [
+      {
+        "table_id": "costs",
+        "sheet_id": "expenses",
+        "header_row": 1,
+        "columns": [
+          {
+            "column_id": "plan",
+            "column": 2
+          },
+          {
+            "column_id": "actual",
+            "column": 3
+          },
+          {
+            "column_id": "delta",
+            "column": 4
+          }
+        ],
+        "rows": [
+          {
+            "row_id": "r-telecom",
+            "row": 2
+          },
+          {
+            "row_id": "r-telecom2",
+            "row": 3
+          },
+          {
+            "row_id": "r-travel",
+            "row": 4
+          }
+        ]
+      }
+    ]
+  },
+  "commands": [
+    {
+      "kind": "fill_formula",
+      "sheet_id": "expenses",
+      "table_id": "costs",
+      "scope": "current_rows",
+      "row_ids": [
+        "r-telecom",
+        "r-travel"
+      ],
+      "destination_column_id": "delta",
+      "expression": {
+        "op": "subtract",
+        "left_column_id": "actual",
+        "right_column_id": "plan"
+      },
+      "expected_destination": [
+        null,
+        null
+      ]
+    }
+  ]
+}

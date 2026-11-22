@@ -1,0 +1,245 @@
+{
+  "version": 1,
+  "request_id": "change-pear-price#1",
+  "operation": "apply",
+  "base": {
+    "generation": 1,
+    "position": 1,
+    "sha256": "6f6f16c8fd58fcb627801b83a63fb031d520ed41ecd66274cec2bb3ef8c22554"
+  },
+  "profile_id": "univer-oss-basic-1",
+  "workbook": {
+    "format_version": 2,
+    "native": {
+      "appVersion": "1.5.2",
+      "calculationSettings": {
+        "iterativeCalculation": false,
+        "maxChange": 0.001,
+        "maxIterations": 100
+      },
+      "id": "budget-probe",
+      "locale": "enUS",
+      "name": "budget-probe",
+      "resources": [
+        {
+          "data": "",
+          "name": "SHEET_RANGE_PROTECTION_PLUGIN"
+        },
+        {
+          "data": "{}",
+          "name": "SHEET_AuthzIoMockService_PLUGIN"
+        },
+        {
+          "data": "{}",
+          "name": "SHEET_WORKSHEET_PROTECTION_PLUGIN"
+        },
+        {
+          "data": "{}",
+          "name": "SHEET_WORKSHEET_PROTECTION_POINT_PLUGIN"
+        },
+        {
+          "data": "",
+          "name": "SHEET_DEFINED_NAME_PLUGIN"
+        },
+        {
+          "data": "{}",
+          "name": "SHEET_RANGE_THEME_MODEL_PLUGIN"
+        }
+      ],
+      "sheetOrder": [
+        "detail",
+        "summary"
+      ],
+      "sheets": {
+        "detail": {
+          "cellData": {
+            "0": {
+              "0": {
+                "t": 1,
+                "v": "Товар"
+              },
+              "1": {
+                "t": 1,
+                "v": "Количество"
+              },
+              "2": {
+                "t": 1,
+                "v": "Цена"
+              },
+              "3": {
+                "t": 1,
+                "v": "Сумма"
+              }
+            },
+            "1": {
+              "0": {
+                "t": 1,
+                "v": "Яблоки"
+              },
+              "1": {
+                "t": 2,
+                "v": 2
+              },
+              "2": {
+                "t": 2,
+                "v": 10
+              },
+              "3": {
+                "f": "=B2*C2",
+                "s": "BBgA00",
+                "t": 2,
+                "v": 20
+              }
+            },
+            "2": {
+              "0": {
+                "t": 1,
+                "v": "Груши"
+              },
+              "1": {
+                "t": 2,
+                "v": 3
+              },
+              "2": {
+                "t": 2,
+                "v": 5
+              },
+              "3": {
+                "f": "=B3*C3",
+                "s": "BBgA00",
+                "t": 2,
+                "v": 15
+              }
+            }
+          },
+          "columnCount": 20,
+          "columnData": {},
+          "columnHeader": {
+            "height": 20,
+            "hidden": 0
+          },
+          "defaultColumnWidth": 88,
+          "defaultRowHeight": 24,
+          "freeze": {
+            "startColumn": -1,
+            "startRow": -1,
+            "xSplit": 0,
+            "ySplit": 0
+          },
+          "hidden": 0,
+          "id": "detail",
+          "mergeData": [],
+          "name": "Detail",
+          "rightToLeft": 0,
+          "rowCount": 100,
+          "rowData": {},
+          "rowHeader": {
+            "hidden": 0,
+            "width": 46
+          },
+          "scrollLeft": 0,
+          "scrollTop": 0,
+          "showGridlines": 1,
+          "tabColor": "",
+          "zoomRatio": 1
+        },
+        "summary": {
+          "cellData": {
+            "1": {
+              "0": {
+                "t": 1,
+                "v": "Итого"
+              },
+              "1": {
+                "f": "=SUM(Detail!D2:D3)",
+                "s": "BBgA00",
+                "t": 2,
+                "v": 35
+              }
+            }
+          },
+          "columnCount": 20,
+          "columnData": {},
+          "columnHeader": {
+            "height": 20,
+            "hidden": 0
+          },
+          "defaultColumnWidth": 88,
+          "defaultRowHeight": 24,
+          "freeze": {
+            "startColumn": -1,
+            "startRow": -1,
+            "xSplit": 0,
+            "ySplit": 0
+          },
+          "hidden": 0,
+          "id": "summary",
+          "mergeData": [],
+          "name": "Summary",
+          "rightToLeft": 0,
+          "rowCount": 100,
+          "rowData": {},
+          "rowHeader": {
+            "hidden": 0,
+            "width": 46
+          },
+          "scrollLeft": 0,
+          "scrollTop": 0,
+          "showGridlines": 1,
+          "tabColor": "",
+          "zoomRatio": 1
+        }
+      },
+      "styles": {
+        "BBgA00": {
+          "n": {
+            "pattern": "0.00"
+          }
+        }
+      }
+    },
+    "profile": {
+      "engine": "@univerjs/core@1.5.2",
+      "id": "univer-oss-basic-1",
+      "plugins": [
+        {
+          "name": "@univerjs/docs",
+          "version": "1.5.2"
+        },
+        {
+          "name": "@univerjs/engine-formula",
+          "version": "1.5.2"
+        },
+        {
+          "name": "@univerjs/engine-render",
+          "version": "1.5.2"
+        },
+        {
+          "name": "@univerjs/sheets",
+          "version": "1.5.2"
+        },
+        {
+          "name": "@univerjs/sheets-formula",
+          "version": "1.5.2"
+        },
+        {
+          "name": "@univerjs/sheets-numfmt",
+          "version": "1.5.2"
+        }
+      ]
+    },
+    "tables": []
+  },
+  "commands": [
+    {
+      "kind": "set_number",
+      "sheet_id": "detail",
+      "row": 3,
+      "column": 3,
+      "expected": {
+        "number": 5
+      },
+      "value": 7
+    }
+  ]
+}

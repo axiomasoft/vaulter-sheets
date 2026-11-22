@@ -1,0 +1,14 @@
+--- a/lib/cjs/plugin-DFoqrWnC.js
++++ b/lib/cjs/plugin-DFoqrWnC.js
+@@ -5663,3 +5663,3 @@
+ 		super(..._args2);
+-		_defineProperty(this, "_asts", new _univerjs_core.LRUMap(5e3));
++		_defineProperty(this, "_asts", new _univerjs_core.LRUMap(32768));
+ 		_defineProperty(this, "_lexerTrees", new _univerjs_core.LRUMap(2e3));
+--- a/lib/plugin-D8WjYqcc.js
++++ b/lib/plugin-D8WjYqcc.js
+@@ -5635,3 +5635,3 @@
+ 		super(..._args2);
+-		_defineProperty(this, "_asts", new LRUMap(5e3));
++		_defineProperty(this, "_asts", new LRUMap(32768));
+ 		_defineProperty(this, "_lexerTrees", new LRUMap(2e3));

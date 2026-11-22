@@ -2,41 +2,31 @@
 
 declare(strict_types=1);
 
+use Vaulter\Documents\Exceptions\InvalidDocumentContentException;
 use Vaulter\Documents\Testing\Contracts\DocumentTypeContractTests;
 use Vaulter\Sheets\Types\SpreadsheetDocumentType;
 
 uses(DocumentTypeContractTests::class);
 
-it('keeps the document type contract for empty and non-empty workbook snapshots', function (): void {
-    $type = new SpreadsheetDocumentType;
-
+it('round-trips v2 workbooks and hashes their contents independently of key order', function (): void {
+    $type = app(SpreadsheetDocumentType::class);
     $this->assertDocumentTypeContract($type);
+    $workbook = $type->defaultContent()->toArray();
+    $sheet = $workbook['native']['sheetOrder'][0];
+    $workbook['native']['sheets'][$sheet]['cellData'][0][0] = ['v' => 42];
+    $decoded = $type->codec()->decode($workbook, 2);
 
-    $workbook = [
-        'id' => 'wb-1',
-        'name' => 'Budget',
-        'sheets' => [
-            's1' => [
-                'name' => 'Sheet1',
-                'cellData' => [
-                    '0' => [
-                        '0' => ['v' => 42],
-                    ],
-                ],
-            ],
-        ],
-    ];
+    expect($decoded->toArray()['native']['sheets'][$sheet]['cellData'][0][0])->toBe(['v' => 42])
+        ->and($decoded->contentHash())->toMatch('/^[0-9a-f]{64}$/')
+        ->and($type->codec()->decode(array_reverse($workbook, true), 2)->contentHash())->toBe($decoded->contentHash());
+});
 
-    $decoded = $type->codec()->decode($workbook, $type->schemaVersion());
-    expect($decoded->toArray())->toBe($workbook)
-        ->and($decoded->contentHash())->toMatch('/^[0-9a-f]{64}$/');
+it('rejects legacy content and caller supplied blob manifests', function (): void {
+    $type = app(SpreadsheetDocumentType::class);
+    $manifest = $type->defaultContent()->toArray();
+    unset($manifest['native']);
+    $manifest += ['storage' => 'media_blob', 'blob_id' => '1', 'sha256' => str_repeat('a', 64)];
 
-    $reordered = [
-        'sheets' => $workbook['sheets'],
-        'name' => $workbook['name'],
-        'id' => $workbook['id'],
-    ];
-
-    expect($type->codec()->decode($reordered, $type->schemaVersion())->contentHash())
-        ->toBe($decoded->contentHash());
+    expect(fn () => $type->codec()->decode(['id' => 'v1'], 1))->toThrow(InvalidDocumentContentException::class)
+        ->and(fn () => $type->codec()->decode($manifest, 2))->toThrow(InvalidDocumentContentException::class);
 });

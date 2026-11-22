@@ -21,7 +21,8 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/vaulter-sheets-vue.js",
       "require": "./dist/vaulter-sheets-vue.umd.cjs"
-    }
+    },
+    "./style.css": "./dist/vaulter-sheets-vue.css"
   },
   "scripts": {
     "build": "vue-tsc --noEmit && vite build",
@@ -44,5 +45,24 @@
     "vitest": "^4.1.10",
     "vue": "^3.5.42",
     "vue-tsc": "^2.1.0"
+  },
+  "dependencies": {
+    "@univerjs/core": "1.5.2",
+    "@univerjs/design": "1.5.2",
+    "@univerjs/docs": "1.5.2",
+    "@univerjs/docs-ui": "1.5.2",
+    "@univerjs/engine-formula": "1.5.2",
+    "@univerjs/engine-render": "1.5.2",
+    "@univerjs/sheets": "1.5.2",
+    "@univerjs/sheets-conditional-formatting": "1.5.2",
+    "@univerjs/sheets-data-validation": "1.5.2",
+    "@univerjs/sheets-filter": "1.5.2",
+    "@univerjs/sheets-formula": "1.5.2",
+    "@univerjs/sheets-formula-ui": "1.5.2",
+    "@univerjs/sheets-hyper-link": "1.5.2",
+    "@univerjs/sheets-numfmt": "1.5.2",
+    "@univerjs/sheets-numfmt-ui": "1.5.2",
+    "@univerjs/sheets-ui": "1.5.2",
+    "@univerjs/ui": "1.5.2"
   }
 }

@@ -1,17 +1,45 @@
 {
   "name": "@vaulter/sheets-runtime",
   "version": "0.0.0",
-  "private": true,
-  "description": "Vaulter Sheets runtime profile. Decision Gate 4.1; the calculator arrives in 4.2.",
+  "private": false,
+  "description": "Vaulter Sheets single-workbook runtime for Univer OSS.",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
     "node": ">=26.13.1"
   },
   "exports": {
-    ".": "./src/profile.ts"
+    ".": "./dist/profile.js",
+    "./browser": "./dist/browser.js"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test tests/profile.test.ts"
+    "test": "node --test tests/*.test.ts",
+    "build": "tsc -p tsconfig.build.json && node build-contracts.mjs",
+    "typecheck": "tsc -p .",
+    "prepack": "npm run build"
+  },
+  "bin": {
+    "vaulter-sheets-runtime": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "contracts"
+  ],
+  "dependencies": {
+    "@univerjs/core": "1.5.2",
+    "@univerjs/docs": "1.5.2",
+    "@univerjs/engine-formula": "1.5.2",
+    "@univerjs/engine-render": "1.5.2",
+    "@univerjs/sheets": "1.5.2",
+    "@univerjs/sheets-conditional-formatting": "1.5.2",
+    "@univerjs/sheets-data-validation": "1.5.2",
+    "@univerjs/sheets-filter": "1.5.2",
+    "@univerjs/sheets-formula": "1.5.2",
+    "@univerjs/sheets-hyper-link": "1.5.2",
+    "@univerjs/sheets-numfmt": "1.5.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
   }
 }

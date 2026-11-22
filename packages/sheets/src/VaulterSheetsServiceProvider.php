@@ -24,6 +24,7 @@ final class VaulterSheetsServiceProvider extends ServiceProvider
             return;
         }
 
+        $this->mergeConfigFrom(dirname(__DIR__).'/config/vaulter-sheets.php', 'vaulter-sheets');
         $this->offerModule(SheetsModule::class);
     }
 

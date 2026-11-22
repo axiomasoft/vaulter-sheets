@@ -28,10 +28,12 @@ it('registers vaulter/spreadsheet via VaulterSheetsServiceProvider and SheetsMod
         ->and($registry->get(SpreadsheetDocumentType::KEY))->toBeInstanceOf(SpreadsheetDocumentType::class);
 });
 
-it('creates a spreadsheet document from its type key and round-trips opaque workbook content', function (): void {
+it('creates a spreadsheet document from its type key and round-trips schema v2 workbook content', function (): void {
     $drive = sheetsDrive()->getKey();
 
-    $workbook = ['id' => 'wb1', 'sheets' => ['s1' => ['name' => 'Sheet1', 'cellData' => []]]];
+    $workbook = app(SpreadsheetDocumentType::class)->defaultContent()->toArray();
+    $sheet = $workbook['native']['sheetOrder'][0];
+    $workbook['native']['id'] = 'wb1';
 
     $created = $this->postJson(V1::url('drives/'.$drive.'/documents'), [
         'name' => 'Budget.xlsx',
@@ -49,44 +51,23 @@ it('creates a spreadsheet document from its type key and round-trips opaque work
 
     $this->getJson(V1::url('documents/'.$nodeId.'/content'))
         ->assertOk()
-        ->assertJsonPath('data.content.id', 'wb1')
-        ->assertJsonPath('data.content.sheets.s1.name', 'Sheet1');
+        ->assertJsonPath('data.content.native.id', 'wb1')
+        ->assertJsonPath('data.content.native.sheets.'.$sheet.'.name', 'Sheet1');
 });
 
-it('autosaves an opaque workbook and rejects stale ETag with 412 Precondition Failed', function (): void {
+it('requires commands for generic workbook content writes even with a current ETag', function (): void {
     $drive = sheetsDrive()->getKey();
-
-    $nodeId = (string) $this->postJson(V1::url('drives/'.$drive.'/documents'), [
+    $node = (string) $this->postJson(V1::url('drives/'.$drive.'/documents'), [
         'name' => 'Budget.xlsx',
-        'type' => 'vaulter/spreadsheet',
+        'type' => SpreadsheetDocumentType::KEY,
     ])->assertCreated()->json('data.id');
+    $url = V1::url('documents/'.$node.'/content');
+    $original = $this->getJson($url)->assertOk();
+    $etag = $original->headers->get('ETag');
 
-    $initialGet = $this->getJson(V1::url('documents/'.$nodeId.'/content'))->assertOk();
-    $initialEtag = (string) $initialGet->headers->get('ETag');
-    expect($initialEtag)->not->toBe('');
-
-    $workbook = ['id' => 'wb2', 'sheets' => ['s1' => ['name' => 'Q3', 'cellData' => []]]];
-
-    $updated = $this->putJson(
-        V1::url('documents/'.$nodeId.'/content'),
-        ['content' => $workbook],
-        ['If-Match' => $initialEtag],
-    )->assertOk()
-        ->assertJsonPath('data.content.sheets.s1.name', 'Q3');
-
-    $nextEtag = (string) $updated->headers->get('ETag');
-    expect($nextEtag)->not->toBe($initialEtag);
-
-    $this->getJson(V1::url('documents/'.$nodeId.'/content'))
-        ->assertOk()
-        ->assertJsonPath('data.content.sheets.s1.name', 'Q3');
-
-    // Stale ETag must produce 412 Precondition Failed.
-    $this->putJson(
-        V1::url('documents/'.$nodeId.'/content'),
-        ['content' => ['id' => 'wb2', 'sheets' => ['s1' => ['name' => 'Stale']]]],
-        ['If-Match' => $initialEtag],
-    )->assertStatus(412);
+    $this->putJson($url, ['content' => $original->json('data.content')], ['If-Match' => $etag])
+        ->assertStatus(409)->assertJsonPath('code', 'document_command_required');
+    $this->getJson($url)->assertOk()->assertHeader('ETag', $etag);
 });
 
 it('still creates a rich-text node and enforces {"type":"doc"} when no type is given', function (): void {

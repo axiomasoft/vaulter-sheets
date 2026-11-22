@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Build two standalone private archives (PHP zip + npm tgz) and verify them in a clean
 # temporary consumer installed on top of vaulter:
-#   - PHP: CREATE -> GET -> PUT -> GET and 412 Precondition Failed on stale ETag
+#   - PHP: CREATE -> GET and 409 document_command_required for generic PUT
 #   - Vue: import VaulterSpreadsheet from packed @vaulter/sheets-vue tarball
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -60,7 +60,7 @@ SHEETS_BUILD="${WORK_DIR}/sheets"
 mkdir -p "${SHEETS_BUILD}"
 ln -s "${VAULTER_DIR}" "${WORK_DIR}/vaulter"
 tar -C "${ROOT_DIR}" --exclude=packages/vue/node_modules --exclude=packages/vue/dist \
-    -cf - package.json package-lock.json packages/vue | tar -C "${SHEETS_BUILD}" -xf -
+    -cf - package.json package-lock.json patches scripts/patch-univer.mjs packages/vue packages/runtime/package.json | tar -C "${SHEETS_BUILD}" -xf -
 (cd "${SHEETS_BUILD}" && npm ci --no-audit --no-fund)
 if [[ ! "${SHEETS_BUILD}/node_modules/@vaulter/vue" -ef "${VAULTER_DIR}/packages/vue" ]]; then
     printf 'Expected @vaulter/vue to link to %s\n' "${VAULTER_DIR}/packages/vue" >&2
@@ -181,36 +181,16 @@ if (!VaulterSpreadsheet || SPREADSHEET_VIEWER_KEY !== 'vaulter/univer') {
 }
 
 let loadCount = 0;
-const baseClient = createVaulterClient({
-  fetch: async () => new Response(null, { status: 204 }),
-});
-const client = {
-  ...baseClient,
-  documents: {
-    ...baseClient.documents,
-    async content(id) {
-      loadCount += 1;
-      return {
-        type: 'vaulter/spreadsheet',
-        schema_version: 1,
-        state_version: loadCount,
-        collab_epoch: 0,
-        revision_id: null,
-        content: { id: 'wb1', name: `Budget v${loadCount}` },
-        etag: `"${id}.0.${loadCount}"`,
-      };
-    },
-    async update(id, body) {
-      return {
-        type: 'vaulter/spreadsheet',
-        schema_version: 1,
-        state_version: loadCount + 1,
-        collab_epoch: 0,
-        revision_id: null,
-        content: body,
-        etag: `"${id}.0.${loadCount + 1}"`,
-      };
-    },
+const client = createVaulterClient();
+const workbookClient = {
+  async open(id) {
+    loadCount += 1;
+    return {
+      workbook: {format_version: 2, native: {id: 'wb1', name: `Budget v${loadCount}`}, profile: {}, tables: []},
+      marker: {generation: 0, position: loadCount, sha256: 'a'.repeat(64)},
+      etag: `"${id}.0.${loadCount}"`,
+      commands: ['set_number'],
+    };
   },
 };
 
@@ -257,7 +237,7 @@ const Host = defineComponent({
       if (!resolvedViewer) return null;
       return h(
         resolvedViewer,
-        { node: sheetNode, ref: viewerRef },
+        { node: sheetNode, workbookClient, ref: viewerRef },
         {
           default: ({ workbook }) => h('pre', { class: 'wb' }, JSON.stringify(workbook)),
         },

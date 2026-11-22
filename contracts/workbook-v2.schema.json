@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vaulter.dev/contracts/workbook-v2.schema.json",
+  "title": "Vaulter Sheets workbook and its storage manifest",
+  "type": "object",
+  "required": ["format_version", "profile", "tables"],
+  "properties": {
+    "format_version": {"const": 2},
+    "profile": {"$ref": "./runtime-v1.schema.json#/$defs/profile"},
+    "native": {"type": "object", "required": ["id", "sheetOrder", "sheets", "resources"]},
+    "tables": {"type": "array", "items": {"$ref": "./runtime-v1.schema.json#/$defs/table"}},
+    "storage": {"const": "media_blob"},
+    "blob_id": {"type": "string", "minLength": 1},
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "oneOf": [
+    {"required": ["native"], "not": {"anyOf": [{"required": ["storage"]}, {"required": ["blob_id"]}, {"required": ["sha256"]}]}},
+    {"required": ["storage", "blob_id", "sha256"], "not": {"required": ["native"]}}
+  ],
+  "additionalProperties": false
+}

@@ -2,7 +2,7 @@
   "name": "vaulter-sheets",
   "version": "0.0.0",
   "private": true,
-  "description": "Vaulter Sheets — zero-royalty Univer OSS spreadsheet engine.",
+  "description": "Vaulter Sheets \u2014 zero-royalty Univer OSS spreadsheet engine.",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
@@ -13,5 +13,16 @@
     "packages/runtime",
     "packages/realtime",
     "packages/tiptap"
-  ]
+  ],
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "@univerjs/engine-formula@1.5.2": "patches/@univerjs__engine-formula@1.5.2.patch"
+    }
+  },
+  "scripts": {
+    "postinstall": "node scripts/patch-univer.mjs"
+  }
 }

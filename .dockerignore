@@ -1,0 +1,7 @@
+.git
+.swissknifeman
+**/dist
+**/node_modules
+packages/*/contracts
+vendor
+build

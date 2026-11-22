@@ -29,18 +29,24 @@ export const PROFILE: ProfileRef = {
     id: 'univer-oss-basic-1',
     engine: '@univerjs/core@1.5.2',
     plugins: [
+        { name: '@univerjs/data-validation', version: '1.5.2', license: 'Apache-2.0' },
         { name: '@univerjs/docs', version: '1.5.2', license: 'Apache-2.0' },
         { name: '@univerjs/engine-formula', version: '1.5.2', license: 'Apache-2.0' },
         { name: '@univerjs/engine-render', version: '1.5.2', license: 'Apache-2.0' },
         { name: '@univerjs/sheets', version: '1.5.2', license: 'Apache-2.0' },
-        { name: '@univerjs/sheets-formula', version: '1.5.2', license: 'Apache-2.0' },
-        { name: '@univerjs/sheets-numfmt', version: '1.5.2', license: 'Apache-2.0' },
-        { name: '@univerjs/data-validation', version: '1.5.2', license: 'Apache-2.0' },
-        { name: '@univerjs/sheets-data-validation', version: '1.5.2', license: 'Apache-2.0' },
         { name: '@univerjs/sheets-conditional-formatting', version: '1.5.2', license: 'Apache-2.0' },
+        { name: '@univerjs/sheets-data-validation', version: '1.5.2', license: 'Apache-2.0' },
         { name: '@univerjs/sheets-filter', version: '1.5.2', license: 'Apache-2.0' },
+        { name: '@univerjs/sheets-formula', version: '1.5.2', license: 'Apache-2.0' },
         { name: '@univerjs/sheets-hyper-link', version: '1.5.2', license: 'Apache-2.0' },
+        { name: '@univerjs/sheets-numfmt', version: '1.5.2', license: 'Apache-2.0' },
     ],
+};
+
+export const WIRE_PROFILE = {
+    id: PROFILE.id,
+    engine: PROFILE.engine,
+    plugins: PROFILE.plugins.map(({name, version}) => ({name, version})),
 };
 
 /**

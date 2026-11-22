@@ -7,5 +7,6 @@ use Vaulter\Sheets\Tests\TestCase;
 use Vaulter\Sheets\Tests\WithoutSheetsTestCase;
 
 uses(TestCase::class)->in('Contract');
+uses(TestCase::class)->in('Feature/WorkbookCommandTest.php');
 uses(TestCase::class, RefreshDatabase::class)->in('Feature/SpreadsheetContentTest.php');
 uses(WithoutSheetsTestCase::class, RefreshDatabase::class)->in('Feature/SpreadsheetDisabledTest.php');

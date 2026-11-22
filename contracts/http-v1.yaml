@@ -1,0 +1,128 @@
+openapi: 3.1.0
+info:
+  title: Vaulter Sheets owner API
+  version: '1'
+servers:
+  - url: /api/vaulter-sheets/v1
+paths:
+  /workbooks/{node}:
+    parameters:
+      - $ref: '#/components/parameters/node'
+    get:
+      operationId: openWorkbook
+      responses:
+        '200':
+          description: Authoritative workbook, marker and available commands
+          headers:
+            ETag: {schema: {type: string}}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [workbook, marker, etag, profile, commands]
+                    properties:
+                      workbook: {$ref: './workbook-v2.schema.json'}
+                      marker: {$ref: '#/components/schemas/marker'}
+                      etag: {type: string}
+                      profile: {$ref: './runtime-v1.schema.json#/$defs/profile'}
+                      commands: {type: array, items: {type: string}}
+        '404': {$ref: '#/components/responses/unavailable'}
+  /workbooks/{node}/commands:
+    parameters:
+      - $ref: '#/components/parameters/node'
+    post:
+      operationId: commitWorkbookCommand
+      parameters:
+        - in: header
+          name: If-Match
+          description: Required for exact_base and rebase_cells. Omit for revalidate_by_id.
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [command_id, expected_generation, policy, commands]
+              properties:
+                command_id: {type: string, pattern: '^[A-Za-z0-9._-]{1,255}$'}
+                expected_generation: {type: integer, minimum: 0, maximum: 9007199254740991}
+                policy: {enum: [exact_base, rebase_cells, revalidate_by_id]}
+                commands:
+                  type: array
+                  minItems: 1
+                  maxItems: 64
+                  items: {$ref: './runtime-v1.schema.json#/$defs/command'}
+      responses:
+        '200': {description: Committed or replayed receipt}
+        '202': {description: Command is running}
+        '404': {$ref: '#/components/responses/unavailable'}
+        '409': {description: Version, generation, scope or idempotency conflict}
+        '410': {description: Replay window expired}
+        '413': {description: Message or workbook limit exceeded}
+        '422': {description: Invalid or unsupported operation}
+        '503': {description: Runtime failure, timeout or contention}
+  /workbooks/{node}/commands/{command}:
+    parameters:
+      - $ref: '#/components/parameters/node'
+      - in: path
+        name: command
+        required: true
+        schema: {type: string}
+    get:
+      operationId: workbookCommandStatus
+      responses:
+        '200': {description: Committed receipt}
+        '202': {description: Command is running}
+        '404': {$ref: '#/components/responses/unavailable'}
+        '409': {description: Saved conflict}
+        '410': {description: Replay window expired}
+        '422': {description: Saved validation rejection}
+  /workbooks/{node}/ranges:
+    parameters:
+      - $ref: '#/components/parameters/node'
+    get:
+      operationId: readWorkbookRange
+      parameters:
+        - in: query
+          name: sheet_id
+          required: true
+          schema: {type: string}
+        - in: query
+          name: range
+          required: true
+          schema: {type: string, maxLength: 32}
+        - in: query
+          name: limit
+          schema: {type: integer, minimum: 1, maximum: 10000, default: 10000}
+        - in: query
+          name: fields
+          style: form
+          explode: false
+          schema: {type: array, items: {enum: [value, formula]}}
+      responses:
+        '200': {description: Calculated bounded range}
+        '404': {$ref: '#/components/responses/unavailable'}
+        '503': {description: Calculation pending or unavailable}
+components:
+  parameters:
+    node:
+      in: path
+      name: node
+      required: true
+      schema: {type: string}
+  schemas:
+    marker:
+      type: object
+      required: [generation, position, sha256]
+      properties:
+        generation: {type: integer, minimum: 0, maximum: 9007199254740991}
+        position: {type: integer, minimum: 0, maximum: 9007199254740991}
+        sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+  responses:
+    unavailable:
+      description: Resource unavailable to the caller
