@@ -50,6 +50,11 @@ $zip->close();
 echo "    Created ${PHP_ZIP}"
 
 echo "==> [2/4] Building and packing npm archive (@vaulter/sheets-vue)"
+if [[ ! -d "${VAULTER_DIR}/node_modules" ]]; then
+    (cd "${VAULTER_DIR}" && npm ci --no-audit --no-fund)
+fi
+(cd "${VAULTER_DIR}/packages/vue" && npm run build)
+(cd "${ROOT_DIR}" && npm ci --no-audit --no-fund)
 (cd "${ROOT_DIR}/packages/vue" && npm run build)
 NPM_TGZ_NAME="$(cd "${ROOT_DIR}/packages/vue" && npm pack --pack-destination "${ARCHIVE_DIR}" | tail -n 1)"
 NPM_TGZ="${ARCHIVE_DIR}/${NPM_TGZ_NAME}"
@@ -134,20 +139,148 @@ cat > "${VUE_CONSUMER}/package.json" <<JSON
     "@vaulter/vue": "file:${WORK_DIR}/${VAULTER_VUE_TGZ_NAME}",
     "@vaulter/sheets-vue": "file:${NPM_TGZ}",
     "vue": "^3.5.42"
+  },
+  "devDependencies": {
+    "@vue/test-utils": "^2.4.6",
+    "happy-dom": "^20.10.6"
   }
 }
 JSON
 
 (cd "${VUE_CONSUMER}" && npm install --no-audit --no-fund)
-(cd "${VUE_CONSUMER}" && node -e "
-import fs from 'node:fs';
-const pkg = JSON.parse(fs.readFileSync('node_modules/@vaulter/sheets-vue/package.json', 'utf8'));
-const esm = fs.readFileSync('node_modules/@vaulter/sheets-vue/dist/vaulter-sheets-vue.js', 'utf8');
-const dts = fs.readFileSync('node_modules/@vaulter/sheets-vue/dist/index.d.ts', 'utf8');
-if (pkg.name !== '@vaulter/sheets-vue') process.exit(1);
-if (!esm.includes('@vaulter/vue') || !esm.includes('vaulter/univer')) process.exit(1);
-if (!dts.includes('VaulterSpreadsheet') || !dts.includes('SPREADSHEET_VIEWER_KEY')) process.exit(1);
-console.log('OK: @vaulter/sheets-vue tarball installed and verified (externalizes vue & @vaulter/vue)');
-")
+cat > "${VUE_CONSUMER}/verify.mjs" <<'MJS'
+import { Window } from 'happy-dom';
+
+const win = new Window();
+globalThis.window = win;
+globalThis.document = win.document;
+globalThis.HTMLElement = win.HTMLElement;
+globalThis.SVGElement = win.SVGElement;
+globalThis.Element = win.Element;
+globalThis.Node = win.Node;
+globalThis.MutationObserver = win.MutationObserver;
+
+const { defineComponent, h, ref } = await import('vue');
+const { flushPromises, mount } = await import('@vue/test-utils');
+const { VaulterPlugin, createVaulterClient, useViewerRegistry } = await import('@vaulter/vue');
+const { VaulterSpreadsheet, SPREADSHEET_VIEWER_KEY } = await import('@vaulter/sheets-vue');
+
+if (!VaulterSpreadsheet || SPREADSHEET_VIEWER_KEY !== 'vaulter/univer') {
+  throw new Error('Failed to import VaulterSpreadsheet or SPREADSHEET_VIEWER_KEY from @vaulter/sheets-vue');
+}
+
+let loadCount = 0;
+const baseClient = createVaulterClient({
+  fetch: async () => new Response(null, { status: 204 }),
+});
+const client = {
+  ...baseClient,
+  documents: {
+    ...baseClient.documents,
+    async content(id) {
+      loadCount += 1;
+      return {
+        type: 'vaulter/spreadsheet',
+        schema_version: 1,
+        state_version: loadCount,
+        collab_epoch: 0,
+        revision_id: null,
+        content: { id: 'wb1', name: `Budget v${loadCount}` },
+        etag: `"${id}.0.${loadCount}"`,
+      };
+    },
+    async update(id, body) {
+      return {
+        type: 'vaulter/spreadsheet',
+        schema_version: 1,
+        state_version: loadCount + 1,
+        collab_epoch: 0,
+        revision_id: null,
+        content: body,
+        etag: `"${id}.0.${loadCount + 1}"`,
+      };
+    },
+  },
+};
+
+const sheetNode = {
+  id: '20',
+  drive_id: '1',
+  parent_id: null,
+  kind: 'document',
+  name: 'Budget',
+  mime: 'application/vnd.vaulter.document+json',
+  extension: null,
+  size_bytes: 0,
+  version: 1,
+  etag: '"20.0.1"',
+  path: '/Budget',
+  created_at: '2026-01-01T00:00:00Z',
+  updated_at: '2026-01-01T00:00:00Z',
+  trashed_at: null,
+  abilities: {
+    view: true, download: true, comment: true, edit: true,
+    create: true, move: true, copy: true, trash: true,
+    restore: true, share: true, manage: true, delete: true,
+  },
+  presentation: {
+    handler: null,
+    document_type: 'vaulter/spreadsheet',
+    type_available: true,
+    viewer: { key: SPREADSHEET_VIEWER_KEY, props: {} },
+    capabilities: {
+      editable: true, previewable: true, downloadable: false,
+      thumbnailable: false, collaborative: false,
+    },
+  },
+};
+
+let resolvedViewer = null;
+const viewerRef = ref(null);
+
+const Host = defineComponent({
+  setup() {
+    const registry = useViewerRegistry();
+    resolvedViewer = registry.resolve(SPREADSHEET_VIEWER_KEY);
+    return () => {
+      if (!resolvedViewer) return null;
+      return h(
+        resolvedViewer,
+        { node: sheetNode, ref: viewerRef },
+        {
+          default: ({ workbook }) => h('pre', { class: 'wb' }, JSON.stringify(workbook)),
+        },
+      );
+    };
+  },
+});
+
+const wrapper = mount(Host, {
+  global: {
+    plugins: [
+      [VaulterPlugin, { client, viewers: { [SPREADSHEET_VIEWER_KEY]: VaulterSpreadsheet } }],
+    ],
+  },
+});
+
+await flushPromises();
+
+if (resolvedViewer !== VaulterSpreadsheet) {
+  throw new Error('VaulterPlugin viewer registry did not resolve SPREADSHEET_VIEWER_KEY to VaulterSpreadsheet');
+}
+if (loadCount !== 1 || !wrapper.get('.wb').text().includes('Budget v1')) {
+  throw new Error(`Initial workbook load failed: loadCount=${loadCount}, text=${wrapper.html()}`);
+}
+
+await viewerRef.value.load();
+await flushPromises();
+
+if (loadCount !== 2 || !wrapper.get('.wb').text().includes('Budget v2')) {
+  throw new Error(`Workbook reload failed: loadCount=${loadCount}, text=${wrapper.html()}`);
+}
+
+console.log('OK: @vaulter/sheets-vue tarball imported, resolved via VaulterPlugin, mounted default slot, and reloaded workbook');
+MJS
+(cd "${VUE_CONSUMER}" && node verify.mjs)
 
 echo "==> All consumer archive checks PASSED."
