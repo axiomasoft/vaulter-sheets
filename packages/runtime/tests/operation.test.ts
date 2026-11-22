@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
 import {processFrame} from '../src/frame.ts';
+import {decodeRequest} from '../src/operation.ts';
 import {sha256Canonical, type JsonObject} from '../src/protocol.ts';
-import {WIRE_PROFILE} from '../src/profile.ts';
+import {DEFAULT_LIMITS, WIRE_PROFILE} from '../src/profile.ts';
 
 function request(name: string): JsonObject {
     const input = JSON.parse(readFileSync(new URL(`./fixtures/${name}-request.json`, import.meta.url), 'utf8'));
@@ -11,6 +12,27 @@ function request(name: string): JsonObject {
     input.base.sha256 = sha256Canonical(input.workbook);
     return input;
 }
+
+test('bounds the cells inserted on an unbound sheet before applying the row insertion', async () => {
+    const input = request('apply');
+    const workbook = input.workbook as JsonObject;
+    const sheets = (workbook.native as JsonObject).sheets as JsonObject;
+    (sheets.detail as JsonObject).columnCount = 100;
+    workbook.tables = [];
+    (input.base as JsonObject).sha256 = sha256Canonical(workbook);
+    input.limits = {max_cells_per_command: 100};
+    const insert = {kind: 'insert_row_before', sheet_id: 'detail', row: 2, count: 1};
+    input.commands = [insert];
+    const allowed = await processFrame(Buffer.from(JSON.stringify(input) + '\n'));
+    assert.equal(allowed.ok, true);
+
+    input.commands = [{...insert, count: 2}];
+    const rejected = await processFrame(Buffer.from(JSON.stringify(input) + '\n'));
+    assert.equal(rejected.ok ? null : rejected.error.code, 'limit_exceeded');
+
+    input.commands = [{...insert, count: DEFAULT_LIMITS.max_cells_per_command + 1}];
+    assert.throws(() => decodeRequest(input), {code: 'limit_exceeded'});
+});
 
 test('calculates the authoritative value and rejects a changed logical row set', async () => {
     const applied = await processFrame(Buffer.from(JSON.stringify(request('apply')) + '\n'));

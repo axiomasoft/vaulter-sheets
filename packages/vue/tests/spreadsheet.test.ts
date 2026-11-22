@@ -4,6 +4,9 @@ import { h } from 'vue'
 import type { Node, NodeAbilities } from '@vaulter/vue'
 import { SPREADSHEET_VIEWER_KEY, VaulterSpreadsheet, type OpenedWorkbook, type WorkbooksClient } from '../src/index'
 import { cellCommands, clipboardValues } from '../src/editor/cellCommands'
+import { mountWorkbook } from '../src/editor/mountWorkbook'
+
+vi.mock('../src/editor/mountWorkbook', () => ({mountWorkbook: vi.fn()}))
 
 const ALL_ABILITIES: NodeAbilities = {
   view: true,
@@ -104,6 +107,35 @@ describe('VaulterSpreadsheet', () => {
     }, '"20.0.1"')
     expect(workbooks.open).toHaveBeenCalledTimes(2)
     expect(wrapper.emitted('save')).toEqual([[receipt]])
+    wrapper.unmount()
+  })
+
+  it('keeps the editor mounted for an acknowledged local edit and remounts for a newer owner head', async () => {
+    const workbooks = client()
+    const accepted = {...snapshot, etag: '"20.0.2"', marker: {...snapshot.marker, position: 2, sha256: 'b'.repeat(64)}}
+    const newer = {...accepted, etag: '"20.0.4"', marker: {...accepted.marker, position: 4, sha256: 'd'.repeat(64)}}
+    workbooks.open.mockResolvedValueOnce(snapshot).mockResolvedValueOnce(accepted).mockResolvedValueOnce(newer)
+    workbooks.submit
+      .mockResolvedValueOnce({...receipt, marker: accepted.marker})
+      .mockResolvedValueOnce({...receipt, etag: '"20.0.3"', marker: {...accepted.marker, position: 3, sha256: 'c'.repeat(64)}})
+
+    const renderer = {dispose: vi.fn(), accept: vi.fn(), selectedRow: vi.fn()}
+    const mountEditor = vi.mocked(mountWorkbook).mockClear().mockReturnValue(renderer)
+    const wrapper = mount(VaulterSpreadsheet, {props: {node: makeSheetNode(), workbookClient: workbooks}})
+    await flushPromises()
+    const changed = mountEditor.mock.calls[0][3]
+    changed([command])
+    await flushPromises()
+
+    expect(mountEditor).toHaveBeenCalledTimes(1)
+    expect(renderer.dispose).not.toHaveBeenCalled()
+    expect(renderer.accept).toHaveBeenCalledWith(accepted.workbook)
+
+    changed([{...command, expected: {number: 7}, value: 8}])
+    await flushPromises()
+    expect(workbooks.submit).toHaveBeenLastCalledWith('20', expect.anything(), accepted.etag)
+    expect(mountEditor).toHaveBeenCalledTimes(2)
+    expect(renderer.dispose).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 

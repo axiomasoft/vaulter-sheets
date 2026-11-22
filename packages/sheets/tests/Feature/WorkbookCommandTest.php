@@ -3,6 +3,9 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Str;
+use Vaulter\Drive\Access\Roles\RoleRegistry;
+use Vaulter\Drive\Access\ValueObjects\Subject;
+use Vaulter\Drive\Data\Access\GrantInput;
 use Vaulter\Drive\Facades\Vaulter;
 use Vaulter\Drive\Testing\Drive\DriveTestHelpers;
 use Vaulter\Drive\Testing\Http\V1;
@@ -17,7 +20,8 @@ beforeEach(function (): void {
     $this->artisan('migrate:fresh')->assertSuccessful();
     $this->actor = (new TestUser)->forceFill(['id' => 1]);
     $this->actingAs($this->actor);
-    $this->drive = Vaulter::drive(DriveTestHelpers::host())->model()->getKey();
+    $this->driveHandle = Vaulter::drive(DriveTestHelpers::host());
+    $this->drive = $this->driveHandle->model()->getKey();
     $fixture = json_decode(file_get_contents(dirname(__DIR__, 3).'/runtime/tests/fixtures/apply-request.json'), true);
     $fixture['workbook']['profile'] = WorkbookCodec::profile();
     $fixture['workbook']['tables'] = [[
@@ -46,6 +50,75 @@ function workbookTestPlan(int $generation, string $id, array $command, string $p
 {
     return ['command_id' => $id, 'policy' => $policy, 'expected_generation' => $generation, 'commands' => [$command]];
 }
+
+it('commits and reopens large numeric literals and formula results', function (): void {
+    $url = createWorkbookTestUrl($this);
+    $head = $this->getJson($url)->assertOk();
+    $saved = $this->postJson($url.'/commands', [
+        'command_id' => 'large-numbers',
+        'expected_generation' => $head->json('data.marker.generation'),
+        'policy' => 'rebase_cells',
+        'commands' => [
+            ['kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 6, 'column' => 1, 'expected' => null, 'value' => 1e16],
+            ['kind' => 'set_formula', 'sheet_id' => 'detail', 'row' => 6, 'column' => 2, 'expected' => null, 'formula' => '=-A6'],
+        ],
+    ], ['If-Match' => $head->headers->get('ETag')])->assertOk();
+
+    $reopened = $this->getJson($url)->assertOk()->assertHeader('ETag', $saved->headers->get('ETag'));
+    expect((float) $reopened->json('data.workbook.native.sheets.detail.cellData.5.0.v'))->toBe(1e16)
+        ->and((float) $reopened->json('data.workbook.native.sheets.detail.cellData.5.1.v'))->toBe(-1e16);
+    $range = $this->getJson($url.'/ranges?sheet_id=detail&range=A6:B6')->assertOk();
+    expect((float) $range->json('data.0.cells.0.value'))->toBe(1e16)
+        ->and((float) $range->json('data.0.cells.1.value'))->toBe(-1e16);
+});
+
+it('rejects a row insertion over the cell budget as a terminal command', function (): void {
+    $workbook = $this->workbook;
+    $workbook['tables'] = [];
+    $workbook['native']['sheets']['detail']['columnCount'] = 100;
+    $url = createWorkbookTestUrl($this, $workbook);
+    $head = $this->getJson($url)->assertOk();
+    $this->postJson($url.'/commands', workbookTestPlan($head->json('data.marker.generation'), 'over-budget', [
+        'kind' => 'insert_row_before', 'sheet_id' => 'detail', 'row' => 2, 'count' => 101,
+    ], 'exact_base'), ['If-Match' => $head->headers->get('ETag')])
+        ->assertStatus(413)->assertJsonPath('data.error.code', 'limit_exceeded');
+
+    $this->getJson($url.'/commands/over-budget')
+        ->assertStatus(413)->assertJsonPath('data.state', 'rejected');
+    $this->getJson($url)->assertHeader('ETag', $head->headers->get('ETag'));
+});
+
+it('withholds cells after revocation during workbook range calculation', function (): void {
+    $system = $this->driveHandle->asSystem('workbook reader test setup');
+    $reader = (new TestUser)->forceFill(['id' => 2]);
+    $url = createWorkbookTestUrl($this);
+    $node = basename($url);
+
+    config(['vaulter-drive.access.permission_driver' => 'database']);
+    $grant = $system->access()->grant($node, new GrantInput(subject: Subject::ofModel($reader), role: RoleRegistry::READER));
+    $this->actingAs($reader);
+    $range = $url.'/ranges?sheet_id=detail&range=C3';
+
+    $revoke = static fn () => $system->access()->revoke($node, $grant);
+    $runtime = new class(app(WorkbookRuntime::class), $revoke) implements WorkbookRuntime {
+        public bool $calculated = false;
+
+        public function __construct(private readonly WorkbookRuntime $runtime, private readonly Closure $revoke) {}
+
+        public function exchange(stdClass $request): stdClass
+        {
+            $result = $this->runtime->exchange($request);
+            ($this->revoke)();
+            $this->calculated = true;
+
+            return $result;
+        }
+    };
+    app()->instance(WorkbookRuntime::class, $runtime);
+    $response = $this->getJson($range);
+    expect($runtime->calculated)->toBeTrue();
+    $response->assertNotFound()->assertJsonPath('code', 'resource_unavailable')->assertJsonMissingPath('data');
+});
 
 it('publishes a single receipt and refuses a stale positional edit after insertion', function (): void {
     $url = createWorkbookTestUrl($this);

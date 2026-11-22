@@ -4,7 +4,7 @@ import '@univerjs/docs-ui/lib/index.css'
 import '@univerjs/sheets-ui/lib/index.css'
 import '@univerjs/sheets-formula-ui/lib/index.css'
 import '@univerjs/sheets-numfmt-ui/lib/index.css'
-import { CanceledError, CommandType, LocaleType, mergeLocales, Univer, type IWorkbookData } from '@univerjs/core'
+import { CanceledError, CellValueType, CommandType, LocaleType, mergeLocales, RedoCommandId, UndoCommandId, Univer, type IWorkbookData } from '@univerjs/core'
 import { FUniver } from '@univerjs/core/facade'
 import { UniverDocsPlugin } from '@univerjs/docs'
 import { UniverDocsUIPlugin } from '@univerjs/docs-ui'
@@ -38,14 +38,16 @@ import type { Command, Workbook } from '../api/workbooks'
 import { cellCommands, cellContent, clipboardValues } from './cellCommands'
 
 export interface MountedWorkbook {
+  accept(snapshot: Workbook): void
   dispose(): void
   selectedRow(): {sheet_id: string; row: number} | undefined
 }
 
 const locale = mergeLocales(DesignEn, UIEn, DocsUIEn, SheetsEn, SheetsUIEn, FormulaEn, FormulaUIEn, NumfmtUIEn)
+const editCommands = new Set([SetRangeValuesCommand.id, UndoCommandId, RedoCommandId])
 
 export function mountWorkbook(element: HTMLElement, snapshot: Workbook, editable: () => boolean, changed: (commands: Command[]) => void, unsupported: () => void): MountedWorkbook {
-  const native = snapshot.native as unknown as IWorkbookData
+  let native = snapshot.native as unknown as IWorkbookData
   const univer = new Univer({
     locale: LocaleType.EN_US,
     locales: {[LocaleType.EN_US]: locale},
@@ -72,7 +74,7 @@ export function mountWorkbook(element: HTMLElement, snapshot: Workbook, editable
     const workbook = api.createWorkbook(structuredClone(native))
     workbook.setEditable(editable())
     const guard = workbook.onBeforeCommandExecute(command => {
-      if (command.type === CommandType.COMMAND && (!editable() || command.id !== SetRangeValuesCommand.id)) {
+      if (command.type === CommandType.COMMAND && (!editable() || !editCommands.has(command.id))) {
         throw new CanceledError()
       }
     })
@@ -105,12 +107,14 @@ export function mountWorkbook(element: HTMLElement, snapshot: Workbook, editable
       if (!selection) return
       const row = selection.getRow()
       const column = selection.getColumn()
-      const sheetId = sheet.getSheetId()
       try {
         const values = clipboardValues(text)
-        const expected = values.map((items, r) => items.map((_, c) =>
-          cellContent(native.sheets[sheetId]?.cellData?.[row + r]?.[column + c])))
-        changed([{kind: 'set_values', sheet_id: sheetId, row: row + 1, column: column + 1, expected, values}])
+        const cells = values.map(items => items.map(value => ({
+          v: value === null ? null : 'number' in value ? value.number : value.text,
+          t: value === null ? null : 'number' in value ? CellValueType.NUMBER : CellValueType.STRING,
+          f: null, si: null, p: null,
+        })))
+        sheet.getRange(row, column, cells.length, cells[0].length).setValues(cells)
       } catch {
         unsupported()
       }
@@ -118,6 +122,9 @@ export function mountWorkbook(element: HTMLElement, snapshot: Workbook, editable
     element.addEventListener('paste', paste, {capture: true})
     // Engine recalculation can update only cached formula values; these are never command inputs.
     return {
+      accept(accepted) {
+        native = accepted.native as unknown as IWorkbookData
+      },
       selectedRow() {
         const sheet = workbook.getActiveSheet()
         const range = sheet.getSelection()?.getActiveRange()

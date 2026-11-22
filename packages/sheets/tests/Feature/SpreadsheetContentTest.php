@@ -9,6 +9,8 @@ use Vaulter\Drive\Facades\Vaulter;
 use Vaulter\Drive\Models\Drive;
 use Vaulter\Drive\Testing\Drive\DriveTestHelpers;
 use Vaulter\Drive\Testing\Http\V1;
+use Vaulter\Sheets\Content\WorkbookCodec;
+use Vaulter\Sheets\Runtime\CanonicalJson;
 use Vaulter\Sheets\Types\SpreadsheetDocumentType;
 use Vaulter\Testing\Fixtures\TestUser;
 
@@ -53,6 +55,19 @@ it('creates a spreadsheet document from its type key and round-trips schema v2 w
         ->assertOk()
         ->assertJsonPath('data.content.native.id', 'wb1')
         ->assertJsonPath('data.content.native.sheets.'.$sheet.'.name', 'Sheet1');
+});
+
+it('keeps canonical large doubles through document payload conversions', function (): void {
+    $codec = app(WorkbookCodec::class);
+    $payload = WorkbookCodec::blank()->toArray();
+    $sheet = $payload['native']['sheetOrder'][0];
+    $payload['native']['sheets'][$sheet]['cellData'] = [[['v' => 1e16], ['v' => -1e16]]];
+    $content = $codec->decode($payload, 2);
+
+    expect($content->toArray()['native']['sheets'][$sheet]['cellData'][0][0]['v'])->toBe(1e16)
+        ->and($content->toArray()['native']['sheets'][$sheet]['cellData'][0][1]['v'])->toBe(-1e16)
+        ->and(CanonicalJson::encode($content->value()))->toBe($content->canonicalBytes())
+        ->and($codec->decodeStored($codec->storagePayload($content), 2)->contentHash())->toBe($content->contentHash());
 });
 
 it('requires commands for generic workbook content writes even with a current ETag', function (): void {

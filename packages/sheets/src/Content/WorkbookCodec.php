@@ -131,10 +131,10 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
 
     public function snapshot(DocumentContent $content): stdClass
     {
-        $raw = $content->toArray();
-        $id = self::blobId($raw);
+        $value = $this->requireContent($content)->value();
+        $id = self::blobId((array) $value);
         if ($id === null) {
-            return $this->requireContent($content)->value();
+            return $value;
         }
         $stream = $this->blobs->read($id);
         if (!is_resource($stream)) {
@@ -193,7 +193,8 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
     private function shape(array $raw): stdClass
     {
         // Documents receives associative JSON. Recover the native map shapes at the boundary.
-        $workbook = json_decode(json_encode((object) $raw, JSON_THROW_ON_ERROR), false, 256, JSON_THROW_ON_ERROR);
+        /** @var stdClass $workbook */
+        $workbook = StrictJson::decode(json_encode((object) $raw, JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR));
         if (isset($workbook->native) && $workbook->native instanceof stdClass) {
             $native = $workbook->native;
             $native->styles = (object) ($native->styles ?? []);

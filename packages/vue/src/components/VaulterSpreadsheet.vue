@@ -12,7 +12,7 @@ const props = withDefaults(defineProps<{
   workbookClient?: WorkbooksClient
 }>(), {readonly: false, autoLoad: true})
 const emit = defineEmits<{save: [receipt: Receipt]}>()
-const {head, pending, loading, saving, error, conflict, load, save, submit, loadCurrent} = useWorkbook(props.node.id, props.workbookClient ?? createWorkbooksClient())
+const {head, localAcknowledgement, pending, loading, saving, error, conflict, load, save, submit, loadCurrent} = useWorkbook(props.node.id, props.workbookClient ?? createWorkbooksClient())
 const isReadonly = computed(() => props.readonly || !props.node.abilities.edit || !head.value?.commands.length)
 const element = ref<HTMLElement>()
 const renderer = shallowRef<MountedWorkbook>()
@@ -31,7 +31,7 @@ async function mount() {
     const {mountWorkbook} = await import('../editor/mountWorkbook')
     if (current !== version || !head.value || !element.value) return
     renderer.value = markRaw(mountWorkbook(element.value, head.value.workbook, () => !isReadonly.value && !pending.value,
-      commands => { void persist(commands) },
+      commands => { void reportSave(submit(commands, true)) },
       () => { void mount().then(() => { error.value = 'This edit is outside the workbook profile.' }) },
     ))
   } catch {
@@ -39,7 +39,13 @@ async function mount() {
   }
 }
 
-watch([head, element, isReadonly], () => { void mount() }, {flush: 'post'})
+watch([head, element, isReadonly], ([opened, target, readonly], [previous, oldTarget, wasReadonly]) => {
+  if (opened && opened !== previous && opened === localAcknowledgement.value && target === oldTarget && readonly === wasReadonly && renderer.value) {
+    renderer.value.accept(opened.workbook)
+    return
+  }
+  void mount()
+}, {flush: 'post'})
 onBeforeUnmount(() => {
   version++
   renderer.value?.dispose()
@@ -48,7 +54,11 @@ onBeforeUnmount(() => {
 
 async function persist(commands?: Command[]) {
   if (isReadonly.value) return
-  const receipt = await (commands ? submit(commands) : save())
+  await reportSave(commands ? submit(commands) : save())
+}
+
+async function reportSave(operation: Promise<Receipt | undefined>) {
+  const receipt = await operation
   if (receipt) emit('save', receipt)
 }
 

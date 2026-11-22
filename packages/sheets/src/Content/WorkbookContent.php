@@ -7,6 +7,7 @@ namespace Vaulter\Sheets\Content;
 use stdClass;
 use Vaulter\Documents\Contracts\DocumentContent;
 use Vaulter\Sheets\Runtime\CanonicalJson;
+use Vaulter\Sheets\Runtime\StrictJson;
 
 final readonly class WorkbookContent implements DocumentContent
 {
@@ -22,12 +23,15 @@ final readonly class WorkbookContent implements DocumentContent
 
     public function toArray(): array
     {
-        return json_decode($this->bytes, true, 256, JSON_THROW_ON_ERROR);
+        return array_map(self::arrayValue(...), (array) $this->value());
     }
 
     public function value(): stdClass
     {
-        return json_decode($this->bytes, false, 256, JSON_THROW_ON_ERROR);
+        /** @var stdClass $payload */
+        $payload = StrictJson::decode($this->bytes);
+
+        return $payload;
     }
 
     public function canonicalBytes(): string
@@ -43,5 +47,12 @@ final readonly class WorkbookContent implements DocumentContent
     public function sizeInBytes(): int
     {
         return strlen($this->bytes);
+    }
+
+    private static function arrayValue(mixed $value): mixed
+    {
+        return is_array($value) || $value instanceof stdClass
+            ? array_map(self::arrayValue(...), (array) $value)
+            : $value;
     }
 }

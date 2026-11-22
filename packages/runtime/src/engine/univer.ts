@@ -79,10 +79,18 @@ export class UniverWorkbookSession {
         return sheet.getRange(engineIndex(coord.row), engineIndex(coord.column));
     }
 
-    insertRowsBefore(sheetId: string, row: number, count: number): void {
+    checkRowInsertion(sheetId: string, row: number, count: number, maxCells: number): void {
         const sheet = this.sheet(sheetId);
-        if (row > sheet.getMaxRows()) throw new WireError('unknown_target', `row ${row} is outside sheet ${sheetId}`);
-        sheet.insertRowsBefore(engineIndex(row), count);
+        const rows = sheet.getMaxRows();
+        if (row > rows) throw new WireError('unknown_target', `row ${row} is outside sheet ${sheetId}`);
+        // Univer copies styles across every column in each inserted row.
+        if (count * sheet.getMaxColumns() > maxCells || !Number.isSafeInteger(rows + count)) {
+            throw new WireError('limit_exceeded', `row insertion exceeds the sheet or ${maxCells}-cell limit`);
+        }
+    }
+
+    insertRowsBefore(sheetId: string, row: number, count: number): void {
+        this.sheet(sheetId).insertRowsBefore(engineIndex(row), count);
     }
 
     content(sheetId: string, coord: CellCoord): CellContent {

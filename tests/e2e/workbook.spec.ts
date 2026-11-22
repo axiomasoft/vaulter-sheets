@@ -11,6 +11,7 @@ test('edits C3, reopens the acknowledged workbook cold and releases the editor',
     await expect(canvas).toBeVisible();
     const box = await canvas.boundingBox();
     expect(box).not.toBeNull();
+    await canvas.evaluate(element => element.setAttribute('data-before-save', 'true'));
     await page.mouse.dblclick(box!.x + 263, box!.y + 90);
     await page.keyboard.press('ControlOrMeta+a');
     await page.keyboard.type('7');
@@ -20,6 +21,22 @@ test('edits C3, reopens the acknowledged workbook cold and releases the editor',
     expect(saved.ok(), await saved.text()).toBe(true);
     expect(saved.request().postDataJSON().commands[0]).toMatchObject({kind: 'set_number', sheet_id: 'detail', row: 3, column: 3, value: 7});
     await expect(page.getByText('Workbook saved')).toBeVisible();
+    await expect(canvas).toHaveAttribute('data-before-save', 'true');
+
+    const undo = page.waitForResponse(response => response.url().endsWith(`${workbook}/commands`) && response.request().method() === 'POST', {timeout: 8_000});
+    await page.keyboard.press('ControlOrMeta+z');
+    const undone = await undo;
+    expect(undone.ok(), await undone.text()).toBe(true);
+    expect(undone.request().postDataJSON().commands[0]).toMatchObject({kind: 'set_number', sheet_id: 'detail', row: 3, column: 3, expected: {number: 7}, value: 5});
+    await expect(page.getByText('Saving…')).toHaveCount(0);
+
+    const redoKey = await page.evaluate(() => navigator.platform.startsWith('Mac') ? 'Meta+Shift+z' : 'Control+y');
+    const redo = page.waitForResponse(response => response.url().endsWith(`${workbook}/commands`) && response.request().method() === 'POST', {timeout: 8_000});
+    await page.keyboard.press(redoKey);
+    const redone = await redo;
+    expect(redone.ok(), await redone.text()).toBe(true);
+    expect(redone.request().postDataJSON().commands[0]).toMatchObject({kind: 'set_number', sheet_id: 'detail', row: 3, column: 3, expected: {number: 5}, value: 7});
+    await expect(page.getByText('Saving…')).toHaveCount(0);
     await page.close();
 
     const signal = process.env.SHEETS_RUNTIME_RESTART_SIGNAL;

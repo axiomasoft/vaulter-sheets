@@ -132,10 +132,14 @@ function command(value: Json, index: number): Command {
         }
         case 'insert_row_before': {
             only(raw, ['kind', 'sheet_id', 'row', 'count', 'new_row_ids'], path);
+            const count = counter(raw.count, `${path}.count`, 1);
+            if (count > DEFAULT_LIMITS.max_cells_per_command) {
+                throw new WireError('limit_exceeded', `row insertion exceeds ${DEFAULT_LIMITS.max_cells_per_command} rows`);
+            }
             const ids = raw.new_row_ids === undefined ? undefined : Object.fromEntries(
                 Object.entries(object(raw.new_row_ids, `${path}.new_row_ids`)).map(([table, list]) => [table, array(list, `${path}.new_row_ids.${table}`).map(id => string(id, 'row_id'))]),
             );
-            const cmd: Command = {kind, sheet_id, row: assertOneBased(raw.row, `${path}.row`), count: counter(raw.count, `${path}.count`, 1)};
+            const cmd: Command = {kind, sheet_id, row: assertOneBased(raw.row, `${path}.row`), count};
             if (ids !== undefined) cmd.new_row_ids = ids;
             return cmd;
         }
@@ -272,6 +276,7 @@ function applyCommand(session: UniverWorkbookSession, bindings: TableBindings, c
             return;
         }
         case 'insert_row_before': {
+            session.checkRowInsertion(cmd.sheet_id, cmd.row, cmd.count, limits.max_cells_per_command);
             // Bindings first: a missing identity is refused before the engine is touched.
             bindings.insertRows(cmd.sheet_id, cmd.row, cmd.count, cmd.new_row_ids);
             session.insertRowsBefore(cmd.sheet_id, cmd.row, cmd.count);
