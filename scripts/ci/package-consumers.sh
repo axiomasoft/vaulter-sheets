@@ -7,7 +7,7 @@ set -euo pipefail
 #   - Vue: import VaulterSpreadsheet from packed @vaulter/sheets-vue tarball
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VAULTER_DIR="${VAULTER_DIR:-$(cd "${ROOT_DIR}/../vaulter" && pwd)}"
+VAULTER_DIR="$(cd "${VAULTER_DIR:-${ROOT_DIR}/../vaulter}" && pwd)"
 PACKMAN_DIR="${PACKMAN_DIR:-$(cd "${ROOT_DIR}/../packman" && pwd)}"
 ARCHIVE_DIR="${ROOT_DIR}/build/archives"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vaulter-sheets-consumer.XXXXXX")"
@@ -54,9 +54,20 @@ if [[ ! -d "${VAULTER_DIR}/node_modules" ]]; then
     (cd "${VAULTER_DIR}" && npm ci --no-audit --no-fund)
 fi
 (cd "${VAULTER_DIR}/packages/vue" && npm run build)
-(cd "${ROOT_DIR}" && npm ci --no-audit --no-fund)
-(cd "${ROOT_DIR}/packages/vue" && npm run build)
-NPM_TGZ_NAME="$(cd "${ROOT_DIR}/packages/vue" && npm pack --pack-destination "${ARCHIVE_DIR}" | tail -n 1)"
+
+# Recreate the lockfile's sibling layout with the Vaulter checkout built above.
+SHEETS_BUILD="${WORK_DIR}/sheets"
+mkdir -p "${SHEETS_BUILD}"
+ln -s "${VAULTER_DIR}" "${WORK_DIR}/vaulter"
+tar -C "${ROOT_DIR}" --exclude=packages/vue/node_modules --exclude=packages/vue/dist \
+    -cf - package.json package-lock.json packages/vue | tar -C "${SHEETS_BUILD}" -xf -
+(cd "${SHEETS_BUILD}" && npm ci --no-audit --no-fund)
+if [[ ! "${SHEETS_BUILD}/node_modules/@vaulter/vue" -ef "${VAULTER_DIR}/packages/vue" ]]; then
+    printf 'Expected @vaulter/vue to link to %s\n' "${VAULTER_DIR}/packages/vue" >&2
+    exit 1
+fi
+(cd "${SHEETS_BUILD}/packages/vue" && npm run build)
+NPM_TGZ_NAME="$(cd "${SHEETS_BUILD}/packages/vue" && npm pack --pack-destination "${ARCHIVE_DIR}" | tail -n 1)"
 NPM_TGZ="${ARCHIVE_DIR}/${NPM_TGZ_NAME}"
 echo "    Created ${NPM_TGZ}"
 
