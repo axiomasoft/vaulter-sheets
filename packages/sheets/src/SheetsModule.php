@@ -1,0 +1,81 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Vaulter\Sheets;
+
+use Packman\Attributes\Api;
+use Packman\Extensions\Concerns\Composition\ContributesToSlots;
+use Packman\Extensions\Contracts\Composition\WithSlots;
+use Packman\Plugins\Contracts\Registry\ExtensionPlugin;
+use Packman\Plugins\Data\Plugin\PluginManifest;
+use Packman\Plugins\Laravel\PluginRegistrar;
+use Vaulter\Documents\Contracts\DocumentType;
+use Vaulter\Modules\Activation;
+use Vaulter\Modules\ModuleId;
+use Vaulter\Modules\PluginModuleSpec;
+use Vaulter\Modules\WithModuleRuntime;
+use Vaulter\Sheets\Types\SpreadsheetDocumentType;
+
+#[Api(since: '1.0')]
+final class SheetsModule implements ExtensionPlugin, WithModuleRuntime, WithSlots
+{
+    use ContributesToSlots;
+
+    public function manifest(): PluginManifest
+    {
+        return new PluginManifest(
+            id: 'vaulter.'.$this->id()->value,
+            version: '1.0.0',
+            requires: array_map(
+                static fn (string $id): string => 'vaulter.'.$id,
+                array_keys($this->requires()),
+            ),
+        );
+    }
+
+    public function register(PluginRegistrar $registrar): void {}
+
+    public function moduleRuntime(): PluginModuleSpec
+    {
+        return new PluginModuleSpec(
+            plugin: self::class,
+            protocolVersion: $this->version(),
+            requires: $this->requires(),
+        );
+    }
+
+    public function id(): ModuleId
+    {
+        return new ModuleId('sheets');
+    }
+
+    public function version(): string
+    {
+        return '1.0';
+    }
+
+    public function activation(): Activation
+    {
+        return Activation::Auto;
+    }
+
+    /** @return array<string, string> */
+    public function requires(): array
+    {
+        return ['documents' => '^1.0'];
+    }
+
+    /** @return list<array{slot: class-string, id: string, implementation: class-string, key: string}> */
+    public function slotContributions(): array
+    {
+        return [
+            [
+                'slot' => DocumentType::class,
+                'id' => 'sheets.type.workbook',
+                'implementation' => SpreadsheetDocumentType::class,
+                'key' => SpreadsheetDocumentType::KEY,
+            ],
+        ];
+    }
+}

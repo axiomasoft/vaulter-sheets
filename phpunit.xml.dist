@@ -4,23 +4,24 @@
          bootstrap="vendor/autoload.php"
          colors="true"
          cacheDirectory=".phpunit.cache"
-         failOnEmptyTestSuite="false"
+         failOnEmptyTestSuite="true"
 >
     <testsuites>
-        <testsuite name="repo">
-            <directory>tests</directory>
+        <testsuite name="sheets">
+            <directory>packages/sheets/tests</directory>
         </testsuite>
     </testsuites>
 
     <source>
         <include>
-            <directory>packages</directory>
+            <directory>packages/sheets/src</directory>
         </include>
     </source>
 
     <php>
         <ini name="memory_limit" value="1G"/>
         <env name="APP_ENV" value="testing"/>
-        <env name="DB_CONNECTION" value="pgsql"/>
+        <env name="DB_CONNECTION" value="sqlite"/>
+        <env name="DB_DATABASE" value=":memory:"/>
     </php>
 </phpunit>

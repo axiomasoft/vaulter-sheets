@@ -1,14 +1,15 @@
-# Root scaffold. Package trees arrive in later waves; until then there is no PHP under this root.
-# Vendor extensions are intentionally not included: nothing is installed yet.
+includes:
+    - vendor/larastan/larastan/extension.neon
 
 parameters:
     level: max
     tmpDir: build/phpstan
     paths:
-        - .
+        - packages/sheets/src
     excludePaths:
         - vendor/*
         - node_modules/*
         - .github/*
         - release/*
+        - build/*
     inferPrivatePropertyTypeFromConstructor: true
