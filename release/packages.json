@@ -1,0 +1,89 @@
+{
+    "schema": "vaulter.release/v2",
+    "php": [
+        {
+            "name": "axiomasoft/vaulter-sheets",
+            "path": "packages/sheets",
+            "split": "axiomasoft/vaulter-sheets",
+            "channel": "private",
+            "release_line": "php-sheets",
+            "tag_prefix": "sheets-v",
+            "license": "proprietary",
+            "access": "restricted",
+            "tested_ranges": {
+                "axiomasoft/vaulter-core": "^1.0",
+                "axiomasoft/vaulter-drive": "^1.0",
+                "axiomasoft/vaulter-documents": "^1.0",
+                "axiomasoft/vaulter-media": "^1.0"
+            }
+        }
+    ],
+    "npm": [
+        {
+            "name": "@vaulter/sheets-vue",
+            "path": "packages/vue",
+            "api": "1",
+            "channel": "private",
+            "release_line": "npm-sheets-vue",
+            "tag_prefix": "@vaulter/sheets-vue@",
+            "registry": "https://registry.npmjs.org",
+            "access": "restricted",
+            "tested_ranges": {
+                "@vaulter/vue": "^1.0"
+            }
+        },
+        {
+            "name": "@vaulter/sheets-runtime",
+            "path": "packages/runtime",
+            "api": "1",
+            "channel": "private",
+            "release_line": "npm-sheets-runtime",
+            "tag_prefix": "@vaulter/sheets-runtime@",
+            "registry": "https://registry.npmjs.org",
+            "access": "restricted",
+            "tested_ranges": {}
+        },
+        {
+            "name": "@vaulter/sheets-realtime",
+            "path": "packages/realtime",
+            "api": "1",
+            "channel": "private",
+            "release_line": "npm-sheets-realtime",
+            "tag_prefix": "@vaulter/sheets-realtime@",
+            "registry": "https://registry.npmjs.org",
+            "access": "restricted",
+            "tested_ranges": {}
+        },
+        {
+            "name": "@vaulter/sheets-tiptap",
+            "path": "packages/tiptap",
+            "api": "1",
+            "channel": "private",
+            "release_line": "npm-sheets-tiptap",
+            "tag_prefix": "@vaulter/sheets-tiptap@",
+            "registry": "https://registry.npmjs.org",
+            "access": "restricted",
+            "tested_ranges": {}
+        }
+    ],
+    "images": [
+        {
+            "name": "ghcr.io/axiomasoft/vaulter-sheets-runtime",
+            "path": "packages/runtime",
+            "channel": "private",
+            "release_line": "image-sheets-runtime",
+            "tag_prefix": "sheets-runtime-v",
+            "registry": "ghcr.io",
+            "access": "restricted"
+        },
+        {
+            "name": "ghcr.io/axiomasoft/vaulter-sheets-realtime",
+            "path": "packages/realtime",
+            "channel": "private",
+            "release_line": "image-sheets-realtime",
+            "tag_prefix": "sheets-realtime-v",
+            "registry": "ghcr.io",
+            "access": "restricted"
+        }
+    ]
+}

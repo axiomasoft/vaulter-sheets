@@ -1,0 +1,25 @@
+# PHP
+/vendor/
+/packages/*/vendor/
+/composer.lock
+/.phpunit.cache/
+/.phpunit.result.cache
+/build/
+
+# Node
+/node_modules/
+/packages/*/node_modules/
+/dist/
+*.log
+
+# Env / OS
+.env
+.env.*
+!/.env.example
+.DS_Store
+__pycache__/
+
+# Coverage
+/coverage/
+/coverage.xml
+/clover.xml
