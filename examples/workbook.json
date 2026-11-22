@@ -1,0 +1,81 @@
+{
+  "fixtureVersion": 1,
+  "purpose": "Проверка нативного адаптера книги в браузере и в отдельном процессе",
+  "bookId": "budget-probe",
+  "initialRevision": 1,
+  "sheets": [
+    {
+      "id": "detail",
+      "name": "Detail",
+      "cells": {
+        "A1": {"text": "Товар"}, "B1": {"text": "Количество"},
+        "C1": {"text": "Цена"}, "D1": {"text": "Сумма"},
+        "A2": {"text": "Яблоки"}, "B2": {"number": 2}, "C2": {"number": 10},
+        "D2": {"formula": "=B2*C2", "numberFormat": "0.00"},
+        "A3": {"text": "Груши"}, "B3": {"number": 3}, "C3": {"number": 5},
+        "D3": {"formula": "=B3*C3", "numberFormat": "0.00"}
+      }
+    },
+    {
+      "id": "summary",
+      "name": "Summary",
+      "cells": {
+        "A2": {"text": "Итого"},
+        "B2": {"formula": "=SUM(Detail!D2:D3)", "numberFormat": "0.00"}
+      }
+    }
+  ],
+  "steps": [
+    {
+      "action": "recalculate",
+      "expect": {"Detail!D2": 20, "Detail!D3": 15, "Summary!B2": 35}
+    },
+    {
+      "action": "set_number",
+      "actor": "editor",
+      "commandId": "change-pear-price",
+      "baseRevision": 1,
+      "target": {"sheetId": "detail", "cell": "C3", "expectedNumber": 5},
+      "value": 7,
+      "expect": {"revision": 2, "Detail!C3": 7, "Detail!D3": 21, "Summary!B2": 41}
+    },
+    {
+      "action": "insert_row_before",
+      "actor": "colleague",
+      "commandId": "insert-blank",
+      "baseRevision": 2,
+      "target": {"sheetId": "detail", "row": 2},
+      "expect": {
+        "revision": 3, "Detail!C3": 10, "Detail!C4": 7,
+        "Detail!D3": {"formula": "=B3*C3", "number": 20},
+        "Detail!D4": {"formula": "=B4*C4", "number": 21},
+        "Summary!B2": {"formula": "=SUM(Detail!D3:D4)", "number": 41, "numberFormat": "0.00"}
+      }
+    },
+    {
+      "action": "retry_command",
+      "actor": "editor",
+      "originalCommandId": "change-pear-price",
+      "expect": {"receiptRevision": 2, "currentRevision": 3, "newWrites": 0}
+    },
+    {
+      "action": "set_number",
+      "actor": "editor",
+      "commandId": "another-stale-price",
+      "baseRevision": 1,
+      "target": {"sheetId": "detail", "cell": "C3", "expectedNumber": 5},
+      "value": 9,
+      "expect": {"conflict": true, "currentRevision": 3, "Detail!C3": 10, "Detail!C4": 7}
+    },
+    {
+      "action": "cold_reopen",
+      "snapshotRevision": 3,
+      "localSnapshotFaultInjection": {"cacheOnly": {"Summary!B2": 999}},
+      "expectBeforeRecalculation": {"verified": false},
+      "expectAfterFullRecalculation": {
+        "currentRevision": 3, "calculatedAtRevision": 3, "Summary!B2": 41,
+        "formula": "=SUM(Detail!D3:D4)", "numberFormat": "0.00"
+      }
+    }
+  ]
+}

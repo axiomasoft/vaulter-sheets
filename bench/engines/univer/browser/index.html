@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <link rel="icon" href="data:,">
+  <title>Vaulter Sheets Univer browser bench</title>
+</head>
+<body style="margin:0">
+  <div id="app"></div>
+  <script type="module">
+    import { createApp, h, markRaw, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+    import { createUniver, LocaleType } from '@univerjs/presets'
+    import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
+    import enUS from '@univerjs/preset-sheets-core/locales/en-US'
+    import '@univerjs/preset-sheets-core/lib/index.css'
+    import corpus from '../../../../examples/workbook.json'
+
+    const longTasks = []
+    try {
+      const observer = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) longTasks.push(entry.duration)
+      })
+      observer.observe({ type: 'longtask', buffered: true })
+    } catch {
+      /* longtask is not available in every Chromium build */
+    }
+
+    let liveUniver = 0
+    function mountUniver(container, withCorpus) {
+      const { univer, univerAPI } = createUniver({
+        locale: LocaleType.EN_US,
+        locales: { [LocaleType.EN_US]: enUS },
+        presets: [UniverSheetsCorePreset({ container })],
+      })
+      liveUniver += 1
+      if (withCorpus) {
+        const book = univerAPI.createWorkbook({ id: corpus.bookId, name: 'Fruit' })
+        for (const spec of corpus.sheets) {
+          const sheet = spec.name === 'Detail' ? book.getActiveSheet().setName('Detail') : book.insertSheet(spec.name)
+          for (const [address, cell] of Object.entries(spec.cells)) {
+            const range = sheet.getRange(address)
+            if (cell.formula) range.setFormula(cell.formula)
+            else if (typeof cell.number === 'number') range.setValue(cell.number)
+            else range.setValue(cell.text)
+            if (cell.numberFormat) range.setNumberFormat(cell.numberFormat)
+          }
+        }
+      } else {
+        univerAPI.createWorkbook({ id: `dispose-${liveUniver}`, name: 'Dispose' })
+      }
+      return {
+        univer: markRaw(univer),
+        univerAPI,
+        dispose() {
+          univer.dispose()
+          liveUniver -= 1
+        },
+      }
+    }
+    window.createProbe = (container) => mountUniver(container, false)
+    window.liveUniver = () => liveUniver
+
+    createApp({
+      setup() {
+        const host = ref(null)
+        const univerRef = shallowRef(null)
+        onMounted(() => {
+          const session = mountUniver(host.value, true)
+          univerRef.value = session.univer
+          window.probe = {
+            univerAPI: session.univerAPI,
+            longTasks,
+            disposeMounted() {
+              session.dispose()
+              univerRef.value = null
+            },
+          }
+        })
+        onBeforeUnmount(() => {
+          if (univerRef.value) {
+            univerRef.value.dispose()
+            univerRef.value = null
+          }
+        })
+        return () => h('main', { ref: host, style: 'height:100vh' })
+      },
+    }).mount('#app')
+  </script>
+</body>
+</html>

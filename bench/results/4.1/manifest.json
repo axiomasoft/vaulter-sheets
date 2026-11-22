@@ -1,0 +1,705 @@
+{
+  "schema": "vaulter-sheets-engine-profile/v1",
+  "schemaVersion": 1,
+  "task": "4.1",
+  "decision": "univer-oss-basic-1",
+  "engine": "@univerjs/core@1.5.2",
+  "license": "Apache-2.0",
+  "node": "v26.13.1",
+  "corpusSha256": "9f6ca848e0ead8c8097ca32321b82f85c9f646f61c81a78f94897bf37f16cd3e",
+  "officialChecks": {
+    "univer-headless": {
+      "exit": 0
+    },
+    "sheets-browser": {
+      "exit": 0
+    }
+  },
+  "profile": {
+    "schemaVersion": 1,
+    "id": "univer-oss-basic-1",
+    "engine": "@univerjs/core@1.5.2",
+    "license": "Apache-2.0",
+    "plugins": [
+      {
+        "name": "@univerjs/docs",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/engine-formula",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/engine-render",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-formula",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-numfmt",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/data-validation",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-data-validation",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-conditional-formatting",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-filter",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-hyper-link",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      }
+    ],
+    "resources": [
+      "SHEET_AuthzIoMockService_PLUGIN",
+      "SHEET_CONDITIONAL_FORMATTING_PLUGIN",
+      "SHEET_DATA_VALIDATION_PLUGIN",
+      "SHEET_DEFINED_NAME_PLUGIN",
+      "SHEET_FILTER_PLUGIN",
+      "SHEET_RANGE_PROTECTION_PLUGIN",
+      "SHEET_RANGE_THEME_MODEL_PLUGIN",
+      "SHEET_WORKSHEET_PROTECTION_PLUGIN",
+      "SHEET_WORKSHEET_PROTECTION_POINT_PLUGIN"
+    ],
+    "commands": [
+      "set_number",
+      "set_text",
+      "set_formula",
+      "set_values",
+      "insert_row_before",
+      "fill_formula"
+    ],
+    "limits": {
+      "max_commands": 64,
+      "max_cells_per_command": 10000,
+      "calculation_timeout_ms": 20000
+    },
+    "process": {
+      "isolation": "child_process.fork",
+      "workerThreads": false,
+      "maxOldSpaceSizeMb": 640,
+      "restartAfterTasks": 50,
+      "formulaMode": "FORCED",
+      "calculationBarrier": "onCalculationResultApplied",
+      "staleCache": "unverified_until_recalculation"
+    },
+    "bannedProductionPackages": [
+      "handsontable",
+      "hyperformula",
+      "dunglas/mercure",
+      "minio/minio",
+      "exceljs",
+      "unzipper",
+      "mammoth",
+      "xlsx",
+      "libclamav",
+      "@tiptap-pro",
+      "@univerjs-pro",
+      "@univer-cli"
+    ],
+    "conditionalFormattingResource": "SHEET_CONDITIONAL_FORMATTING_PLUGIN",
+    "crossCheck": {
+      "name": "@ironcalc/nodejs",
+      "version": "0.9.1",
+      "license": "MIT OR Apache-2.0",
+      "production": false
+    },
+    "offlineBenchmark": {
+      "name": "handsontable+hyperformula",
+      "production": false
+    }
+  },
+  "resourceDelta": {
+    "measured": [
+      "SHEET_AuthzIoMockService_PLUGIN",
+      "SHEET_CONDITIONAL_FORMATTING_PLUGIN",
+      "SHEET_DATA_VALIDATION_PLUGIN",
+      "SHEET_DEFINED_NAME_PLUGIN",
+      "SHEET_FILTER_PLUGIN",
+      "SHEET_RANGE_PROTECTION_PLUGIN",
+      "SHEET_RANGE_THEME_MODEL_PLUGIN",
+      "SHEET_WORKSHEET_PROTECTION_PLUGIN",
+      "SHEET_WORKSHEET_PROTECTION_POINT_PLUGIN"
+    ],
+    "approved": [
+      "SHEET_AuthzIoMockService_PLUGIN",
+      "SHEET_CONDITIONAL_FORMATTING_PLUGIN",
+      "SHEET_DATA_VALIDATION_PLUGIN",
+      "SHEET_DEFINED_NAME_PLUGIN",
+      "SHEET_FILTER_PLUGIN",
+      "SHEET_RANGE_PROTECTION_PLUGIN",
+      "SHEET_RANGE_THEME_MODEL_PLUGIN",
+      "SHEET_WORKSHEET_PROTECTION_PLUGIN",
+      "SHEET_WORKSHEET_PROTECTION_POINT_PLUGIN"
+    ],
+    "onlyMeasured": [],
+    "onlyApproved": []
+  },
+  "univer": {
+    "engine": "@univerjs/core",
+    "version": "1.5.2",
+    "license": "Apache-2.0",
+    "mode": "plugin",
+    "node": "v26.13.1",
+    "plugins": [
+      {
+        "name": "@univerjs/engine-render",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/engine-formula",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/docs",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-formula",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-numfmt",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/data-validation",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-data-validation",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-conditional-formatting",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-filter",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-hyper-link",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      }
+    ],
+    "registered": [
+      "@univerjs/engine-render",
+      "@univerjs/engine-formula",
+      "@univerjs/docs",
+      "@univerjs/sheets",
+      "@univerjs/sheets-formula",
+      "@univerjs/sheets-numfmt",
+      "@univerjs/data-validation",
+      "@univerjs/sheets-data-validation",
+      "@univerjs/sheets-conditional-formatting",
+      "@univerjs/sheets-filter",
+      "@univerjs/sheets-hyper-link"
+    ],
+    "failedPlugins": [],
+    "opened": true,
+    "calculation": "formula",
+    "checks": [
+      {
+        "name": "initial Detail!D2",
+        "ok": true,
+        "actual": 20,
+        "expected": 20
+      },
+      {
+        "name": "initial Detail!D3",
+        "ok": true,
+        "actual": 15,
+        "expected": 15
+      },
+      {
+        "name": "initial Summary!B2",
+        "ok": true,
+        "actual": 35,
+        "expected": 35
+      },
+      {
+        "name": "edited Detail!C3",
+        "ok": true,
+        "actual": 7,
+        "expected": 7
+      },
+      {
+        "name": "edited Detail!D3",
+        "ok": true,
+        "actual": 21,
+        "expected": 21
+      },
+      {
+        "name": "edited Summary!B2",
+        "ok": true,
+        "actual": 41,
+        "expected": 41
+      },
+      {
+        "name": "insert Detail!C3",
+        "ok": true,
+        "actual": 10,
+        "expected": 10
+      },
+      {
+        "name": "insert Detail!C4",
+        "ok": true,
+        "actual": 7,
+        "expected": 7
+      },
+      {
+        "name": "insert Detail!D3 formula",
+        "ok": true,
+        "actual": "=B3*C3",
+        "expected": "=B3*C3"
+      },
+      {
+        "name": "insert Detail!D4 formula",
+        "ok": true,
+        "actual": "=B4*C4",
+        "expected": "=B4*C4"
+      },
+      {
+        "name": "insert Detail!D3 number",
+        "ok": true,
+        "actual": 20,
+        "expected": 20
+      },
+      {
+        "name": "insert Detail!D4 number",
+        "ok": true,
+        "actual": 21,
+        "expected": 21
+      },
+      {
+        "name": "insert Summary!B2 formula",
+        "ok": true,
+        "actual": "=SUM(Detail!D3:D4)",
+        "expected": "=SUM(Detail!D3:D4)"
+      },
+      {
+        "name": "insert Summary!B2 number",
+        "ok": true,
+        "actual": 41,
+        "expected": 41
+      },
+      {
+        "name": "insert Summary!B2 format",
+        "ok": true,
+        "actual": "0.00",
+        "expected": "0.00"
+      }
+    ],
+    "undo": {
+      "available": true,
+      "valueBeforeUndo": 7,
+      "valueAfterUndo": 7
+    },
+    "largePaste": {
+      "rows": 100,
+      "columns": 100,
+      "ms": 22.014
+    },
+    "resources": [
+      "SHEET_AuthzIoMockService_PLUGIN",
+      "SHEET_CONDITIONAL_FORMATTING_PLUGIN",
+      "SHEET_DATA_VALIDATION_PLUGIN",
+      "SHEET_DEFINED_NAME_PLUGIN",
+      "SHEET_FILTER_PLUGIN",
+      "SHEET_RANGE_PROTECTION_PLUGIN",
+      "SHEET_RANGE_THEME_MODEL_PLUGIN",
+      "SHEET_WORKSHEET_PROTECTION_PLUGIN",
+      "SHEET_WORKSHEET_PROTECTION_POINT_PLUGIN"
+    ],
+    "conditionalFormatting": {
+      "before": {
+        "startRow": 1,
+        "endRow": 2
+      },
+      "afterInsertRowBefore": {
+        "startRow": 1,
+        "endRow": 2
+      },
+      "shifted": false
+    },
+    "dataValidation": {
+      "before": {
+        "startRow": 1,
+        "endRow": 2
+      },
+      "afterInsertRowBefore": {
+        "startRow": 2,
+        "endRow": 3
+      },
+      "shifted": true
+    },
+    "timings": {
+      "openForced100kCells10kFormulas": {
+        "n": 3,
+        "p50_ms": 361.262,
+        "p95_ms": 405.239,
+        "max_ms": 405.239
+      }
+    },
+    "memory": {
+      "cycles": 20,
+      "deltaBytes": 9338512,
+      "gc": true,
+      "note": "Node heapUsed around open/dispose. The browser CDP budget is recorded by browser.mjs."
+    },
+    "coldCache": {
+      "exit": 0,
+      "stderr": "(node:83186) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n(Use `node --trace-warnings ...` to show where the warning was created)\n",
+      "result": {
+        "phase": "cold",
+        "afterDefaultInitialization": 999,
+        "afterForcedRecalculation": 41,
+        "formula": "=SUM(Detail!D3:D4)",
+        "numberFormat": "0.00"
+      }
+    },
+    "unknownResource": {
+      "exit": 0,
+      "stderr": "",
+      "result": {
+        "phase": "unknown-resource",
+        "savedContainsSentinel": false,
+        "resourceNames": [
+          "SHEET_RANGE_PROTECTION_PLUGIN",
+          "SHEET_AuthzIoMockService_PLUGIN",
+          "SHEET_WORKSHEET_PROTECTION_PLUGIN",
+          "SHEET_WORKSHEET_PROTECTION_POINT_PLUGIN",
+          "SHEET_CONDITIONAL_FORMATTING_PLUGIN",
+          "SHEET_DEFINED_NAME_PLUGIN",
+          "SHEET_RANGE_THEME_MODEL_PLUGIN",
+          "SHEET_DATA_VALIDATION_PLUGIN",
+          "SHEET_FILTER_PLUGIN"
+        ]
+      }
+    },
+    "corpusMatched": true
+  },
+  "ironcalc": {
+    "engine": "@ironcalc/nodejs",
+    "requestedAs": "ironcalc",
+    "version": "0.9.1",
+    "license": "MIT OR Apache-2.0",
+    "production": false,
+    "node": "v26.13.1",
+    "opened": true,
+    "calculation": "formula",
+    "sharedUniverSnapshot": false,
+    "checks": [
+      {
+        "name": "initial Detail!D2",
+        "ok": true,
+        "actual": 20,
+        "expected": 20
+      },
+      {
+        "name": "initial Detail!D3",
+        "ok": true,
+        "actual": 15,
+        "expected": 15
+      },
+      {
+        "name": "initial Summary!B2",
+        "ok": true,
+        "actual": 35,
+        "expected": 35
+      },
+      {
+        "name": "edited Detail!C3",
+        "ok": true,
+        "actual": 7,
+        "expected": 7
+      },
+      {
+        "name": "edited Detail!D3",
+        "ok": true,
+        "actual": 21,
+        "expected": 21
+      },
+      {
+        "name": "edited Summary!B2",
+        "ok": true,
+        "actual": 41,
+        "expected": 41
+      },
+      {
+        "name": "insert Detail!C3",
+        "ok": true,
+        "actual": 10,
+        "expected": 10
+      },
+      {
+        "name": "insert Detail!C4",
+        "ok": true,
+        "actual": 7,
+        "expected": 7
+      },
+      {
+        "name": "insert Detail!D3 formula",
+        "ok": true,
+        "actual": "=B3*C3",
+        "expected": "=B3*C3"
+      },
+      {
+        "name": "insert Detail!D4 formula",
+        "ok": true,
+        "actual": "=B4*C4",
+        "expected": "=B4*C4"
+      },
+      {
+        "name": "insert Detail!D3 number",
+        "ok": true,
+        "actual": 20,
+        "expected": 20
+      },
+      {
+        "name": "insert Detail!D4 number",
+        "ok": true,
+        "actual": 21,
+        "expected": 21
+      },
+      {
+        "name": "insert Summary!B2 formula",
+        "ok": true,
+        "actual": "=SUM(Detail!D3:D4)",
+        "expected": "=SUM(Detail!D3:D4)"
+      },
+      {
+        "name": "insert Summary!B2 number",
+        "ok": true,
+        "actual": 41,
+        "expected": 41
+      }
+    ],
+    "corpusMatched": true,
+    "coldCache": {
+      "representable": false,
+      "valueBeforeEvaluate": "#ERROR!",
+      "note": "Before evaluate(), Summary!B2 is #ERROR!, not a stored number. Model has no slot for an injected cache of 999 beside a formula."
+    },
+    "unknownResource": {
+      "savedContainsSentinel": false,
+      "note": "No opaque resource bag. An unknown Univer resource cannot round-trip."
+    },
+    "conditionalFormatting": {
+      "before": [
+        "D2:D3"
+      ],
+      "afterInsertRowBefore": [
+        "D3:D4"
+      ],
+      "shifted": true
+    },
+    "undo": {
+      "available": true,
+      "canUndo": true,
+      "before": "5",
+      "editedValue": "7",
+      "afterUndo": "5"
+    },
+    "clipboard": {
+      "available": false,
+      "step": "paste",
+      "copy": {
+        "csv": "5",
+        "range": [
+          3,
+          3,
+          3,
+          3
+        ]
+      },
+      "error": "InvalidArg, invalid type: string \"3\", expected i32"
+    },
+    "roundTrip": {
+      "format": "icalc-bytes",
+      "summaryB2": 41
+    },
+    "timings": {
+      "open100kCells10kFormulas": {
+        "buildMs": 33,
+        "open": {
+          "n": 3,
+          "p50_ms": 6.402,
+          "p95_ms": 6.428,
+          "max_ms": 6.428
+        },
+        "cells": 100000,
+        "formulas": 10000
+      }
+    }
+  },
+  "offline": {
+    "status": "ran",
+    "production": false,
+    "node": "v26.13.1",
+    "hyperformula": {
+      "version": "3.5.0",
+      "license": "GPL-3.0-only",
+      "calculation": "formula"
+    },
+    "handsontable": {
+      "status": "loaded_not_mounted",
+      "production": false,
+      "exportType": "function",
+      "reason": "The grid needs a browser document and a commercial key. This process did not mount it."
+    },
+    "checks": [
+      {
+        "name": "initial Detail!D2",
+        "ok": true,
+        "actual": 20,
+        "expected": 20
+      },
+      {
+        "name": "initial Detail!D3",
+        "ok": true,
+        "actual": 15,
+        "expected": 15
+      },
+      {
+        "name": "initial Summary!B2",
+        "ok": true,
+        "actual": 35,
+        "expected": 35
+      },
+      {
+        "name": "edited Detail!C3",
+        "ok": true,
+        "actual": 7,
+        "expected": 7
+      },
+      {
+        "name": "edited Detail!D3",
+        "ok": true,
+        "actual": 21,
+        "expected": 21
+      },
+      {
+        "name": "edited Summary!B2",
+        "ok": true,
+        "actual": 41,
+        "expected": 41
+      },
+      {
+        "name": "insert Detail!C3",
+        "ok": true,
+        "actual": 10,
+        "expected": 10
+      },
+      {
+        "name": "insert Detail!C4",
+        "ok": true,
+        "actual": 7,
+        "expected": 7
+      },
+      {
+        "name": "insert Summary!B2",
+        "ok": true,
+        "actual": 41,
+        "expected": 41
+      }
+    ],
+    "corpusMatched": true,
+    "summaryFormulaAfterInsert": "=SUM(Detail!D3:D4)",
+    "unknownResource": {
+      "note": "Not a Univer snapshot. Unknown resources are out of scope."
+    },
+    "conditionalFormatting": {
+      "note": "Not measured. The grid was not mounted."
+    }
+  },
+  "browser": {
+    "node": "v26.13.1",
+    "chromeBin": "/usr/bin/google-chrome",
+    "browser": "156.0.8078.47",
+    "cells": {
+      "initial": 35
+    },
+    "accessibility": "- main:\n  - tablist:\n    - tab \"Start\" [selected]\n    - tab \"Formulas\"\n    - tab \"View\"\n  - toolbar \"Start\":\n    - button \"Undo\":\n      - img\n    - button \"Redo\" [disabled]:\n      - img\n    - button \"Format Painter\" [disabled]:\n      - img\n    - button \"Clear formatting\" [disabled]:\n      - img\n    - button \"Paste\":\n      - img\n      - text: Paste\n      - img\n    - textbox \"Font\": Arial\n    - button \"Font\":\n      - img\n    - textbox \"Font size\": \"11\"\n    - button \"Font size\":\n      - img\n    - button \"Increase font size\":\n      - img\n    - button \"Decrease font size\":\n      - img\n    - button \"Bold\":\n      - img\n    - button \"Italic\":\n      - img\n    - button \"Underline\":\n      - img\n    - button \"Strikethrough\":\n      - img\n    - button \"Text color\":\n      - img\n    - button \"Text color More\":\n      - img\n    - button \"Fill color\":\n      - img\n    - button \"Fill color More\":\n      - img\n    - button \"Border\":\n      - img\n    - button \"Border More\":\n      - img\n    - button \"Horizontal align\":\n      - img\n      - img\n    - button \"Vertical align\":\n      - img\n      - img\n    - button \"More\":\n      - img\n  - complementary\n  - textbox: A1\n  - img\n  - img\n  - img\n  - img\n  - img\n  - complementary\n  - button:\n    - img\n  - button:\n    - img\n  - tablist \"Sheet tabs\":\n    - tab \"Detail\"\n    - tab \"Summary\" [selected]\n  - button \"Toggle Gridlines\" [pressed]:\n    - img\n  - button \"Zoom out\":\n    - img\n  - button \"Reset zoom\"\n  - slider \"Zoom\"\n  - button \"Zoom in\":\n    - img\n  - textbox \"Zoom\": 100%\n  - button \"Menu\":\n    - img\n  - region \"Notifications alt+T\"",
+    "input": {
+      "price": 7,
+      "line": 21,
+      "total": 41
+    },
+    "clipboard": {
+      "source": 7,
+      "pastedByValue": 7,
+      "keyboard": true,
+      "keyboardPaste": null
+    },
+    "undo": {
+      "available": true,
+      "before": 7,
+      "after": 7
+    },
+    "largePaste": {
+      "rows": 100,
+      "columns": 100,
+      "ms": 32.7
+    },
+    "memory": {
+      "cycles": 20,
+      "liveUniver": 0,
+      "heapBefore": 40354016,
+      "heapAfter": 30803240,
+      "deltaBytes": -9550776,
+      "budgetBytes": 5242880
+    },
+    "longTasks": [
+      221,
+      198,
+      59,
+      117,
+      127
+    ],
+    "pageErrors": []
+  }
+}
