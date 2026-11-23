@@ -10,7 +10,7 @@ import {TableBindings} from './table-bindings.ts';
 import {
     WIRE_VERSION, WireError, canonicalize, sha256Canonical,
     type CellContent, type CellReadback, type Command, type Json, type JsonObject, type Limits,
-    type Literal, type ProfileRef, type RangeSelector, type Request, type Response, type TableBinding, type WorkbookV2,
+    type Literal, type OperandExpectation, type ProfileRef, type RangeSelector, type Request, type Response, type TableBinding, type WorkbookV2,
 } from './protocol.ts';
 
 type Path = string;
@@ -54,6 +54,16 @@ function literal(value: Json | undefined, path: Path): Literal {
     const parsed = content(value, path);
     if (parsed !== null && !('number' in parsed) && !('text' in parsed)) throw new WireError('invalid_message', `${path} must be number, text or null`);
     return parsed;
+}
+
+function operandExpectation(value: Json | undefined, path: Path): OperandExpectation {
+    const obj = object(value, path);
+    only(obj, ['content', 'value'], path);
+    const parsedContent = content(obj.content, `${path}.content`);
+    if (obj.value !== undefined) {
+        return {content: parsedContent, value: finite(obj.value, `${path}.value`)};
+    }
+    return {content: parsedContent};
 }
 
 function profileRef(value: Json | undefined): ProfileRef {
@@ -144,7 +154,7 @@ function command(value: Json, index: number): Command {
             return cmd;
         }
         default: {
-            only(raw, ['kind', 'sheet_id', 'table_id', 'scope', 'row_ids', 'destination_column_id', 'expression', 'expected_destination'], path);
+            only(raw, ['kind', 'sheet_id', 'table_id', 'scope', 'row_ids', 'destination_column_id', 'expression', 'expected_destination', 'expected_inputs'], path);
             if (raw.scope !== 'fixed_members' && raw.scope !== 'current_rows') throw new WireError('invalid_message', `${path}.scope`);
             const expression = object(raw.expression, `${path}.expression`);
             only(expression, ['op', 'left_column_id', 'right_column_id'], `${path}.expression`);
@@ -154,12 +164,27 @@ function command(value: Json, index: number): Command {
             if (rowIds.length === 0 || new Set(rowIds).size !== rowIds.length || expected.length !== rowIds.length) {
                 throw new WireError('invalid_message', `${path}.row_ids must be unique, non-empty and match expected_destination`);
             }
-            return {
+            const parsedCmd: Extract<Command, {kind: 'fill_formula'}> = {
                 kind: 'fill_formula', sheet_id, table_id: string(raw.table_id, `${path}.table_id`), scope: raw.scope, row_ids: rowIds,
                 destination_column_id: string(raw.destination_column_id, `${path}.destination_column_id`),
                 expression: {op: 'subtract', left_column_id: string(expression.left_column_id, 'left_column_id'), right_column_id: string(expression.right_column_id, 'right_column_id')},
                 expected_destination: expected,
             };
+            if (raw.expected_inputs !== undefined) {
+                const expectedInputs = array(raw.expected_inputs, `${path}.expected_inputs`).map((item, i) => {
+                    const rowObj = object(item, `${path}.expected_inputs[${i}]`);
+                    only(rowObj, ['left', 'right'], `${path}.expected_inputs[${i}]`);
+                    return {
+                        left: operandExpectation(rowObj.left, `${path}.expected_inputs[${i}].left`),
+                        right: operandExpectation(rowObj.right, `${path}.expected_inputs[${i}].right`),
+                    };
+                });
+                if (expectedInputs.length !== rowIds.length) {
+                    throw new WireError('invalid_message', `${path}.expected_inputs must match row_ids length`);
+                }
+                parsedCmd.expected_inputs = expectedInputs;
+            }
+            return parsedCmd;
         }
     }
 }
@@ -243,7 +268,7 @@ export function assertResourcesPreserved(before: JsonObject, after: JsonObject):
 
 interface Written {sheet_id: string; coord: CellCoord}
 
-function applyCommand(session: UniverWorkbookSession, bindings: TableBindings, cmd: Command, limits: Limits, written: Written[], changed: RangeSelector[]): void {
+function applyCommand(session: UniverWorkbookSession, bindings: TableBindings, cmd: Command, limits: Limits, checked: Written[], changed: RangeSelector[]): void {
     switch (cmd.kind) {
         case 'set_number':
         case 'set_text':
@@ -256,7 +281,7 @@ function applyCommand(session: UniverWorkbookSession, bindings: TableBindings, c
             if (cmd.kind === 'set_number') session.writeLiteral(cmd.sheet_id, coord, {number: cmd.value});
             else if (cmd.kind === 'set_text') session.writeLiteral(cmd.sheet_id, coord, {text: cmd.value});
             else session.writeFormula(cmd.sheet_id, coord, cmd.formula);
-            written.push({sheet_id: cmd.sheet_id, coord});
+            checked.push({sheet_id: cmd.sheet_id, coord});
             changed.push({sheet_id: cmd.sheet_id, range: toA1(coord)});
             return;
         }
@@ -269,7 +294,7 @@ function applyCommand(session: UniverWorkbookSession, bindings: TableBindings, c
             cmd.values.forEach((row, i) => row.forEach((value, j) => {
                 const coord = {row: cmd.row + i, column: cmd.column + j};
                 session.writeLiteral(cmd.sheet_id, coord, value);
-                written.push({sheet_id: cmd.sheet_id, coord});
+                checked.push({sheet_id: cmd.sheet_id, coord});
             }));
             const end = {row: cmd.row + cmd.values.length - 1, column: cmd.column + cmd.values[0].length - 1};
             changed.push({sheet_id: cmd.sheet_id, range: `${toA1({row: cmd.row, column: cmd.column})}:${toA1(end)}`});
@@ -280,7 +305,7 @@ function applyCommand(session: UniverWorkbookSession, bindings: TableBindings, c
             // Bindings first: a missing identity is refused before the engine is touched.
             bindings.insertRows(cmd.sheet_id, cmd.row, cmd.count, cmd.new_row_ids);
             session.insertRowsBefore(cmd.sheet_id, cmd.row, cmd.count);
-            for (const item of written) if (item.sheet_id === cmd.sheet_id && item.coord.row >= cmd.row) item.coord = {...item.coord, row: item.coord.row + cmd.count};
+            for (const item of checked) if (item.sheet_id === cmd.sheet_id && item.coord.row >= cmd.row) item.coord = {...item.coord, row: item.coord.row + cmd.count};
             changed.push({sheet_id: cmd.sheet_id, range: `${cmd.row}:${cmd.row + cmd.count - 1}`});
             return;
         }
@@ -299,18 +324,44 @@ function applyCommand(session: UniverWorkbookSession, bindings: TableBindings, c
             const targets = cmd.row_ids.map((rowId, index) => {
                 const row = bindings.rowOf(table, rowId);
                 requireContent(session, cmd.sheet_id, {row, column: destination}, cmd.expected_destination[index], {row_id: rowId});
+                if (cmd.expected_inputs !== undefined) {
+                    const inputs = cmd.expected_inputs[index];
+                    requireContent(session, cmd.sheet_id, {row, column: left}, inputs.left.content, {row_id: rowId, operand: 'left'});
+                    requireContent(session, cmd.sheet_id, {row, column: right}, inputs.right.content, {row_id: rowId, operand: 'right'});
+                }
                 return {row, formula: `=${toA1({row, column: left})}-${toA1({row, column: right})}`};
             });
             for (const [index, {row, formula}] of targets.entries()) {
-                if (sameContent(cmd.expected_destination[index], {formula})) continue;
                 const coord = {row, column: destination};
+                checked.push({sheet_id: cmd.sheet_id, coord});
+                if (sameContent(cmd.expected_destination[index], {formula})) continue;
                 session.writeFormula(cmd.sheet_id, coord, formula);
-                written.push({sheet_id: cmd.sheet_id, coord});
                 changed.push({sheet_id: cmd.sheet_id, range: toA1(coord)});
             }
             return;
         }
     }
+}
+
+function verifySettledOperandValues(session: UniverWorkbookSession, bindings: TableBindings, cmd: Command): void {
+    if (cmd.kind !== 'fill_formula' || cmd.expected_inputs === undefined) return;
+    const table = bindings.table(cmd.sheet_id, cmd.table_id);
+    const left = bindings.columnOf(table, cmd.expression.left_column_id);
+    const right = bindings.columnOf(table, cmd.expression.right_column_id);
+    cmd.row_ids.forEach((rowId, index) => {
+        const row = bindings.rowOf(table, rowId);
+        const inputs = cmd.expected_inputs![index];
+        for (const [operand, column, expected] of [['left', left, inputs.left], ['right', right, inputs.right]] as const) {
+            if (expected.value === undefined) continue;
+            const readback = session.readback(cmd.sheet_id, {row, column});
+            if (typeof readback.value !== 'number' || !Number.isFinite(readback.value)
+                || (readback.value !== expected.value && Math.abs(readback.value - expected.value) > 1e-9)) {
+                throw new WireError('precondition_failed', `${cmd.sheet_id}!${toA1({row, column})} evaluated value changed since prepare`, {
+                    sheet_id: cmd.sheet_id, a1: toA1({row, column}), row_id: rowId, operand, expected_value: expected.value, actual_value: readback.value,
+                });
+            }
+        }
+    });
 }
 
 function readRanges(session: UniverWorkbookSession, ranges: RangeSelector[], limit: number): {sheet_id: string; range: string; cells: CellReadback[]}[] {
@@ -358,12 +409,15 @@ export async function runOperation(message: Json, profile: ProfileRef = WIRE_PRO
                 data: {ranges: readRanges(session, request.selector.ranges, limits.max_cells_per_command)},
             };
         }
-        const written: Written[] = [];
+        const checked: Written[] = [];
         const changed: RangeSelector[] = [];
         if (request.operation === 'apply') {
-            for (const cmd of request.commands) applyCommand(session, bindings, cmd, limits, written, changed);
+            for (const cmd of request.commands) applyCommand(session, bindings, cmd, limits, checked, changed);
         }
         await session.settle(limits.calculation_timeout_ms);
+        if (request.operation === 'apply') {
+            for (const cmd of request.commands) verifySettledOperandValues(session, bindings, cmd);
+        }
         const native = session.save();
         if (unknown.length > 0 && Array.isArray(request.workbook.native.resources)) {
             const preservedUnknown = request.workbook.native.resources.filter(resource =>
@@ -380,7 +434,7 @@ export async function runOperation(message: Json, profile: ProfileRef = WIRE_PRO
         const candidate: WorkbookV2 = {format_version: 2, profile: request.workbook.profile, native, tables: bindings.toJSON()};
         const candidateSha = sha256Canonical(candidate);
         const cells = request.operation === 'apply'
-            ? written.map(item => session.readback(item.sheet_id, item.coord))
+            ? checked.map(item => session.readback(item.sheet_id, item.coord))
             : readRanges(session, request.selector.ranges, limits.max_cells_per_command).flatMap(range => range.cells);
         return {
             version: 1, request_id: request.request_id, ok: true, operation: request.operation,

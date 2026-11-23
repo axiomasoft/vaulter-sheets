@@ -59,16 +59,50 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
         return $this->read($context, $node, $catalog, [(object) ['sheet_id' => $sheet, 'range' => $range]], $limit);
     }
 
-    public function readTable(DriveContext $context, string $node, string $table): array
+    public function readTable(DriveContext $context, string $node, string $table, ?array $columns = null, ?array $rowIds = null): array
     {
         $catalog = $this->loadCatalog($context, $node);
         $binding = $this->table($catalog, $table);
+
+        $selectedColumns = $binding->columns;
+        if ($columns !== null) {
+            $availableColumns = array_column($binding->columns, null, 'column_id');
+            $columnSet = [];
+            foreach ($columns as $columnId) {
+                if (!is_string($columnId) || $columnId === '' || !isset($availableColumns[$columnId])) {
+                    throw new WorkbookProblem('unknown_target', 422);
+                }
+                $columnSet[$columnId] = true;
+            }
+            $selectedColumns = array_values(array_filter(
+                $binding->columns,
+                static fn (stdClass $column): bool => isset($columnSet[$column->column_id]),
+            ));
+        }
+
+        $selectedRows = $binding->rows;
+        if ($rowIds !== null) {
+            $availableRows = array_column($binding->rows, null, 'row_id');
+            $rowSet = [];
+            foreach ($rowIds as $rowId) {
+                if (!is_string($rowId) || $rowId === '' || !isset($availableRows[$rowId])) {
+                    throw new WorkbookProblem('unknown_target', 422);
+                }
+                $rowSet[$rowId] = true;
+            }
+            $selectedRows = array_values(array_filter(
+                $binding->rows,
+                static fn (stdClass $row): bool => isset($rowSet[$row->row_id]),
+            ));
+        }
+
         $ranges = [];
-        foreach ($binding->rows as $row) {
-            foreach ($binding->columns as $column) {
+        foreach ($selectedRows as $row) {
+            foreach ($selectedColumns as $column) {
                 $ranges[] = (object) ['sheet_id' => $binding->sheet_id, 'range' => self::address($column->column, $row->row)];
             }
         }
+
         return ['marker' => $catalog['marker'], 'table' => $binding, 'ranges' => $this->read($context, $node, $catalog, $ranges)];
     }
 

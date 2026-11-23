@@ -83,3 +83,79 @@ test('preserves optional opaque resources on a cell write and refuses structural
     const rejected = await processFrame(Buffer.from(JSON.stringify(mandatory) + '\n'));
     assert.equal(rejected.ok ? null : rejected.error.code, 'unsupported_content');
 });
+
+test('emits checks.cells for already-matching fill_formula targets and verifies expected_inputs', async () => {
+    const baseReq = request('scope-changed');
+    const wb = baseReq.workbook as JsonObject;
+    const sheets = (wb.native as JsonObject).sheets as JsonObject;
+    const expenses = sheets.expenses as JsonObject;
+    const cellData = expenses.cellData as JsonObject;
+    // Remove inserted row r-telecom2 so table has 2 rows (row 2 and row 3) and pre-seed D2 with =C2-B2.
+    cellData['2'] = {'1': {t: 2, v: 200}, '2': {t: 2, v: 180}};
+    delete cellData['3'];
+    // Add an upstream formula column E2=60+60 referenced by C2? First test D2 preseeded as =C2-B2 while D3 is empty.
+    (cellData['1'] as JsonObject)['3'] = {f: '=C2-B2', t: 2, v: 20};
+    ((wb.tables as JsonObject[])[0] as JsonObject).rows = [
+        {row_id: 'r-telecom', row: 2},
+        {row_id: 'r-travel', row: 3},
+    ];
+    (baseReq.base as JsonObject).sha256 = sha256Canonical(wb);
+    baseReq.commands = [
+        {
+            kind: 'fill_formula',
+            sheet_id: 'expenses',
+            table_id: 'costs',
+            scope: 'fixed_members',
+            row_ids: ['r-telecom', 'r-travel'],
+            destination_column_id: 'delta',
+            expression: {op: 'subtract', left_column_id: 'actual', right_column_id: 'plan'},
+            expected_destination: [{formula: '=C2-B2'}, null],
+            expected_inputs: [
+                {left: {content: {number: 120}, value: 120}, right: {content: {number: 100}, value: 100}},
+                {left: {content: {number: 180}, value: 180}, right: {content: {number: 200}, value: 200}},
+            ],
+        },
+    ];
+
+    const partialWrite = await processFrame(Buffer.from(JSON.stringify(baseReq) + '\n'));
+    assert.equal(partialWrite.ok, true, JSON.stringify(partialWrite));
+    if (partialWrite.ok && partialWrite.operation === 'apply') {
+        assert.deepEqual(partialWrite.changed_ranges, [{sheet_id: 'expenses', range: 'D3'}]);
+        assert.equal(partialWrite.checks.cells.length, 2);
+        assert.equal(partialWrite.checks.cells[0].a1, 'D2');
+        assert.equal(partialWrite.checks.cells[0].formula, '=C2-B2');
+        assert.equal(partialWrite.checks.cells[0].value, 20);
+        assert.equal(partialWrite.checks.cells[1].a1, 'D3');
+        assert.equal(partialWrite.checks.cells[1].formula, '=C3-B3');
+        assert.equal(partialWrite.checks.cells[1].value, -20);
+
+        // Second pass where both D2 and D3 already match: changed_ranges is [] while checks.cells still contains both.
+        const noopReq = JSON.parse(JSON.stringify(baseReq));
+        noopReq.workbook = JSON.parse(JSON.stringify(partialWrite.workbook));
+        noopReq.base.sha256 = partialWrite.candidate_sha256;
+        noopReq.commands[0].expected_destination = [{formula: '=C2-B2'}, {formula: '=C3-B3'}];
+        const noopWrite = await processFrame(Buffer.from(JSON.stringify(noopReq) + '\n'));
+        assert.equal(noopWrite.ok, true, JSON.stringify(noopWrite));
+        if (noopWrite.ok && noopWrite.operation === 'apply') {
+            assert.deepEqual(noopWrite.changed_ranges, []);
+            assert.equal(noopWrite.checks.cells.length, 2);
+            assert.deepEqual(noopWrite.checks.cells.map(c => c.a1), ['D2', 'D3']);
+        }
+    }
+
+    // Changed literal operand triggers precondition_failed.
+    const changedLiteralReq = JSON.parse(JSON.stringify(baseReq));
+    changedLiteralReq.workbook.native.sheets.expenses.cellData['1']['2'].v = 130;
+    changedLiteralReq.base.sha256 = sha256Canonical(changedLiteralReq.workbook);
+    const literalRejected = await processFrame(Buffer.from(JSON.stringify(changedLiteralReq) + '\n'));
+    assert.equal(literalRejected.ok ? null : literalRejected.error.code, 'precondition_failed');
+
+    // Formula operand whose upstream cell changed (even with stale cache 120) triggers precondition_failed after settle().
+    const formulaInputReq = JSON.parse(JSON.stringify(baseReq));
+    formulaInputReq.workbook.native.sheets.expenses.cellData['1']['4'] = {t: 2, v: 130};
+    formulaInputReq.workbook.native.sheets.expenses.cellData['1']['2'] = {f: '=E2', t: 2, v: 120};
+    formulaInputReq.base.sha256 = sha256Canonical(formulaInputReq.workbook);
+    formulaInputReq.commands[0].expected_inputs[0].left = {content: {formula: '=E2'}, value: 120};
+    const formulaRejected = await processFrame(Buffer.from(JSON.stringify(formulaInputReq) + '\n'));
+    assert.equal(formulaRejected.ok ? null : formulaRejected.error.code, 'precondition_failed');
+});

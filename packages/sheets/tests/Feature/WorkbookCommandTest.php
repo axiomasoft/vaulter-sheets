@@ -274,3 +274,91 @@ it('revalidates logical row IDs after insertion and rejects a changed table memb
     $this->getJson($url.'/ranges?sheet_id=detail&range=E3:E4')->assertOk()
         ->assertJsonPath('data.0.cells.0.value', null)->assertJsonPath('data.0.cells.1.value', -2);
 });
+
+it('slices WorkbookOperations::readTable before enforcing the 64-range limit', function (): void {
+    $workbook = $this->workbook;
+    $rows = [];
+    $cellData = [
+        '0' => ['0' => ['t' => 1, 'v' => 'Row'], '1' => ['t' => 1, 'v' => 'Qty'], '2' => ['t' => 1, 'v' => 'Price']],
+    ];
+    for ($i = 1; $i <= 22; $i++) {
+        $rowNum = $i + 1;
+        $rows[] = ['row_id' => 'row_'.$i, 'row' => $rowNum];
+        $cellData[(string) ($rowNum - 1)] = [
+            '0' => ['t' => 1, 'v' => 'Item '.$i],
+            '1' => ['t' => 2, 'v' => $i],
+            '2' => ['t' => 2, 'v' => $i * 10],
+        ];
+    }
+    $workbook['native']['sheets']['detail']['cellData'] = $cellData;
+    $workbook['tables'] = [[
+        'table_id' => 'items',
+        'sheet_id' => 'detail',
+        'header_row' => 1,
+        'columns' => [
+            ['column_id' => 'quantity', 'column' => 2],
+            ['column_id' => 'price', 'column' => 3],
+            ['column_id' => 'difference', 'column' => 4],
+        ],
+        'rows' => $rows,
+    ]];
+    $url = createWorkbookTestUrl($this, $workbook);
+    $nodeId = basename($url);
+    $ops = app(\Vaulter\Sheets\Contracts\WorkbookOperations::class);
+    $ctx = \Vaulter\Drive\Operations\DriveContext::system($this->driveHandle->model(), 'readTable slicing test');
+
+    expect(fn (): array => $ops->readTable($ctx, $nodeId, 'items'))
+        ->toThrow(WorkbookProblem::class, 'limit_exceeded');
+
+    $sliced = $ops->readTable($ctx, $nodeId, 'items', ['quantity', 'price'], ['row_15']);
+    expect($sliced['table']->rows)->toHaveCount(22)
+        ->and($sliced['ranges'])->toHaveCount(2)
+        ->and($sliced['ranges'][0]->cells[0]->value)->toBe(15)
+        ->and($sliced['ranges'][1]->cells[0]->value)->toBe(150);
+});
+
+it('durably rejects fill_formula when expected_inputs changed and keeps rejection across replay after input restoration', function (): void {
+    $workbook = $this->workbook;
+    $workbook['tables'][0]['columns'][] = ['column_id' => 'quantity', 'column' => 2];
+    $workbook['tables'][0]['columns'][] = ['column_id' => 'difference', 'column' => 5];
+    $url = createWorkbookTestUrl($this, $workbook);
+    $head = $this->getJson($url)->assertOk();
+    $generation = $head->json('data.marker.generation');
+    $etag = $head->headers->get('ETag');
+
+    // Human changes B2 from 2 to 9 after agent prepared expected_inputs with quantity=2, price=10.
+    $changed = workbookTestPlan($generation, 'human-edit', [
+        'kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 2, 'column' => 2,
+        'expected' => ['number' => 2], 'value' => 9,
+    ]);
+    $afterEdit = $this->postJson($url.'/commands', $changed, ['If-Match' => $etag])->assertOk();
+
+    $formula = [
+        'kind' => 'fill_formula', 'sheet_id' => 'detail', 'table_id' => 'items', 'scope' => 'fixed_members',
+        'row_ids' => ['apples', 'pears'], 'destination_column_id' => 'difference',
+        'expression' => ['op' => 'subtract', 'left_column_id' => 'quantity', 'right_column_id' => 'price'],
+        'expected_destination' => [null, null],
+        'expected_inputs' => [
+            ['left' => ['content' => ['number' => 2], 'value' => 2], 'right' => ['content' => ['number' => 10], 'value' => 10]],
+            ['left' => ['content' => ['number' => 3], 'value' => 3], 'right' => ['content' => ['number' => 5], 'value' => 5]],
+        ],
+    ];
+    $plan = workbookTestPlan($generation, 'stale-inputs', $formula, 'revalidate_by_id');
+
+    $this->postJson($url.'/commands', $plan)
+        ->assertStatus(409)->assertJsonPath('data.error.code', 'version_conflict');
+    $this->getJson($url.'/commands/stale-inputs')
+        ->assertStatus(409)->assertJsonPath('data.state', 'rejected')->assertJsonPath('data.error.code', 'version_conflict');
+
+    // Restore B2 back to 2 and retry the same command_id: durable rejection prevents stale write.
+    $restore = workbookTestPlan($generation, 'human-restore', [
+        'kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 2, 'column' => 2,
+        'expected' => ['number' => 9], 'value' => 2,
+    ]);
+    $this->postJson($url.'/commands', $restore, ['If-Match' => $afterEdit->headers->get('ETag')])->assertOk();
+
+    $this->postJson($url.'/commands', $plan)
+        ->assertStatus(409)->assertJsonPath('data.state', 'rejected')->assertJsonPath('data.error.code', 'version_conflict');
+    $this->getJson($url.'/ranges?sheet_id=detail&range=E2:E3')->assertOk()
+        ->assertJsonPath('data.0.cells.0.value', null)->assertJsonPath('data.0.cells.1.value', null);
+});

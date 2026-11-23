@@ -127,10 +127,32 @@
               "type": "object", "additionalProperties": false, "required": ["op", "left_column_id", "right_column_id"],
               "properties": {"op": {"const": "subtract"}, "left_column_id": {"$ref": "#/$defs/id"}, "right_column_id": {"$ref": "#/$defs/id"}}
             },
-            "expected_destination": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/content"}}
+            "expected_destination": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/content"}},
+            "expected_inputs": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["left", "right"],
+                "properties": {
+                  "left": {"$ref": "#/$defs/operandExpectation"},
+                  "right": {"$ref": "#/$defs/operandExpectation"}
+                }
+              }
+            }
           }
         }
       ]
+    },
+    "operandExpectation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["content"],
+      "properties": {
+        "content": {"$ref": "#/$defs/content"},
+        "value": {"type": "number"}
+      }
     },
     "limits": {
       "type": "object", "additionalProperties": false,

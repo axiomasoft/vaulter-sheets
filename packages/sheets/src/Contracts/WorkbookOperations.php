@@ -13,7 +13,11 @@ interface WorkbookOperations
 {
     public function catalog(DriveContext $context, string $node): array;
 
-    public function readTable(DriveContext $context, string $node, string $table): array;
+    /**
+     * @param  list<string>|null  $columns
+     * @param  list<string>|null  $rowIds
+     */
+    public function readTable(DriveContext $context, string $node, string $table, ?array $columns = null, ?array $rowIds = null): array;
 
     public function prepareFormula(DriveContext $context, string $node, string $table, string $destination, string $left, string $right, string $scope): array;
 

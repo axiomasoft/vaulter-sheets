@@ -33,6 +33,8 @@ export interface WorkbookV2 {format_version: 2; profile: ProfileRef; native: Jso
 
 export type Literal = {number: number} | {text: string} | null;
 
+export interface OperandExpectation {content: CellContent; value?: number}
+
 export type Command =
     | {kind: 'set_number'; sheet_id: string; row: number; column: number; expected: CellContent; value: number}
     | {kind: 'set_text'; sheet_id: string; row: number; column: number; expected: CellContent; value: string}
@@ -48,6 +50,7 @@ export type Command =
         destination_column_id: string;
         expression: {op: 'subtract'; left_column_id: string; right_column_id: string};
         expected_destination: CellContent[];
+        expected_inputs?: {left: OperandExpectation; right: OperandExpectation}[];
     };
 
 export interface RangeSelector {sheet_id: string; range: string}

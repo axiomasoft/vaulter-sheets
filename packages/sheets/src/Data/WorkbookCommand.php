@@ -46,12 +46,28 @@ final readonly class WorkbookCommand
             $rows = $command->row_ids ?? null;
             $expected = $command->expected_destination ?? null;
 
-            return is_string($command->table_id ?? null) && is_string($command->destination_column_id ?? null)
+            $valid = is_string($command->table_id ?? null) && $command->table_id !== ''
+                && is_string($command->destination_column_id ?? null) && $command->destination_column_id !== ''
                 && in_array($command->scope ?? null, ['fixed_members', 'current_rows'], true)
                 && $expression instanceof stdClass && ($expression->op ?? null) === 'subtract'
-                && is_string($expression->left_column_id ?? null) && is_string($expression->right_column_id ?? null)
-                && is_array($rows) && is_array($expected) && count($rows) === count($expected)
-                && array_all($rows, static fn (mixed $row): bool => is_string($row)) && array_all($expected, static fn (mixed $cell): bool => self::validContent($cell));
+                && is_string($expression->left_column_id ?? null) && $expression->left_column_id !== ''
+                && is_string($expression->right_column_id ?? null) && $expression->right_column_id !== ''
+                && is_array($rows) && array_is_list($rows) && $rows !== []
+                && is_array($expected) && array_is_list($expected) && count($rows) === count($expected)
+                && array_all($rows, static fn (mixed $row): bool => is_string($row) && $row !== '')
+                && count(array_unique($rows)) === count($rows)
+                && array_all($expected, static fn (mixed $cell): bool => self::validContent($cell));
+
+            if (!$valid || !property_exists($command, 'expected_inputs')) {
+                return $valid;
+            }
+
+            $expectedInputs = $command->expected_inputs;
+            if (!is_array($expectedInputs) || !array_is_list($expectedInputs) || count($expectedInputs) !== count($rows)) {
+                return false;
+            }
+
+            return array_all($expectedInputs, static fn (mixed $rowInputs): bool => self::validRowInputs($rowInputs));
         }
         if (!self::coordinate($command->row ?? null)) {
             return false;
@@ -88,6 +104,28 @@ final readonly class WorkbookCommand
         };
     }
 
+    private static function validRowInputs(mixed $rowInputs): bool
+    {
+        if (!$rowInputs instanceof stdClass || array_diff(array_keys(get_object_vars($rowInputs)), ['left', 'right']) !== []
+            || !property_exists($rowInputs, 'left') || !property_exists($rowInputs, 'right')) {
+            return false;
+        }
+
+        return self::validOperandExpectation($rowInputs->left) && self::validOperandExpectation($rowInputs->right);
+    }
+
+    private static function validOperandExpectation(mixed $operand): bool
+    {
+        if (!$operand instanceof stdClass || !property_exists($operand, 'content')
+            || array_diff(array_keys(get_object_vars($operand)), ['content', 'value']) !== []
+            || !self::validContent($operand->content)) {
+            return false;
+        }
+
+        return !property_exists($operand, 'value')
+            || ((is_int($operand->value) || is_float($operand->value)) && is_finite((float) $operand->value));
+    }
+
     private static function coordinate(mixed $value): bool
     {
         return is_int($value) && $value > 0 && $value <= 9_007_199_254_740_991;
@@ -101,7 +139,8 @@ final readonly class WorkbookCommand
         if (!$cell instanceof stdClass || count(get_object_vars($cell)) !== 1) {
             return false;
         }
-        return is_int($cell->number ?? null) || is_float($cell->number ?? null) || is_string($cell->text ?? null)
+        return ((is_int($cell->number ?? null) || is_float($cell->number ?? null)) && is_finite((float) $cell->number))
+            || is_string($cell->text ?? null)
             || (!$literal && (is_bool($cell->boolean ?? null) || (is_string($cell->formula ?? null) && str_starts_with($cell->formula, '='))));
     }
 
