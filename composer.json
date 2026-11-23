@@ -28,6 +28,7 @@
         {
             "type": "path",
             "url": "../vaulter/packages/*",
+            "exclude": ["axiomasoft/vaulter-collaboration"],
             "options": {
                 "symlink": true,
                 "versions": {
@@ -35,6 +36,16 @@
                     "axiomasoft/vaulter-drive": "1.0.x-dev",
                     "axiomasoft/vaulter-documents": "1.0.x-dev",
                     "axiomasoft/vaulter-media": "1.0.x-dev"
+                }
+            }
+        },
+        {
+            "type": "path",
+            "url": "../vaulter-collaboration/packages/collaboration",
+            "options": {
+                "symlink": true,
+                "versions": {
+                    "axiomasoft/vaulter-collaboration": "1.0.x-dev"
                 }
             }
         },
@@ -54,9 +65,10 @@
     ],
     "require": {
         "php": ">=8.4 <8.6",
-        "axiomasoft/vaulter-sheets": "@dev"
+        "axiomasoft/vaulter-sheets": "^1.0"
     },
     "require-dev": {
+        "axiomasoft/vaulter-collaboration": "^1.0",
         "axiomasoft/vaulter-drive": "^1.0",
         "axiomasoft/vaulter-media": "^1.0",
         "larastan/larastan": "^3.15",

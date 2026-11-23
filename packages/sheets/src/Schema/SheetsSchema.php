@@ -36,7 +36,7 @@ final readonly class SheetsSchema implements ModuleSchema
 
     public function create(string $entity): void
     {
-        if (!in_array($entity, $this->entities(), true)) {
+        if ($entity !== 'sheets_realtime_links' && !in_array($entity, $this->entities(), true)) {
             throw new \InvalidArgumentException('Unknown Sheets table '.$entity);
         }
         $db = $this->schema->dbConnection();

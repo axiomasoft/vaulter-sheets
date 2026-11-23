@@ -15,6 +15,10 @@ return [
     'replay_seconds' => 86_400,
     'evidence_seconds' => 86_400,
     'commands' => true,
+    'realtime' => [
+        'url' => env('SHEETS_REALTIME_URL'),
+        'owner_token_file' => env('SHEETS_REALTIME_OWNER_TOKEN_FILE'),
+    ],
     'exchange' => [
         'formats' => array_values(array_filter(array_map(
             static fn (string $v): string => strtolower(trim($v)),

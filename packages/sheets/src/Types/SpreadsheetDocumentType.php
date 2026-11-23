@@ -9,14 +9,19 @@ use Vaulter\Documents\Contracts\DocumentCodec;
 use Vaulter\Documents\Contracts\DocumentContent;
 use Vaulter\Documents\Contracts\DocumentType;
 use Vaulter\Documents\Contracts\RequiresCommandWrite;
+use Vaulter\Documents\Contracts\SupportsCollaboration;
 use Vaulter\Documents\Data\Types\DocumentFeatures;
 use Vaulter\Documents\Data\Types\DocumentViewer;
 use Vaulter\Sheets\Content\WorkbookCodec;
 
 #[Api]
-final readonly class SpreadsheetDocumentType implements DocumentType, RequiresCommandWrite
+final readonly class SpreadsheetDocumentType implements DocumentType, RequiresCommandWrite, SupportsCollaboration
 {
     public const string KEY = 'vaulter/spreadsheet';
+
+    public const string COLLABORATION_PROTOCOL = 'univer-sheets';
+
+    public const string COLLABORATION_FORMAT = 'sheets-update-v1';
 
     public function __construct(private WorkbookCodec $workbookCodec) {}
 
@@ -53,5 +58,20 @@ final readonly class SpreadsheetDocumentType implements DocumentType, RequiresCo
     public function features(): DocumentFeatures
     {
         return new DocumentFeatures(editable: true, previewable: true, thumbnailable: false, downloadable: false);
+    }
+
+    public function collaborationProtocol(): string
+    {
+        return self::COLLABORATION_PROTOCOL;
+    }
+
+    public function collaborationStateFormat(): string
+    {
+        return self::COLLABORATION_FORMAT;
+    }
+
+    public function projectFromState(string $state): ?DocumentContent
+    {
+        return null;
     }
 }

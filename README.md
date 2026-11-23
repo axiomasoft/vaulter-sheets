@@ -24,6 +24,14 @@ Set `SHEETS_RUNTIME_URL` and `SHEETS_RUNTIME_TOKEN_FILE` for the private HTTP ca
 
 Use `scripts/ci/workbook-contract.sh` for the PostgreSQL and HTTP command tests and `scripts/ci/workbook-browser.sh` for the Chromium cold reopen and heap checks.
 
+### Collaborative workbooks
+
+Install `axiomasoft/vaulter-collaboration` and enable both `vaulter.modules.collaboration` and `vaulter.modules.sheets-realtime` before running the Vaulter migrations. Configure the collaboration package's Room JWT keys on the PHP owner. Set `SHEETS_REALTIME_URL` to the public WebSocket origin and mount the same private `SHEETS_REALTIME_OWNER_TOKEN_FILE` in PHP and the room process. Set `SHEETS_REALTIME_OWNER_URL` in the room process to the PHP endpoint ending in `/api/vaulter-sheets/v1/realtime/owner`. Keep that endpoint on the private network. The room process serves `/livez`, `/readyz` and the room WebSocket on port 3101. The WebSocket negotiates `univer-sheets.v1` for the `univer-sheets/1` journal protocol.
+
+An editor enables a workbook with `PUT /workbooks/{node}/realtime/profile`, `If-Match` from the workbook catalog and `{"mode":"journal"}`. `POST /workbooks/{node}/realtime/session` issues the room credential for the host's current actor. Pass a function that fetches this session to `WorkbookRoomClient`. For a mounted Univer workbook, `connectNativeWorkbook` binds the command hook and reapplies pending intents after each confirmed state. The host supplies its in-place workbook replacement and cell reads. A room outage leaves the workbook in journal mode. To resume snapshot editing, explicitly switch the profile to `snapshot` with the current `If-Match` after the last accepted update has been checkpointed.
+
+Build the room image with `docker build -f packages/realtime/Dockerfile .`. Run `scripts/ci/realtime.sh` for the PostgreSQL and two-process browser scenarios. Use `SHEETS_PG_VERSION=19.0` to select the second PostgreSQL lane.
+
 ## Toolchain
 
 - PHP `>=8.4 <8.6`
