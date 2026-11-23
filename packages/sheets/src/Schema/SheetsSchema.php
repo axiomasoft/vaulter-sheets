@@ -17,7 +17,7 @@ final readonly class SheetsSchema implements ModuleSchema
         return [
             'sheets_commands', 'sheets_projection_builds', 'sheets_projection_heads',
             'sheets_projection_sheets', 'sheets_projection_tables', 'sheets_projection_columns',
-            'sheets_projection_rows', 'sheets_projection_cells',
+            'sheets_projection_rows', 'sheets_projection_cells', 'sheets_exchange_jobs',
         ];
     }
 
@@ -28,6 +28,9 @@ final readonly class SheetsSchema implements ModuleSchema
             new KeyColumnExpectation('sheets_commands', 'evidence_blob_id', 'REF'),
             new KeyColumnExpectation('sheets_projection_builds', 'document_id', 'REF'),
             new KeyColumnExpectation('sheets_projection_heads', 'document_id', 'REF'),
+            new KeyColumnExpectation('sheets_exchange_jobs', 'document_id', 'REF'),
+            new KeyColumnExpectation('sheets_exchange_jobs', 'source_blob_id', 'REF'),
+            new KeyColumnExpectation('sheets_exchange_jobs', 'output_blob_id', 'REF'),
         ];
     }
 
@@ -37,17 +40,28 @@ final readonly class SheetsSchema implements ModuleSchema
             throw new \InvalidArgumentException('Unknown Sheets table '.$entity);
         }
         $db = $this->schema->dbConnection();
-        $sql = file_get_contents(dirname(__DIR__, 2).'/database/sql/'.$entity.'.sql');
+        $rawSql = file_get_contents(dirname(__DIR__, 2).'/database/sql/'.$entity.'.sql');
+        if ($rawSql === false) {
+            throw new \RuntimeException('Missing Sheets SQL definition '.$entity);
+        }
+        $sql = $rawSql;
         $postgres = $db->getDriverName() === 'pgsql';
         if ($postgres) {
             $db->statement("SET LOCAL lock_timeout = '2s'");
             $db->statement("SET LOCAL statement_timeout = '15s'");
-            foreach (['document_id' => 'documents', 'evidence_blob_id' => 'blobs'] as $field => $owner) {
+            foreach ([
+                'document_id' => 'documents',
+                'evidence_blob_id' => 'blobs',
+                'source_blob_id' => 'blobs',
+                'output_blob_id' => 'blobs',
+            ] as $field => $owner) {
                 if (str_contains($sql, $field.' uuid')) {
-                    $type = $db->selectOne('SELECT format_type(atttypid, atttypmod) AS type FROM pg_attribute WHERE attrelid = to_regclass(?) AND attname = ?', [
+                    /** @var object{type?: mixed}|null $column */
+                    $column = $db->selectOne('SELECT format_type(atttypid, atttypmod) AS type FROM pg_attribute WHERE attrelid = to_regclass(?) AND attname = ?', [
                         $this->schema->table($owner), 'id',
-                    ])->type;
-                    if (!preg_match('/^(?:uuid|bigint|character(?: varying)?\(\d+\))$/D', $type)) {
+                    ]);
+                    $type = $column !== null && isset($column->type) && is_string($column->type) ? $column->type : '';
+                    if (preg_match('/^(?:uuid|bigint|character(?: varying)?\(\d+\))$/D', $type) !== 1) {
                         throw new \LogicException('Unsupported Vaulter owner key type '.$type);
                     }
                     $sql = str_replace($field.' uuid', $field.' '.$type, $sql);
@@ -55,7 +69,7 @@ final readonly class SheetsSchema implements ModuleSchema
             }
         } elseif ($db->getDriverName() === 'sqlite') {
             $sql = str_replace(
-                [' DEFAULT uuidv7()', 'DEFAULT now()', 'octet_length(', 'jsonb_typeof(', "left(formula,1)"],
+                [' DEFAULT uuidv7()', 'DEFAULT now()', 'octet_length(', 'jsonb_typeof(', 'left(formula,1)'],
                 ['', 'DEFAULT CURRENT_TIMESTAMP', 'length(', 'json_type(', 'substr(formula,1,1)'],
                 $sql,
             );
@@ -67,7 +81,8 @@ final readonly class SheetsSchema implements ModuleSchema
         } else {
             throw new \LogicException('Sheets requires PostgreSQL or SQLite.');
         }
-        $sql = preg_replace_callback('/\bv_(\w+)/', fn (array $match): string => $this->schema->table($match[1]), $sql);
+        $replaced = preg_replace_callback('/\bv_(\w+)/', fn (array $match): string => $this->schema->table($match[1]), $sql);
+        $sql = is_string($replaced) ? $replaced : $sql;
         foreach (array_filter(array_map('trim', explode(';', $sql))) as $statement) {
             $db->statement($statement);
         }

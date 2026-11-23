@@ -18,12 +18,22 @@ final readonly class WorkbookContent implements DocumentContent
     public function __construct(stdClass $payload)
     {
         $this->bytes = CanonicalJson::encode($payload);
-        $this->hash = ($payload->storage ?? null) === 'media_blob' ? $payload->sha256 : hash('sha256', $this->bytes);
+        $this->hash = ($payload->storage ?? null) === 'media_blob' && is_string($payload->sha256 ?? null)
+            ? $payload->sha256
+            : hash('sha256', $this->bytes);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function toArray(): array
     {
-        return array_map(self::arrayValue(...), (array) $this->value());
+        $out = [];
+        foreach (get_object_vars($this->value()) as $key => $val) {
+            $out[(string) $key] = self::arrayValue($val);
+        }
+
+        return $out;
     }
 
     public function value(): stdClass

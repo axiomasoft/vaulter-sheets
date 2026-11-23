@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "generator": "vaulter-sheets Zero-Pro OOXML & RFC-4180 fixture builder (fflate@0.8.3)",
+  "license": "Proprietary repository test fixtures",
+  "generated_from": "contracts/exchange-v1.schema.json",
+  "files": [
+    {
+      "name": "budget-1900.xlsx",
+      "sha256": "7394c8a89d30cf7c9de8a4204c47778b92305e66f19844c8f178e542390c9d1b"
+    },
+    {
+      "name": "budget-1904.xlsx",
+      "sha256": "c3f0105fd583d4a9ac8433264ded5134d03a2d51cc8acf2847de64ab7a4be86e"
+    },
+    {
+      "name": "budget-editable.xlsx",
+      "sha256": "4cf502ecade1892404d21a39f62774400e7bf4625f73f0520e1da8f291110edc"
+    },
+    {
+      "name": "ledger.csv",
+      "sha256": "a4bac2301f1dc5df7194f631f65f8afea6e732180f2ae6f01ddb8bdbaf684091"
+    }
+  ]
+}

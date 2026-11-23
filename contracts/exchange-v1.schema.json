@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vaulter.invalid/sheets/exchange-v1.schema.json",
+  "title": "vaulter-sheets exchange wire v1 (PHP owner <-> Node runtime)",
+  "oneOf": [
+    {"$ref": "#/$defs/exchangeRequest"},
+    {"$ref": "#/$defs/exchangeSuccessResponse"},
+    {"$ref": "#/$defs/exchangeErrorResponse"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "format": {"enum": ["csv", "xlsx"]},
+    "operation": {"enum": ["import", "export"]},
+    "exchangeRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "request_id", "operation", "format", "profile_id", "input_b64", "input_sha256", "options"],
+      "properties": {
+        "version": {"const": 1},
+        "request_id": {"$ref": "#/$defs/id"},
+        "operation": {"$ref": "#/$defs/operation"},
+        "format": {"$ref": "#/$defs/format"},
+        "profile_id": {"$ref": "#/$defs/id"},
+        "input_b64": {"type": "string"},
+        "input_sha256": {"$ref": "#/$defs/sha256"},
+        "options": {"type": "object"}
+      }
+    },
+    "sheetReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sheet_id", "name", "rows", "columns", "cells", "formulas", "styles", "merges", "validations", "conditional_formatting"],
+      "properties": {
+        "sheet_id": {"type": "string", "minLength": 1},
+        "name": {"type": "string"},
+        "rows": {"type": "integer", "minimum": 0},
+        "columns": {"type": "integer", "minimum": 0},
+        "cells": {"type": "integer", "minimum": 0},
+        "formulas": {"type": "integer", "minimum": 0},
+        "styles": {"type": "integer", "minimum": 0},
+        "merges": {"type": "integer", "minimum": 0},
+        "validations": {"type": "integer", "minimum": 0},
+        "conditional_formatting": {"type": "integer", "minimum": 0}
+      }
+    },
+    "lossEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scope", "target", "property", "status", "reason"],
+      "properties": {
+        "scope": {"enum": ["workbook", "sheet", "cell", "object"]},
+        "target": {"type": "string"},
+        "property": {"type": "string"},
+        "status": {"enum": ["lost", "transformed", "preserved"]},
+        "reason": {"type": "string"}
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {"type": "string", "minLength": 1},
+        "message": {"type": "string"},
+        "target": {"type": "string"},
+        "detail": {"type": "object"}
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "operation", "source_sha256", "output_sha256", "sheets", "defined_names", "losses", "diagnostics", "unknown_parts", "editable_published"],
+      "properties": {
+        "format": {"$ref": "#/$defs/format"},
+        "operation": {"$ref": "#/$defs/operation"},
+        "source_sha256": {"$ref": "#/$defs/sha256"},
+        "output_sha256": {"$ref": "#/$defs/sha256"},
+        "date_system": {"enum": ["1900", "1904"]},
+        "dialect": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["encoding", "delimiter", "quote", "line_ending", "formula_injection_defense"],
+          "properties": {
+            "encoding": {"const": "utf-8"},
+            "delimiter": {"type": "string", "minLength": 1, "maxLength": 1},
+            "quote": {"type": "string", "minLength": 1, "maxLength": 1},
+            "line_ending": {"enum": ["\n", "\r\n"]},
+            "formula_injection_defense": {"type": "boolean"}
+          }
+        },
+        "sheets": {"type": "array", "items": {"$ref": "#/$defs/sheetReport"}},
+        "defined_names": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["preserved", "lost"],
+          "properties": {
+            "preserved": {"type": "integer", "minimum": 0},
+            "lost": {"type": "integer", "minimum": 0}
+          }
+        },
+        "losses": {"type": "array", "items": {"$ref": "#/$defs/lossEntry"}},
+        "diagnostics": {"type": "array", "items": {"$ref": "#/$defs/diagnostic"}},
+        "unknown_parts": {"type": "array", "items": {"type": "string"}},
+        "editable_published": {"type": "boolean"}
+      }
+    },
+    "exchangeSuccessResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "request_id", "ok", "operation", "format", "output_b64", "output_sha256", "report"],
+      "properties": {
+        "version": {"const": 1},
+        "request_id": {"$ref": "#/$defs/id"},
+        "ok": {"const": true},
+        "operation": {"$ref": "#/$defs/operation"},
+        "format": {"$ref": "#/$defs/format"},
+        "output_b64": {"type": "string"},
+        "output_sha256": {"$ref": "#/$defs/sha256"},
+        "report": {"$ref": "#/$defs/report"}
+      }
+    },
+    "exchangeErrorResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "request_id", "ok", "error"],
+      "properties": {
+        "version": {"const": 1},
+        "request_id": {"oneOf": [{"$ref": "#/$defs/id"}, {"type": "null"}]},
+        "ok": {"const": false},
+        "error": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "message"],
+          "properties": {
+            "code": {"enum": ["invalid_message", "unsupported_version", "profile_mismatch", "format_disabled", "base_mismatch", "unsafe_archive", "unsupported_content", "unknown_target", "limit_exceeded", "calculation_timeout", "runtime_failed"]},
+            "message": {"type": "string"},
+            "detail": {"type": "object"}
+          }
+        }
+      }
+    }
+  }
+}

@@ -15,12 +15,15 @@ final class RuntimeWire
         if (strlen($line) > self::limit()) {
             throw new WorkbookProblem('limit_exceeded', 413);
         }
+
         return $line;
     }
 
     public static function limit(): int
     {
-        return (int) config('vaulter-sheets.max_message_bytes', 8 * 1024 * 1024);
+        $limit = config('vaulter-sheets.max_message_bytes', 8 * 1024 * 1024);
+
+        return is_int($limit) && $limit > 0 ? $limit : 8 * 1024 * 1024;
     }
 
     public static function response(string $line, stdClass $request): stdClass
@@ -54,18 +57,28 @@ final class RuntimeWire
                 'calculation_timeout' => ['calculation_pending', 503],
                 default => ['runtime_failed', 503],
             };
-            throw new WorkbookProblem($code, $status, (array) ($response->error->detail ?? []));
+            $detail = [];
+            if (($response->error->detail ?? null) instanceof stdClass) {
+                foreach (get_object_vars($response->error->detail) as $k => $v) {
+                    $detail[(string) $k] = $v;
+                }
+            }
+            throw new WorkbookProblem($code, $status, $detail);
         }
+        $base = $request->base ?? null;
+        $baseSha = $base instanceof stdClass && is_string($base->sha256 ?? null) ? $base->sha256 : null;
         $outcomeFields = $request->operation === 'read' ? ['data'] : ['workbook', 'candidate_sha256', 'changed_ranges', 'checks'];
         if (!self::only($response, ['version', 'request_id', 'ok', 'operation', 'base_sha256', 'calculation', ...$outcomeFields])
             || !($response->calculation ?? null) instanceof stdClass
             || !self::only($response->calculation, ['state', 'source_sha256'])
-            || ($response->operation ?? null) !== $request->operation || ($response->base_sha256 ?? null) !== $request->base->sha256
+            || ($response->operation ?? null) !== $request->operation
+            || $baseSha === null
+            || ($response->base_sha256 ?? null) !== $baseSha
             || ($response->calculation->state ?? null) !== 'ready') {
             throw new WorkbookProblem('runtime_failed', 503);
         }
         if ($request->operation === 'read') {
-            if (($response->calculation->source_sha256 ?? null) !== $request->base->sha256
+            if (($response->calculation->source_sha256 ?? null) !== $baseSha
                 || !($response->data ?? null) instanceof stdClass || !self::only($response->data, ['ranges'])
                 || !is_array($response->data->ranges ?? null)) {
                 throw new WorkbookProblem('runtime_failed', 503);
@@ -76,11 +89,17 @@ final class RuntimeWire
             || !is_array($response->changed_ranges ?? null)) {
             throw new WorkbookProblem('runtime_failed', 503);
         }
+
         return $response;
     }
 
+    /**
+     * @param list<string> $allowed
+     */
     private static function only(stdClass $object, array $allowed): bool
     {
-        return array_diff(array_keys(get_object_vars($object)), $allowed) === [];
+        $keys = array_map(static fn (int|string $key): string => (string) $key, array_keys(get_object_vars($object)));
+
+        return array_diff($keys, $allowed) === [];
     }
 }

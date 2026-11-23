@@ -19,7 +19,8 @@
     "prepack": "npm run build"
   },
   "bin": {
-    "vaulter-sheets-runtime": "./dist/cli.js"
+    "vaulter-sheets-runtime": "./dist/cli.js",
+    "vaulter-sheets-exchange": "./dist/exchange/cli.js"
   },
   "files": [
     "dist",
@@ -36,10 +37,14 @@
     "@univerjs/sheets-filter": "1.5.2",
     "@univerjs/sheets-formula": "1.5.2",
     "@univerjs/sheets-hyper-link": "1.5.2",
-    "@univerjs/sheets-numfmt": "1.5.2"
+    "@univerjs/sheets-numfmt": "1.5.2",
+    "fflate": "0.8.3",
+    "saxes": "6.0.0",
+    "yauzl": "^3.4.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/yauzl": "^3.4.0",
     "typescript": "^5.9.3"
   }
 }

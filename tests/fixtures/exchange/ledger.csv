@@ -1,0 +1,4 @@
+﻿code;description;amount;note
+"00123";"line1
+line2";-42;"=1+1"
+"9007199254740993";"plain;text";100;"@tag"

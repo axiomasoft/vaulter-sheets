@@ -15,7 +15,7 @@ final class CanonicalJson
             is_int($value) => self::integer($value),
             is_float($value) => self::number($value),
             is_string($value) => json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_LINE_TERMINATORS | JSON_THROW_ON_ERROR),
-            is_array($value) && array_is_list($value) => '[' . implode(',', array_map(self::encode(...), $value)) . ']',
+            is_array($value) && array_is_list($value) => '['.implode(',', array_map(self::encode(...), $value)).']',
             $value instanceof \stdClass => self::object(get_object_vars($value)),
             default => throw new WireException('invalid_message', 'value cannot be canonicalized (associative PHP array or resource)'),
         };
@@ -31,10 +31,11 @@ final class CanonicalJson
         if (abs($value) > 9007199254740991) {
             throw new WireException('invalid_message', 'integer outside safe range');
         }
+
         return (string) $value;
     }
 
-    /** @param array<string, mixed> $members */
+    /** @param array<int|string, mixed> $members */
     private static function object(array $members): string
     {
         $keys = array_map('strval', array_keys($members));
@@ -42,9 +43,10 @@ final class CanonicalJson
         usort($keys, static fn (string $a, string $b): int => strcmp(mb_convert_encoding($a, 'UTF-16BE', 'UTF-8'), mb_convert_encoding($b, 'UTF-16BE', 'UTF-8')));
         $parts = [];
         foreach ($keys as $key) {
-            $parts[] = self::encode($key) . ':' . self::encode($members[$key]);
+            $parts[] = self::encode($key).':'.self::encode($members[$key]);
         }
-        return '{' . implode(',', $parts) . '}';
+
+        return '{'.implode(',', $parts).'}';
     }
 
     /** ECMAScript Number::toString: shortest round-trip digits, ES exponent rules. */
@@ -59,7 +61,7 @@ final class CanonicalJson
         $sign = $value < 0 ? '-' : '';
         $abs = abs($value);
         for ($precision = 1; $precision <= 17; $precision++) {
-            $repr = sprintf('%.' . ($precision - 1) . 'e', $abs);
+            $repr = sprintf('%.'.($precision - 1).'e', $abs);
             if ((float) $repr === $abs) {
                 break;
             }
@@ -69,16 +71,17 @@ final class CanonicalJson
         $k = strlen($digits);
         $n = (int) $exponent + 1;
         if ($k <= $n && $n <= 21) {
-            return $sign . $digits . str_repeat('0', $n - $k);
+            return $sign.$digits.str_repeat('0', $n - $k);
         }
-        if (0 < $n && $n <= 21) {
-            return $sign . substr($digits, 0, $n) . '.' . substr($digits, $n);
+        if ($n > 0 && $n <= 21) {
+            return $sign.substr($digits, 0, $n).'.'.substr($digits, $n);
         }
-        if (-6 < $n && $n <= 0) {
-            return $sign . '0.' . str_repeat('0', -$n) . $digits;
+        if ($n > -6 && $n <= 0) {
+            return $sign.'0.'.str_repeat('0', -$n).$digits;
         }
         $e = $n - 1;
-        $exp = 'e' . ($e < 0 ? '-' : '+') . abs($e);
-        return $sign . ($k === 1 ? $digits : $digits[0] . '.' . substr($digits, 1)) . $exp;
+        $exp = 'e'.($e < 0 ? '-' : '+').abs($e);
+
+        return $sign.($k === 1 ? $digits : $digits[0].'.'.substr($digits, 1)).$exp;
     }
 }

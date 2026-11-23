@@ -10,9 +10,7 @@ final class StrictJson
 
     private int $i = 0;
 
-    private function __construct(private readonly string $s)
-    {
-    }
+    private function __construct(private readonly string $s) {}
 
     public static function decode(string $text): mixed
     {
@@ -25,6 +23,7 @@ final class StrictJson
         if ($parser->i !== strlen($text)) {
             $parser->fail('trailing data');
         }
+
         return $value;
     }
 
@@ -43,7 +42,7 @@ final class StrictJson
         $start = $this->i++;
         $length = strlen($this->s);
         while ($this->i < $length) {
-            $this->i += strcspn($this->s, "\"\\", $this->i);
+            $this->i += strcspn($this->s, '"\\', $this->i);
             $next = $this->s[$this->i] ?? null;
             if ($next === '"') {
                 $token = substr($this->s, $start, ++$this->i - $start);
@@ -74,11 +73,12 @@ final class StrictJson
         $c = $this->s[$this->i] ?? '';
         if ($c === '{') {
             $this->i++;
-            $out = new \stdClass();
+            $out = new \stdClass;
             $seen = [];
             $this->ws();
             if (($this->s[$this->i] ?? '') === '}') {
                 $this->i++;
+
                 return $out;
             }
             while (true) {
@@ -88,7 +88,7 @@ final class StrictJson
                 }
                 $key = $this->string();
                 if (isset($seen[$key])) {
-                    $this->fail('duplicate key ' . json_encode($key, JSON_UNESCAPED_UNICODE));
+                    $this->fail('duplicate key '.json_encode($key, JSON_UNESCAPED_UNICODE));
                 }
                 $seen[$key] = true;
                 $this->ws();
@@ -112,6 +112,7 @@ final class StrictJson
             $this->ws();
             if (($this->s[$this->i] ?? '') === ']') {
                 $this->i++;
+
                 return $out;
             }
             while (true) {
@@ -132,6 +133,7 @@ final class StrictJson
         foreach (['true' => true, 'false' => false, 'null' => null] as $word => $literal) {
             if (substr_compare($this->s, $word, $this->i, strlen($word)) === 0) {
                 $this->i += strlen($word);
+
                 return $literal;
             }
         }
@@ -150,12 +152,14 @@ final class StrictJson
             if (!is_finite($float) || CanonicalJson::encode($float) !== $m[0]) {
                 $this->fail('integer outside safe range');
             }
+
             return $float;
         }
         $float = (float) $m[0];
         if (!is_finite($float)) {
             $this->fail('non-finite number');
         }
+
         return $float;
     }
 }

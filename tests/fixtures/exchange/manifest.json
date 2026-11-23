@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "name": "budget-1900.xlsx",
+      "format": "xlsx",
+      "sha256": "7394c8a89d30cf7c9de8a4204c47778b92305e66f19844c8f178e542390c9d1b",
+      "date_system": "1900",
+      "expected": {
+        "sheets": [
+          "Budget"
+        ],
+        "defined_names_preserved": 1,
+        "conditional_formatting": 1,
+        "validations": 1,
+        "merges": 1,
+        "unknown_parts": [
+          "xl/drawings/drawing1.xml"
+        ],
+        "recalculated_cells": {
+          "C2": 180,
+          "C3": 160,
+          "E2": "#REF!"
+        },
+        "expected_diagnostics": [
+          "serial_60_leap_bug",
+          "xlfn_stripped",
+          "external_ref_stripped"
+        ]
+      }
+    },
+    {
+      "name": "budget-1904.xlsx",
+      "format": "xlsx",
+      "sha256": "c3f0105fd583d4a9ac8433264ded5134d03a2d51cc8acf2847de64ab7a4be86e",
+      "date_system": "1904",
+      "expected": {
+        "sheets": [
+          "Budget"
+        ],
+        "defined_names_preserved": 1,
+        "date1904_shifted_serial": {
+          "source": 44197,
+          "expected_1900_serial": 45659
+        },
+        "recalculated_cells": {
+          "C2": 220
+        }
+      }
+    },
+    {
+      "name": "budget-editable.xlsx",
+      "format": "xlsx",
+      "sha256": "4cf502ecade1892404d21a39f62774400e7bf4625f73f0520e1da8f291110edc",
+      "date_system": "1900",
+      "expected": {
+        "supports_insert_row_before": true,
+        "recalculated_cells": {
+          "C2": 110
+        }
+      }
+    },
+    {
+      "name": "ledger.csv",
+      "format": "csv",
+      "sha256": "a4bac2301f1dc5df7194f631f65f8afea6e732180f2ae6f01ddb8bdbaf684091",
+      "dialect": {
+        "encoding": "utf-8",
+        "delimiter": ";",
+        "quote": "\"",
+        "line_ending": "\r\n",
+        "formula_injection_defense": true
+      },
+      "expected": {
+        "preserved_text_cells": {
+          "A2": "00123",
+          "B2": "line1\nline2",
+          "D2": "=1+1",
+          "A3": "9007199254740993"
+        },
+        "numeric_cells": {
+          "C2": -42,
+          "C3": 100
+        }
+      }
+    }
+  ]
+}

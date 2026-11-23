@@ -23,13 +23,14 @@ paths:
                 properties:
                   data:
                     type: object
-                    required: [workbook, marker, etag, profile, commands]
+                    required: [workbook, marker, etag, profile, commands, exchange]
                     properties:
                       workbook: {$ref: './workbook-v2.schema.json'}
                       marker: {$ref: '#/components/schemas/marker'}
                       etag: {type: string}
                       profile: {$ref: './runtime-v1.schema.json#/$defs/profile'}
                       commands: {type: array, items: {type: string}}
+                      exchange: {$ref: '#/components/schemas/exchangeCapabilities'}
         '404': {$ref: '#/components/responses/unavailable'}
   /workbooks/{node}/commands:
     parameters:
@@ -108,6 +109,58 @@ paths:
         '200': {description: Calculated bounded range}
         '404': {$ref: '#/components/responses/unavailable'}
         '503': {description: Calculation pending or unavailable}
+  /workbooks/{node}/exchanges:
+    parameters:
+      - $ref: '#/components/parameters/node'
+    post:
+      operationId: registerWorkbookExchange
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [request_key, kind, format, source]
+              properties:
+                request_key: {type: string, minLength: 1, maxLength: 255}
+                kind: {enum: [import, export]}
+                format: {enum: [csv, xlsx]}
+                source: {type: object}
+                options: {type: object}
+      responses:
+        '200': {description: Replayed terminal exchange job}
+        '202': {description: Exchange job accepted or running}
+        '403': {description: Caller lacks required edit or download ability}
+        '404': {$ref: '#/components/responses/unavailable'}
+        '409': {description: Idempotency conflict or version mismatch}
+        '413': {description: File or workbook limit exceeded}
+        '422': {description: Invalid exchange payload or format disabled}
+  /workbooks/{node}/exchanges/{exchange}:
+    parameters:
+      - $ref: '#/components/parameters/node'
+      - in: path
+        name: exchange
+        required: true
+        schema: {type: string}
+    get:
+      operationId: workbookExchangeStatus
+      responses:
+        '200': {description: Exchange job status and report}
+        '404': {$ref: '#/components/responses/unavailable'}
+  /workbooks/{node}/exchanges/{exchange}/download:
+    parameters:
+      - $ref: '#/components/parameters/node'
+      - in: path
+        name: exchange
+        required: true
+        schema: {type: string}
+    get:
+      operationId: downloadWorkbookExchange
+      responses:
+        '200': {description: Exported CSV or XLSX file}
+        '403': {description: Caller lacks download ability}
+        '404': {$ref: '#/components/responses/unavailable'}
+        '409': {description: Export is not ready}
 components:
   parameters:
     node:
@@ -116,6 +169,13 @@ components:
       required: true
       schema: {type: string}
   schemas:
+    exchangeCapabilities:
+      type: object
+      required: [formats, import, export]
+      properties:
+        formats: {type: array, items: {enum: [csv, xlsx]}}
+        import: {type: array, items: {enum: [csv, xlsx]}}
+        export: {type: array, items: {enum: [csv, xlsx]}}
     marker:
       type: object
       required: [generation, position, sha256]

@@ -12,7 +12,8 @@ final class WorkbookSchedule implements ModuleSchedule
 {
     public function define(Schedule $schedule, Repository $config): void
     {
-        if ($config->get('vaulter-sheets.commands', true)) {
+        $formats = $config->get('vaulter-sheets.exchange.formats', []);
+        if ($config->get('vaulter-sheets.commands', true) || (is_array($formats) && $formats !== [])) {
             $schedule->command(RecoverWorkbookJobs::class)->everyMinute()->withoutOverlapping();
         }
     }

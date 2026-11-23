@@ -5,8 +5,8 @@ declare(strict_types=1);
 namespace Vaulter\Sheets\Runtime;
 
 use stdClass;
-use Symfony\Component\Process\Exception\RuntimeException;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
+use Symfony\Component\Process\Exception\RuntimeException;
 use Symfony\Component\Process\Process;
 use Vaulter\Sheets\Contracts\WorkbookRuntime;
 use Vaulter\Sheets\Data\WorkbookProblem;
@@ -15,9 +15,23 @@ final class NodeWorkbookRuntime implements WorkbookRuntime
 {
     public function exchange(stdClass $request): stdClass
     {
-        $process = new Process(config('vaulter-sheets.runtime_command', ['vaulter-sheets-runtime']));
+        $commandRaw = config('vaulter-sheets.runtime_command', ['vaulter-sheets-runtime']);
+        if (!is_array($commandRaw) || $commandRaw === []) {
+            throw new WorkbookProblem('runtime_failed', 503);
+        }
+        $command = [];
+        foreach ($commandRaw as $part) {
+            if (!is_string($part) || $part === '') {
+                throw new WorkbookProblem('runtime_failed', 503);
+            }
+            $command[] = $part;
+        }
+        $timeoutRaw = config('vaulter-sheets.runtime_timeout_seconds', 25);
+        $timeout = is_int($timeoutRaw) || is_float($timeoutRaw) ? (float) $timeoutRaw : 25.0;
+
+        $process = new Process($command);
         $process->setInput(RuntimeWire::request($request));
-        $process->setTimeout((float) config('vaulter-sheets.runtime_timeout_seconds', 25));
+        $process->setTimeout($timeout);
         $stdout = '';
         $process->disableOutput();
         try {
@@ -41,6 +55,7 @@ final class NodeWorkbookRuntime implements WorkbookRuntime
         if ($exit !== 0) {
             throw new WorkbookProblem('runtime_failed', 503);
         }
+
         return RuntimeWire::response($stdout, $request);
     }
 }

@@ -62,9 +62,14 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
 
     public function maxSizeBytes(): int
     {
-        return (int) config('vaulter-sheets.max_snapshot_bytes', 7 * 1024 * 1024);
+        $limit = config('vaulter-sheets.max_snapshot_bytes', 7 * 1024 * 1024);
+
+        return is_int($limit) && $limit > 0 ? $limit : 7 * 1024 * 1024;
     }
 
+    /**
+     * @param array<string, mixed> $raw
+     */
     public function decode(array $raw, int $schemaVersion): WorkbookContent
     {
         $workbook = $this->shape($raw);
@@ -83,37 +88,58 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
         return new WorkbookContent($workbook);
     }
 
+    /**
+     * @param array<string, mixed> $raw
+     */
     public function decodeStored(array $raw, int $schemaVersion): DocumentContent
     {
         if (($raw['storage'] ?? null) !== 'media_blob') {
             return $this->decode($raw, $schemaVersion);
         }
         $manifest = $this->shape($raw);
+        $sha = is_string($raw['sha256'] ?? null) ? $raw['sha256'] : '';
         if ($schemaVersion !== 2 || !$this->hasProfile($manifest) || self::blobId($raw) === null
-            || preg_match('/^[a-f0-9]{64}$/D', (string) ($raw['sha256'] ?? '')) !== 1) {
+            || preg_match('/^[a-f0-9]{64}$/D', $sha) !== 1) {
             throw InvalidDocumentContentException::malformedNode('workbook', 'manifest');
         }
 
         return new WorkbookContent($manifest);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function storagePayload(DocumentContent $content): array
     {
-        return (array) $this->requireContent($content)->value();
+        $out = [];
+        foreach (get_object_vars($this->requireContent($content)->value()) as $key => $val) {
+            $out[(string) $key] = $val;
+        }
+
+        return $out;
     }
 
     public function prepare(DocumentContent $content, DriveContext $context): DocumentContent
     {
-        if (self::blobId($content->toArray()) !== null || $content->sizeInBytes() <= (int) config('vaulter-sheets.inline_snapshot_bytes', 512 * 1024)) {
+        $inlineRaw = config('vaulter-sheets.inline_snapshot_bytes', 512 * 1024);
+        $inlineLimit = is_int($inlineRaw) && $inlineRaw > 0 ? $inlineRaw : 512 * 1024;
+        if (self::blobId($content->toArray()) !== null || $content->sizeInBytes() <= $inlineLimit) {
             return $content;
         }
         $bytes = $this->requireContent($content)->canonicalBytes();
         if (strlen($bytes) > $this->maxSizeBytes()) {
             throw InvalidDocumentContentException::tooLargeBytes(strlen($bytes), $this->maxSizeBytes());
         }
+        $compressed = gzencode($bytes, 6);
         $stream = fopen('php://temp', 'w+b');
+        if (!is_string($compressed) || !is_resource($stream)) {
+            if (is_resource($stream)) {
+                fclose($stream);
+            }
+            throw new WorkbookProblem('runtime_failed', 503);
+        }
         try {
-            fwrite($stream, gzencode($bytes, 6));
+            fwrite($stream, $compressed);
             rewind($stream);
             $blob = $this->blobs->commit($stream, BlobScope::forUpload(
                 'tenant', $context->operation->tenant->id, $context->operation->scope->id,
@@ -125,14 +151,14 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
 
         return new WorkbookContent((object) [
             'format_version' => 2, 'profile' => $workbook->profile, 'storage' => 'media_blob',
-            'blob_id' => (string) $blob->id, 'sha256' => $content->contentHash(), 'tables' => $workbook->tables,
+            'blob_id' => $blob->id, 'sha256' => $content->contentHash(), 'tables' => $workbook->tables,
         ]);
     }
 
     public function snapshot(DocumentContent $content): stdClass
     {
         $value = $this->requireContent($content)->value();
-        $id = self::blobId((array) $value);
+        $id = self::blobId($this->objectMap($value));
         if ($id === null) {
             return $value;
         }
@@ -149,10 +175,18 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
         if ($bytes === false || !hash_equals($content->contentHash(), hash('sha256', $bytes))) {
             throw new WorkbookProblem('snapshot_unavailable', 503);
         }
+        $decoded = StrictJson::decode($bytes);
+        if (!$decoded instanceof stdClass) {
+            throw new WorkbookProblem('snapshot_unavailable', 503);
+        }
 
-        return StrictJson::decode($bytes);
+        return $decoded;
     }
 
+    /**
+     * @param array<string, mixed>|null $previous
+     * @param array<string, mixed>|null $next
+     */
     public function replacePayloadReference(string $kind, string $id, ?array $previous, ?array $next): void
     {
         $old = self::blobId($previous);
@@ -168,6 +202,19 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
         }
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private function objectMap(stdClass $obj): array
+    {
+        $out = [];
+        foreach (get_object_vars($obj) as $k => $v) {
+            $out[(string) $k] = $v;
+        }
+
+        return $out;
+    }
+
     private function requireContent(DocumentContent $content): WorkbookContent
     {
         if (!$content instanceof WorkbookContent) {
@@ -177,6 +224,9 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
         return $content;
     }
 
+    /**
+     * @param array<string, mixed>|null $payload
+     */
     private static function blobId(?array $payload): ?string
     {
         $id = $payload['blob_id'] ?? null;
@@ -190,16 +240,21 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
             && CanonicalJson::encode($workbook->profile ?? null) === CanonicalJson::encode(self::profile());
     }
 
+    /**
+     * @param array<string, mixed> $raw
+     */
     private function shape(array $raw): stdClass
     {
         // Documents receives associative JSON. Recover the native map shapes at the boundary.
-        /** @var stdClass $workbook */
         $workbook = StrictJson::decode(json_encode((object) $raw, JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR));
+        if (!$workbook instanceof stdClass) {
+            throw InvalidDocumentContentException::malformedNode('workbook', 'root');
+        }
         if (isset($workbook->native) && $workbook->native instanceof stdClass) {
             $native = $workbook->native;
             $native->styles = (object) ($native->styles ?? []);
             $native->sheets = (object) ($native->sheets ?? []);
-            foreach ($native->sheets as $sheet) {
+            foreach (get_object_vars($native->sheets) as $sheet) {
                 if (!$sheet instanceof stdClass) {
                     throw InvalidDocumentContentException::malformedNode('workbook', 'sheets');
                 }
@@ -208,26 +263,30 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
                         $sheet->{$map} = (object) $sheet->{$map};
                     }
                 }
-                if (isset($sheet->cellData)) {
-                    foreach ($sheet->cellData as $index => $row) {
+                if (isset($sheet->cellData) && $sheet->cellData instanceof stdClass) {
+                    foreach (get_object_vars($sheet->cellData) as $index => $row) {
                         $sheet->cellData->{$index} = (object) $row;
                     }
                 }
             }
         }
+
         return $workbook;
     }
 
     private function validateBindings(stdClass $workbook): void
     {
-        $sheets = $workbook->native->sheets;
+        $native = ($workbook->native ?? null) instanceof stdClass ? $workbook->native : new stdClass;
+        $sheets = ($native->sheets ?? null) instanceof stdClass ? $native->sheets : new stdClass;
+        $sheetOrder = is_array($native->sheetOrder ?? null) ? $native->sheetOrder : [];
+        $tablesRaw = is_array($workbook->tables ?? null) ? $workbook->tables : [];
         $tables = [];
-        foreach ($workbook->native->sheetOrder as $id) {
-            if (!is_string($id) || !isset($sheets->{$id}) || $sheets->{$id}->id !== $id) {
+        foreach ($sheetOrder as $id) {
+            if (!is_string($id) || !isset($sheets->{$id}) || !$sheets->{$id} instanceof stdClass || ($sheets->{$id}->id ?? null) !== $id) {
                 throw InvalidDocumentContentException::malformedNode('workbook', 'sheetOrder');
             }
         }
-        foreach ($workbook->tables as $table) {
+        foreach ($tablesRaw as $table) {
             if (!$table instanceof stdClass || !is_string($table->table_id ?? null) || $table->table_id === ''
                 || isset($tables[$table->table_id]) || !is_string($table->sheet_id ?? null)
                 || !isset($sheets->{$table->sheet_id}) || !is_int($table->header_row ?? null) || $table->header_row < 1
@@ -240,11 +299,17 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
         }
     }
 
+    /**
+     * @param array<int|string, mixed> $bindings
+     */
     private function validateAxis(array $bindings, string $axis, int $minimum): void
     {
         $ids = [];
         $positions = [];
         foreach ($bindings as $binding) {
+            if (!$binding instanceof stdClass) {
+                throw InvalidDocumentContentException::malformedNode('workbook', $axis.' bindings');
+            }
             $id = $binding->{$axis.'_id'} ?? null;
             $position = $binding->{$axis} ?? null;
             if (!is_string($id) || $id === '' || isset($ids[$id]) || !is_int($position)

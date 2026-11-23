@@ -9,9 +9,9 @@ use Vaulter\Documents\Contracts\DocumentCodec;
 use Vaulter\Documents\Contracts\DocumentContent;
 use Vaulter\Documents\Contracts\DocumentType;
 use Vaulter\Documents\Contracts\RequiresCommandWrite;
-use Vaulter\Sheets\Content\WorkbookCodec;
 use Vaulter\Documents\Data\Types\DocumentFeatures;
 use Vaulter\Documents\Data\Types\DocumentViewer;
+use Vaulter\Sheets\Content\WorkbookCodec;
 
 #[Api]
 final readonly class SpreadsheetDocumentType implements DocumentType, RequiresCommandWrite

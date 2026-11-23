@@ -7,10 +7,12 @@ use Vaulter\Drive\Access\Roles\RoleRegistry;
 use Vaulter\Drive\Access\ValueObjects\Subject;
 use Vaulter\Drive\Data\Access\GrantInput;
 use Vaulter\Drive\Facades\Vaulter;
+use Vaulter\Drive\Operations\DriveContext;
 use Vaulter\Drive\Testing\Drive\DriveTestHelpers;
 use Vaulter\Drive\Testing\Http\V1;
 use Vaulter\Media\Contracts\Cas\BlobPins;
 use Vaulter\Sheets\Content\WorkbookCodec;
+use Vaulter\Sheets\Contracts\WorkbookOperations;
 use Vaulter\Sheets\Contracts\WorkbookRuntime;
 use Vaulter\Sheets\Data\WorkbookProblem;
 use Vaulter\Sheets\Runtime\NodeWorkbookRuntime;
@@ -100,7 +102,8 @@ it('withholds cells after revocation during workbook range calculation', functio
     $range = $url.'/ranges?sheet_id=detail&range=C3';
 
     $revoke = static fn () => $system->access()->revoke($node, $grant);
-    $runtime = new class(app(WorkbookRuntime::class), $revoke) implements WorkbookRuntime {
+    $runtime = new class(app(WorkbookRuntime::class), $revoke) implements WorkbookRuntime
+    {
         public bool $calculated = false;
 
         public function __construct(private readonly WorkbookRuntime $runtime, private readonly Closure $revoke) {}
@@ -155,7 +158,8 @@ it('leaves the workbook unchanged after an unavailable runtime and retries the s
     $body = workbookTestPlan($head->json('data.marker.generation'), 'recover', [
         'kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 3, 'column' => 3, 'expected' => ['number' => 5], 'value' => 7,
     ]);
-    $runtime = new class(app(NodeWorkbookRuntime::class)) implements WorkbookRuntime {
+    $runtime = new class(app(NodeWorkbookRuntime::class)) implements WorkbookRuntime
+    {
         public bool $unavailable = true;
 
         public function __construct(private readonly NodeWorkbookRuntime $runtime) {}
@@ -208,7 +212,8 @@ it('records a no-op with its original ETag and rejects a tampered runtime digest
     $url = createWorkbookTestUrl($this);
     $head = $this->getJson($url)->assertOk();
     $tag = $head->headers->get('ETag');
-    $runtime = new class(app(WorkbookRuntime::class)) implements WorkbookRuntime {
+    $runtime = new class(app(WorkbookRuntime::class)) implements WorkbookRuntime
+    {
         public bool $tamper = false;
 
         public function __construct(private readonly WorkbookRuntime $runtime) {}
@@ -219,6 +224,7 @@ it('records a no-op with its original ETag and rejects a tampered runtime digest
             if ($this->tamper) {
                 $response->workbook->native->name = 'altered after digest calculation';
             }
+
             return $response;
         }
     };
@@ -304,8 +310,8 @@ it('slices WorkbookOperations::readTable before enforcing the 64-range limit', f
     ]];
     $url = createWorkbookTestUrl($this, $workbook);
     $nodeId = basename($url);
-    $ops = app(\Vaulter\Sheets\Contracts\WorkbookOperations::class);
-    $ctx = \Vaulter\Drive\Operations\DriveContext::system($this->driveHandle->model(), 'readTable slicing test');
+    $ops = app(WorkbookOperations::class);
+    $ctx = DriveContext::system($this->driveHandle->model(), 'readTable slicing test');
 
     expect(fn (): array => $ops->readTable($ctx, $nodeId, 'items'))
         ->toThrow(WorkbookProblem::class, 'limit_exceeded');

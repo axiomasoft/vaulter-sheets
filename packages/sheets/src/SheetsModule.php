@@ -16,10 +16,10 @@ use Vaulter\Modules\Activation;
 use Vaulter\Modules\ModuleId;
 use Vaulter\Modules\PluginModuleSpec;
 use Vaulter\Modules\WithModuleRuntime;
-use Vaulter\Sheets\Schema\SheetsSchema;
-use Vaulter\Sheets\Schema\SheetsSchemaSets;
 use Vaulter\Sheets\Console\RecoverWorkbookJobs;
 use Vaulter\Sheets\Console\WorkbookSchedule;
+use Vaulter\Sheets\Schema\SheetsSchema;
+use Vaulter\Sheets\Schema\SheetsSchemaSets;
 use Vaulter\Sheets\Types\SpreadsheetDocumentType;
 
 #[Api(since: '1.0')]

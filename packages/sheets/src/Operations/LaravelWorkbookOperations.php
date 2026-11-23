@@ -11,6 +11,7 @@ use Vaulter\Drive\Exceptions\Access\PermissionDeniedException;
 use Vaulter\Drive\Exceptions\Nodes\NodeNotFoundException;
 use Vaulter\Drive\Exceptions\Profiles\ProfileRestrictionException;
 use Vaulter\Drive\Operations\DriveContext;
+use Vaulter\Drive\Operations\NodeEditAccess;
 use Vaulter\Sheets\Actions\CommitWorkbookCommand;
 use Vaulter\Sheets\Content\WorkbookCodec;
 use Vaulter\Sheets\Content\WorkbookContent;
@@ -19,6 +20,7 @@ use Vaulter\Sheets\Contracts\WorkbookRuntime;
 use Vaulter\Sheets\Data\WorkbookCommand;
 use Vaulter\Sheets\Data\WorkbookMarker;
 use Vaulter\Sheets\Data\WorkbookProblem;
+use Vaulter\Sheets\Exchange\WorkbookExchange;
 
 final readonly class LaravelWorkbookOperations implements WorkbookOperations
 {
@@ -27,9 +29,13 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
         private WorkbookCodec $codec,
         private WorkbookRuntime $runtime,
         private CommitWorkbookCommand $commitCommand,
-        private \Vaulter\Drive\Operations\NodeEditAccess $access,
+        private NodeEditAccess $access,
+        private WorkbookExchange $exchange,
     ) {}
 
+    /**
+     * @return array<string, mixed>
+     */
     public function catalog(DriveContext $context, string $node): array
     {
         $catalog = $this->loadCatalog($context, $node);
@@ -38,6 +44,16 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
         return $catalog;
     }
 
+    /**
+     * @return array{
+     *     marker: WorkbookMarker,
+     *     etag: string,
+     *     profile: stdClass,
+     *     workbook: stdClass,
+     *     commands: list<string>,
+     *     exchange: array{formats: list<'csv'|'xlsx'>, import: list<'csv'|'xlsx'>, export: list<'csv'|'xlsx'>}
+     * }
+     */
     private function loadCatalog(DriveContext $context, string $node): array
     {
         $state = $this->documents->forContext($context)->content($node);
@@ -45,82 +61,135 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
             throw new WorkbookProblem($state->type === 'vaulter/spreadsheet' ? 'unsupported_content' : 'resource_unavailable', $state->type === 'vaulter/spreadsheet' ? 422 : 404);
         }
         $marker = new WorkbookMarker($state->epoch, $state->stateVersion, $state->content->contentHash());
+
         return [
             'marker' => $marker, 'etag' => $marker->etag($node), 'profile' => WorkbookCodec::profile(),
             'workbook' => $this->codec->snapshot($state->content),
             'commands' => config('vaulter-sheets.commands') && $this->access->canEdit($context, $node) && $state->editable && $state->collabProtocol === null
                 ? ['set_number', 'set_text', 'set_formula', 'set_values', 'insert_row_before', 'fill_formula'] : [],
+            'exchange' => $this->exchange->capabilitiesForState($context, $node, $state),
         ];
     }
 
+    /**
+     * @return list<stdClass>
+     */
     public function readRange(DriveContext $context, string $node, string $sheet, string $range, int $limit): array
     {
         $catalog = $this->loadCatalog($context, $node);
+
         return $this->read($context, $node, $catalog, [(object) ['sheet_id' => $sheet, 'range' => $range]], $limit);
     }
 
+    /**
+     * @param  list<string>|null    $columns
+     * @param  list<string>|null    $rowIds
+     * @return array<string, mixed>
+     */
     public function readTable(DriveContext $context, string $node, string $table, ?array $columns = null, ?array $rowIds = null): array
     {
         $catalog = $this->loadCatalog($context, $node);
         $binding = $this->table($catalog, $table);
 
-        $selectedColumns = $binding->columns;
+        $bindingColumns = self::objectList($binding->columns ?? null);
+        $selectedColumns = $bindingColumns;
         if ($columns !== null) {
-            $availableColumns = array_column($binding->columns, null, 'column_id');
+            /** @var array<string, stdClass> $availableColumns */
+            $availableColumns = [];
+            foreach ($bindingColumns as $column) {
+                if (is_string($column->column_id ?? null)) {
+                    $availableColumns[$column->column_id] = $column;
+                }
+            }
             $columnSet = [];
             foreach ($columns as $columnId) {
-                if (!is_string($columnId) || $columnId === '' || !isset($availableColumns[$columnId])) {
+                if ($columnId === '' || !isset($availableColumns[$columnId])) {
                     throw new WorkbookProblem('unknown_target', 422);
                 }
                 $columnSet[$columnId] = true;
             }
             $selectedColumns = array_values(array_filter(
-                $binding->columns,
-                static fn (stdClass $column): bool => isset($columnSet[$column->column_id]),
+                $bindingColumns,
+                static fn (stdClass $column): bool => is_string($column->column_id ?? null) && isset($columnSet[$column->column_id]),
             ));
         }
 
-        $selectedRows = $binding->rows;
+        $bindingRows = self::objectList($binding->rows ?? null);
+        $selectedRows = $bindingRows;
         if ($rowIds !== null) {
-            $availableRows = array_column($binding->rows, null, 'row_id');
+            /** @var array<string, stdClass> $availableRows */
+            $availableRows = [];
+            foreach ($bindingRows as $row) {
+                if (is_string($row->row_id ?? null)) {
+                    $availableRows[$row->row_id] = $row;
+                }
+            }
             $rowSet = [];
             foreach ($rowIds as $rowId) {
-                if (!is_string($rowId) || $rowId === '' || !isset($availableRows[$rowId])) {
+                if ($rowId === '' || !isset($availableRows[$rowId])) {
                     throw new WorkbookProblem('unknown_target', 422);
                 }
                 $rowSet[$rowId] = true;
             }
             $selectedRows = array_values(array_filter(
-                $binding->rows,
-                static fn (stdClass $row): bool => isset($rowSet[$row->row_id]),
+                $bindingRows,
+                static fn (stdClass $row): bool => is_string($row->row_id ?? null) && isset($rowSet[$row->row_id]),
             ));
         }
 
+        $sheetId = is_string($binding->sheet_id ?? null) ? $binding->sheet_id : '';
         $ranges = [];
         foreach ($selectedRows as $row) {
+            if (!is_int($row->row ?? null)) {
+                continue;
+            }
             foreach ($selectedColumns as $column) {
-                $ranges[] = (object) ['sheet_id' => $binding->sheet_id, 'range' => self::address($column->column, $row->row)];
+                if (!is_int($column->column ?? null)) {
+                    continue;
+                }
+                $ranges[] = (object) ['sheet_id' => $sheetId, 'range' => self::address($column->column, $row->row)];
             }
         }
 
         return ['marker' => $catalog['marker'], 'table' => $binding, 'ranges' => $this->read($context, $node, $catalog, $ranges)];
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function prepareFormula(DriveContext $context, string $node, string $table, string $destination, string $left, string $right, string $scope): array
     {
         $catalog = $this->loadCatalog($context, $node);
         $binding = $this->table($catalog, $table);
-        $columns = array_column($binding->columns, 'column', 'column_id');
+        /** @var array<string, int> $columns */
+        $columns = [];
+        foreach (self::objectList($binding->columns ?? null) as $colObj) {
+            if (is_string($colObj->column_id ?? null) && is_int($colObj->column ?? null)) {
+                $columns[$colObj->column_id] = $colObj->column;
+            }
+        }
         if (!isset($columns[$destination], $columns[$left], $columns[$right]) || !in_array($scope, ['fixed_members', 'current_rows'], true)) {
             throw new WorkbookProblem('unknown_target', 422);
         }
-        $cells = $catalog['workbook']->native->sheets->{$binding->sheet_id}->cellData ?? new stdClass;
+        $sheetId = is_string($binding->sheet_id ?? null) ? $binding->sheet_id : '';
+        $native = ($catalog['workbook']->native ?? null) instanceof stdClass ? $catalog['workbook']->native : new stdClass;
+        $sheets = ($native->sheets ?? null) instanceof stdClass ? $native->sheets : new stdClass;
+        $sheet = ($sheets->{$sheetId} ?? null) instanceof stdClass ? $sheets->{$sheetId} : new stdClass;
+        $cells = ($sheet->cellData ?? null) instanceof stdClass ? $sheet->cellData : new stdClass;
+
         $expected = [];
-        foreach ($binding->rows as $row) {
-            $cell = $cells->{(string) ($row->row - 1)}->{(string) ($columns[$destination] - 1)} ?? null;
-            $value = $cell->v ?? null;
+        $rowIds = [];
+        foreach (self::objectList($binding->rows ?? null) as $row) {
+            if (!is_int($row->row ?? null) || !is_string($row->row_id ?? null)) {
+                continue;
+            }
+            $rowIds[] = $row->row_id;
+            $rowObj = $cells->{(string) ($row->row - 1)} ?? null;
+            $cell = $rowObj instanceof stdClass ? ($rowObj->{(string) ($columns[$destination] - 1)} ?? null) : null;
+            $formula = $cell instanceof stdClass ? ($cell->f ?? null) : null;
+            $value = $cell instanceof stdClass ? ($cell->v ?? null) : null;
             $expected[] = match (true) {
-                isset($cell->f) => (object) ['formula' => $cell->f],
+                is_string($formula) => (object) ['formula' => $formula],
                 is_int($value), is_float($value) => (object) ['number' => $value],
                 is_bool($value) => (object) ['boolean' => $value],
                 is_string($value) => (object) ['text' => $value],
@@ -128,44 +197,67 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
             };
         }
         $this->authorizeDelivery($context, $node);
+
         return ['marker' => $catalog['marker'], 'command' => (object) [
-            'kind' => 'fill_formula', 'sheet_id' => $binding->sheet_id, 'table_id' => $table, 'scope' => $scope,
-            'row_ids' => array_column($binding->rows, 'row_id'), 'destination_column_id' => $destination,
+            'kind' => 'fill_formula', 'sheet_id' => $sheetId, 'table_id' => $table, 'scope' => $scope,
+            'row_ids' => $rowIds, 'destination_column_id' => $destination,
             'expression' => (object) ['op' => 'subtract', 'left_column_id' => $left, 'right_column_id' => $right],
             'expected_destination' => $expected,
         ]];
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function commit(DriveContext $context, string $node, WorkbookCommand $command): array
     {
         return $this->commitCommand->execute($context, $node, $command);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function status(DriveContext $context, string $node, string $command): array
     {
         return $this->commitCommand->status($context, $node, $command);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
     public function verify(DriveContext $context, string $node, string $command): array
     {
         $outcome = $this->status($context, $node, $command);
-        if ($outcome['state'] !== 'committed' || !isset($outcome['checks'])) {
+        if (($outcome['state'] ?? null) !== 'committed' || !isset($outcome['checks'])) {
             throw new WorkbookProblem('evidence_unavailable', 410);
         }
+
         return $outcome;
     }
 
+    /**
+     * @param  array{marker: WorkbookMarker, etag: string, profile: stdClass, workbook: stdClass, commands: list<string>, exchange: array{formats: list<'csv'|'xlsx'>, import: list<'csv'|'xlsx'>, export: list<'csv'|'xlsx'>}} $catalog
+     * @param  list<stdClass>                                                                                                                                                                                                   $ranges
+     * @return list<stdClass>
+     */
     private function read(DriveContext $context, string $node, array $catalog, array $ranges, int $limit = 10_000): array
     {
         if (count($ranges) > 64) {
             throw new WorkbookProblem('limit_exceeded', 413);
         }
-        $result = $ranges === [] ? [] : $this->runtime->exchange((object) [
-            'version' => 1, 'request_id' => (string) Str::uuid(), 'operation' => 'read',
-            'base' => (object) get_object_vars($catalog['marker']), 'profile_id' => WorkbookCodec::PROFILE,
-            'workbook' => $catalog['workbook'], 'selector' => (object) ['ranges' => $ranges],
-            'limits' => (object) ['max_cells_per_command' => $limit],
-        ])->data->ranges;
+        if ($ranges === []) {
+            $result = [];
+        } else {
+            $exchange = $this->runtime->exchange((object) [
+                'version' => 1, 'request_id' => (string) Str::uuid(), 'operation' => 'read',
+                'base' => (object) get_object_vars($catalog['marker']), 'profile_id' => WorkbookCodec::PROFILE,
+                'workbook' => $catalog['workbook'], 'selector' => (object) ['ranges' => $ranges],
+                'limits' => (object) ['max_cells_per_command' => $limit],
+            ]);
+            $data = $exchange->data ?? null;
+            $rawRanges = $data instanceof stdClass ? ($data->ranges ?? null) : null;
+            $result = self::objectList($rawRanges);
+        }
         $this->authorizeDelivery($context, $node);
 
         return $result;
@@ -184,14 +276,35 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
         }
     }
 
+    /**
+     * @param array{marker: WorkbookMarker, etag: string, profile: stdClass, workbook: stdClass, commands: list<string>, exchange: array{formats: list<'csv'|'xlsx'>, import: list<'csv'|'xlsx'>, export: list<'csv'|'xlsx'>}} $catalog
+     */
     private function table(array $catalog, string $id): stdClass
     {
-        foreach ($catalog['workbook']->tables as $table) {
-            if ($table->table_id === $id) {
+        foreach (self::objectList($catalog['workbook']->tables ?? null) as $table) {
+            if (($table->table_id ?? null) === $id) {
                 return $table;
             }
         }
         throw new WorkbookProblem('unknown_target', 422);
+    }
+
+    /**
+     * @return list<stdClass>
+     */
+    private static function objectList(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+        $out = [];
+        foreach ($value as $item) {
+            if ($item instanceof stdClass) {
+                $out[] = $item;
+            }
+        }
+
+        return $out;
     }
 
     private static function address(int $column, int $row): string
@@ -202,6 +315,7 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
             $letters = chr(65 + $column % 26).$letters;
             $column = intdiv($column, 26);
         }
+
         return $letters.$row;
     }
 }

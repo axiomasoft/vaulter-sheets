@@ -31,7 +31,9 @@ final readonly class WorkbookController
     {
         return $this->respond(function () use ($request, $node): JsonResponse {
             $data = $this->workbooks->catalog($this->contexts->resolve($request, $node), $node);
-            return response()->json(['data' => $data])->setEtag($data['etag']);
+            $etag = is_string($data['etag'] ?? null) ? $data['etag'] : null;
+
+            return response()->json(['data' => $data])->setEtag($etag);
         });
     }
 
@@ -55,6 +57,7 @@ final readonly class WorkbookController
                 throw new WorkbookProblem('invalid_command', 422);
             }
             $command = WorkbookCommand::fromWire($body, $request->header('If-Match'));
+
             return $this->outcome($this->workbooks->commit($context, $node, $command));
         });
     }
@@ -83,22 +86,35 @@ final readonly class WorkbookController
                 throw new WorkbookProblem('invalid_command', 422);
             }
             $context = $this->contexts->resolve($request, $node);
+
             return response()->json(['data' => $this->ranges->execute($context, $node, $sheet, $range, (int) $limit, $fields)]);
         });
     }
 
+    /**
+     * @param array<string, mixed> $outcome
+     */
     private function outcome(array $outcome): JsonResponse
     {
-        $status = match ($outcome['state']) {
-            'rejected' => $outcome['error']['status'], 'running' => 202, default => 200,
+        $error = is_array($outcome['error'] ?? null) ? $outcome['error'] : [];
+        $errorStatus = is_int($error['status'] ?? null) ? $error['status'] : 500;
+        $status = match ($outcome['state'] ?? null) {
+            'rejected' => $errorStatus,
+            'running' => 202,
+            default => 200,
         };
         $response = response()->json(['data' => $outcome], $status);
-        if (isset($outcome['etag'])) {
-            $response->setEtag($outcome['etag']);
+        $etag = $outcome['etag'] ?? null;
+        if (is_string($etag) && $etag !== '') {
+            $response->setEtag($etag);
         }
+
         return $response;
     }
 
+    /**
+     * @param Closure(): JsonResponse $call
+     */
     private function respond(Closure $call): JsonResponse
     {
         try {

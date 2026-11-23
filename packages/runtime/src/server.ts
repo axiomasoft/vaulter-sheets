@@ -6,6 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {MAX_MESSAGE_BYTES} from './frame.ts';
 import {assertInstalledProfile, WIRE_PROFILE} from './profile.ts';
 import {sha256Canonical, type Response} from './protocol.ts';
+import {createExchangeHttpHandler, parseEnabledExchangeFormats} from './exchange/worker.ts';
 
 class TransportError extends Error {
     constructor(readonly status: number) { super(`Runtime HTTP ${status}`); }
@@ -111,6 +112,8 @@ const token = readFileSync(tokenFile, 'utf8').trim();
 if (!token) throw new Error('The runtime token file is empty');
 const authorization = Buffer.from(`Bearer ${token}`);
 const pool = new Pool();
+const exchangeFormats = parseEnabledExchangeFormats(process.env.SHEETS_EXCHANGE_FORMATS);
+const handleExchange = createExchangeHttpHandler(exchangeFormats);
 let ready = false;
 assertInstalledProfile();
 const workbook = {
@@ -131,7 +134,7 @@ void pool.run(Buffer.from(JSON.stringify(probe) + '\n')).then(result => {
 createServer({requestTimeout: 25_000}, async (request, response) => {
     if (request.method === 'GET' && request.url === '/livez') return send(response, 200, {live: true});
     if (request.method === 'GET' && request.url === '/readyz') return send(response, ready ? 200 : 503, {ready});
-    if (request.method !== 'POST' || request.url !== '/v1/operations') return send(response, 404, {error: 'not_found'});
+    if (request.method !== 'POST' || (request.url !== '/v1/operations' && request.url !== '/v1/exchange')) return send(response, 404, {error: 'not_found'});
     const supplied = Buffer.from(request.headers.authorization ?? '');
     if (supplied.length !== authorization.length || !timingSafeEqual(supplied, authorization)) {
         request.resume();
@@ -140,6 +143,10 @@ createServer({requestTimeout: 25_000}, async (request, response) => {
     if (!ready) {
         request.resume();
         return send(response, 503, {error: 'runtime_unavailable'});
+    }
+    if (request.url === '/v1/exchange') {
+        await handleExchange(request, response);
+        return;
     }
     try {
         const start = performance.now();
