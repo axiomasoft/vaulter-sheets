@@ -18,6 +18,7 @@ use Vaulter\Media\Contracts\Cas\BlobPins;
 use Vaulter\Schema\SchemaHelpers;
 use Vaulter\Sheets\Console\RecoverWorkbookJobs;
 use Vaulter\Sheets\Content\WorkbookCodec;
+use Vaulter\Sheets\Contracts\WorkbookExchangeRuntime;
 use Vaulter\Sheets\Data\WorkbookProblem;
 use Vaulter\Sheets\Exchange\WorkbookExchange;
 use Vaulter\Sheets\Exchange\ZipArchiveGuard;
@@ -241,7 +242,11 @@ it('imports 1900 and 1904 XLSX fixtures through Media and queue, verifies loss r
     $this->artisan('queue:work', ['connection' => 'sheets-exchange', '--once' => true])->assertSuccessful();
     $this->getJson($url.'/exchanges/'.$strictFail)->assertOk()
         ->assertJsonPath('data.state', 'failed')
-        ->assertJsonPath('data.error_code', 'unsupported_content');
+        ->assertJsonPath('data.error_code', 'unsupported_content')
+        ->assertJsonPath('data.report.editable_published', false)
+        ->assertJsonPath('data.report.date_system', '1900')
+        ->assertJsonPath('data.report.unknown_parts.0', 'xl/drawings/drawing1.xml')
+        ->assertJsonFragment(['target' => 'xl/drawings/drawing1.xml', 'reason' => 'unsupported_ooxml_part', 'status' => 'lost']);
 
     // Editable XLSX -> post-import insert_row_before -> export exact version -> re-import
     $fileEditable = $this->driveHandle->files()->upload(UploadSource::fromString($xlsxEditable, 'budget-editable.xlsx'));
@@ -424,6 +429,167 @@ it('blocks unsafe ZIP archives including traversal, symlinks, zip-bombs, XXE and
         ->assertJsonPath('data.state', 'failed')
         ->assertJsonPath('data.error_code', 'unsafe_archive');
     $this->getJson($url)->assertOk()->assertHeader('ETag', $beforeTag);
+});
+
+it('checks later ZIP metadata before opening earlier entry streams', function (): void {
+    $archive = new class extends ZipArchive
+    {
+        public int $streamsOpened = 0;
+
+        public function getStreamIndex(int $index, int $flags = 0)
+        {
+            $this->streamsOpened++;
+
+            return parent::getStreamIndex($index, $flags);
+        }
+    };
+    $path = tempnam(sys_get_temp_dir(), 'sheets-zip-test-');
+    file_put_contents($path, makeTestZipBytes([
+        ['name' => 'xl/workbook.xml', 'data' => '<workbook/>'],
+        ['name' => '../invalid.xml', 'data' => '<invalid/>'],
+    ]));
+    try {
+        expect($archive->open($path, ZipArchive::RDONLY))->toBeTrue();
+        try {
+            $inspect = new ReflectionMethod(ZipArchiveGuard::class, 'inspectArchive');
+            expect(fn () => $inspect->invoke(app(ZipArchiveGuard::class), $archive))
+                ->toThrow(WorkbookProblem::class, 'unsafe_archive');
+            expect($archive->streamsOpened)->toBe(0);
+        } finally {
+            $archive->close();
+        }
+    } finally {
+        unlink($path);
+    }
+});
+
+it('fences import publication at registration and replays a retained export after an edit', function (): void {
+    $url = createExchangeWorkbookUrl($this);
+    $head = $this->getJson($url)->assertOk();
+    $generation = $head->json('data.marker.generation');
+    $export = [
+        'request_key' => 'head-export',
+        'kind' => 'export',
+        'format' => 'csv',
+        'source' => [
+            'generation' => $generation,
+            'position' => $head->json('data.marker.position'),
+            'sha256' => $head->json('data.marker.sha256'),
+        ],
+    ];
+    $exportId = $this->postJson($url.'/exchanges', $export)->assertStatus(202)->json('data.exchange_id');
+    $file = $this->driveHandle->files()->upload(UploadSource::fromString("a,b\n1,2\n", 'fence.csv'));
+    $importId = $this->postJson($url.'/exchanges', [
+        'request_key' => 'head-import', 'kind' => 'import', 'format' => 'csv',
+        'source' => ['node_id' => $file->id],
+    ])->assertStatus(202)->json('data.exchange_id');
+
+    $edited = $this->postJson($url.'/commands', [
+        'command_id' => 'intervening-edit',
+        'expected_generation' => $generation,
+        'policy' => 'rebase_cells',
+        'commands' => [['kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 2, 'column' => 2, 'expected' => ['number' => 2], 'value' => 9]],
+    ], ['If-Match' => $head->headers->get('ETag')])->assertOk();
+
+    $this->postJson($url.'/exchanges', $export)->assertStatus(202)->assertJsonPath('data.exchange_id', $exportId);
+    $incorrectSource = array_replace($export['source'], ['sha256' => str_repeat('0', 64)]);
+    $this->postJson($url.'/exchanges', array_replace($export, ['source' => $incorrectSource]))
+        ->assertStatus(409)->assertJsonPath('code', 'idempotency_conflict');
+    $this->postJson($url.'/exchanges', array_replace($export, ['options' => ['delimiter' => ';']]))
+        ->assertStatus(409)->assertJsonPath('code', 'idempotency_conflict');
+    $this->postJson($url.'/exchanges', array_replace($export, ['request_key' => 'new-head-export']))
+        ->assertStatus(409)->assertJsonPath('code', 'version_conflict');
+
+    app()->call([new RunWorkbookExchange($importId), 'handle']);
+    $this->getJson($url.'/exchanges/'.$importId)->assertOk()
+        ->assertJsonPath('data.state', 'failed')->assertJsonPath('data.error_code', 'version_conflict');
+    $this->getJson($url)->assertOk()->assertHeader('ETag', $edited->headers->get('ETag'))
+        ->assertJsonPath('data.workbook.native.sheets.detail.cellData.1.1.v', 9);
+});
+
+it('resolves a competing registration that inserts after the first request checks for a row', function (bool $sameOptions): void {
+    $url = createExchangeWorkbookUrl($this);
+    $head = $this->getJson($url)->assertOk();
+    $request = [
+        'request_key' => 'competing-export', 'kind' => 'export', 'format' => 'csv',
+        'source' => ['generation' => $head->json('data.marker.generation'), 'position' => $head->json('data.marker.position')],
+    ];
+    $schema = app(SchemaHelpers::class);
+    $connection = $schema->dbConnection();
+    $table = $schema->table('sheets_exchange_jobs');
+    $separateConnection = $connection->getDriverName() === 'pgsql';
+    if ($separateConnection) {
+        config(['database.connections.sheets_competitor' => $connection->getConfig()]);
+    }
+    $competingId = null;
+    $interleaved = false;
+    $competingRequest = $sameOptions ? $request : $request + ['options' => ['delimiter' => ';']];
+    $connection->beforeExecuting(function (string $sql) use ($table, $url, $competingRequest, $separateConnection, &$interleaved, &$competingId): void {
+        if (!$interleaved && str_starts_with($sql, 'insert into "'.$table.'"')) {
+            $interleaved = true;
+            $register = fn () => $this->postJson($url.'/exchanges', $competingRequest)->assertStatus(202)->json('data.exchange_id');
+            $competingId = $separateConnection ? DB::usingConnection('sheets_competitor', $register) : $register();
+        }
+    });
+
+    $outer = $this->postJson($url.'/exchanges', $request);
+    if ($sameOptions) {
+        $outer->assertStatus(202)->assertJsonPath('data.exchange_id', $competingId);
+    } else {
+        $outer->assertStatus(409)->assertJsonPath('code', 'idempotency_conflict');
+    }
+    expect($interleaved)->toBeTrue()->and($competingId)->toBeString();
+    // The in-memory SQLite test's competing request shares the outer transaction's rollback.
+    $expected = $separateConnection || $sameOptions ? 1 : 0;
+    expect($connection->table($table)->count())->toBe($expected)
+        ->and(app(BlobPins::class)->countByOwner()[WorkbookExchange::SOURCE_PIN_OWNER] ?? 0)->toBe($expected);
+})->with(['identical options' => [true], 'different options' => [false]]);
+
+it('releases a transient failure back to queued and drops exchange pins on document purge', function (): void {
+    $url = createExchangeWorkbookUrl($this);
+    $head = $this->getJson($url)->assertOk();
+    $jobId = $this->postJson($url.'/exchanges', [
+        'request_key' => 'retry-and-purge', 'kind' => 'export', 'format' => 'csv',
+        'source' => ['generation' => $head->json('data.marker.generation'), 'position' => $head->json('data.marker.position')],
+    ])->assertStatus(202)->json('data.exchange_id');
+
+    $runtime = app(WorkbookExchangeRuntime::class);
+    $this->app->instance(WorkbookExchangeRuntime::class, new class($runtime) implements WorkbookExchangeRuntime
+    {
+        private bool $failOnce = true;
+
+        public function __construct(private readonly WorkbookExchangeRuntime $runtime) {}
+
+        public function exchange(stdClass $request): stdClass
+        {
+            if ($this->failOnce) {
+                $this->failOnce = false;
+                throw new WorkbookProblem('runtime_failed', 503);
+            }
+
+            return $this->runtime->exchange($request);
+        }
+    });
+    $run = fn () => app()->call([new RunWorkbookExchange($jobId), 'handle']);
+    expect($run)->toThrow(WorkbookProblem::class, 'runtime_failed');
+    $this->getJson($url.'/exchanges/'.$jobId)->assertOk()->assertJsonPath('data.state', 'queued');
+    $run();
+    $this->getJson($url.'/exchanges/'.$jobId)->assertOk()->assertJsonPath('data.state', 'succeeded');
+
+    $otherUrl = createExchangeWorkbookUrl($this);
+    $other = $this->getJson($otherUrl)->assertOk();
+    $this->postJson($otherUrl.'/exchanges', [
+        'request_key' => 'keep-other-pin', 'kind' => 'export', 'format' => 'csv',
+        'source' => ['generation' => $other->json('data.marker.generation'), 'position' => $other->json('data.marker.position')],
+    ])->assertStatus(202);
+
+    $node = basename($url);
+    $this->driveHandle->nodes()->trash($node);
+    $this->driveHandle->trash()->purge($node);
+    expect(app(BlobPins::class)->countByOwner()[WorkbookExchange::SOURCE_PIN_OWNER] ?? 0)->toBe(1)
+        ->and(app(BlobPins::class)->countByOwner()[WorkbookExchange::OUTPUT_PIN_OWNER] ?? 0)->toBe(0);
+    $table = app(SchemaHelpers::class)->table('sheets_exchange_jobs');
+    expect(DB::table($table)->where('id', $jobId)->exists())->toBeFalse();
 });
 
 it('reclaims expired leases via vaulter-sheets:recover, keeps replay idempotent and unpins blobs after retention GC', function (): void {

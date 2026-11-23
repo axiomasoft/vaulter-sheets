@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Vaulter\Sheets\Content;
 
+use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use stdClass;
 use Vaulter\Documents\Contracts\DocumentContent;
@@ -13,7 +14,9 @@ use Vaulter\Drive\Operations\DriveContext;
 use Vaulter\Media\Contracts\Cas\BlobPins;
 use Vaulter\Media\Contracts\Cas\BlobStore;
 use Vaulter\Media\ValueObjects\Cas\BlobScope;
+use Vaulter\Schema\SchemaHelpers;
 use Vaulter\Sheets\Data\WorkbookProblem;
+use Vaulter\Sheets\Exchange\WorkbookExchange;
 use Vaulter\Sheets\Runtime\CanonicalJson;
 use Vaulter\Sheets\Runtime\StrictJson;
 
@@ -27,7 +30,7 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
         'sheets-formula', 'sheets-hyper-link', 'sheets-numfmt',
     ];
 
-    public function __construct(private BlobStore $blobs, private BlobPins $pins) {}
+    public function __construct(private BlobStore $blobs, private BlobPins $pins, private SchemaHelpers $schema) {}
 
     public static function profile(): stdClass
     {
@@ -189,6 +192,16 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
      */
     public function replacePayloadReference(string $kind, string $id, ?array $previous, ?array $next): void
     {
+        if ($kind === 'working' && $next === null) {
+            // Documents holds the document lock and will cascade-delete the jobs in this transaction.
+            $this->schema->dbConnection()->table($this->schema->table('sheets_exchange_jobs'))
+                ->where('document_id', $id)->select('id')->lockForUpdate()
+                ->chunkById(100, function (Collection $jobs): void {
+                    $keys = static fn (): iterable => $jobs->pluck('id')->filter(static fn (mixed $id): bool => is_string($id));
+                    $this->pins->releaseOwner(WorkbookExchange::SOURCE_PIN_OWNER, $keys);
+                    $this->pins->releaseOwner(WorkbookExchange::OUTPUT_PIN_OWNER, $keys);
+                });
+        }
         $old = self::blobId($previous);
         $new = self::blobId($next);
         if ($old === $new) {

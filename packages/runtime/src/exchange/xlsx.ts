@@ -1,4 +1,5 @@
 import {createHash, randomUUID} from 'node:crypto';
+import {BorderStyleTypes} from '@univerjs/core';
 import {zipSync} from 'fflate';
 import {SaxesParser, type SaxesTagNS} from 'saxes';
 import {columnLetters} from '../coordinates.ts';
@@ -9,6 +10,7 @@ import {
     ExchangeError,
     type ExchangeDiagnostic,
     type ExchangeLossEntry,
+    type ExchangeReport,
     type ExportResult,
     type ImportResult,
     type SheetExchangeSummary,
@@ -51,11 +53,19 @@ const BUILTIN_NUMFMTS: Readonly<Record<number, string>> = {
     49: '@',
 };
 
-const BUILTIN_DATE_NUMFMT_IDS = new Set([
-    14, 15, 16, 17, 18, 19, 20, 21, 22,
-    27, 28, 29, 30, 31, 32, 33, 34, 35, 36,
-    45, 46, 47, 50, 51, 52, 53, 54, 55, 56, 57, 58,
+const BUILTIN_CALENDAR_NUMFMT_IDS = new Set([
+    14, 15, 16, 17, 22, 27, 28, 29, 30, 31, 36, 50, 51, 54, 57, 58,
 ]);
+
+const BORDER_SIDES = new Map<string, string>([['left', 'l'], ['right', 'r'], ['top', 't'], ['bottom', 'b']]);
+const BORDER_STYLES = new Map<string, BorderStyleTypes>([
+    ['thin', BorderStyleTypes.THIN], ['hair', BorderStyleTypes.HAIR], ['dotted', BorderStyleTypes.DOTTED],
+    ['dashed', BorderStyleTypes.DASHED], ['dashDot', BorderStyleTypes.DASH_DOT], ['dashDotDot', BorderStyleTypes.DASH_DOT_DOT],
+    ['double', BorderStyleTypes.DOUBLE], ['medium', BorderStyleTypes.MEDIUM], ['mediumDashed', BorderStyleTypes.MEDIUM_DASHED],
+    ['mediumDashDot', BorderStyleTypes.MEDIUM_DASH_DOT], ['mediumDashDotDot', BorderStyleTypes.MEDIUM_DASH_DOT_DOT],
+    ['slantDashDot', BorderStyleTypes.SLANT_DASH_DOT], ['thick', BorderStyleTypes.THICK],
+]);
+const OOXML_BORDER_STYLES = new Map<number, string>(Array.from(BORDER_STYLES, ([name, style]) => [style, name]));
 
 const KNOWN_OOXML_PREFIXES = [
     '[Content_Types].xml',
@@ -138,14 +148,22 @@ function formatRangeA1(range: {startRow: number; startColumn: number; endRow: nu
     return start === end ? start : `${start}:${end}`;
 }
 
-function isDateNumFmt(numFmtId: number, pattern?: string): boolean {
-    if (BUILTIN_DATE_NUMFMT_IDS.has(numFmtId)) return true;
-    if (!pattern) return false;
+function isCalendarNumFmt(numFmtId: number, pattern?: string): boolean {
+    if (!pattern) return BUILTIN_CALENDAR_NUMFMT_IDS.has(numFmtId);
     const stripped = pattern
-        .replace(/"[^"]*"/g, '')
-        .replace(/\\./g, '')
-        .replace(/\[[^\]]*\]/g, '');
-    return /[ydhs]/i.test(stripped) || /(?:^|[-\/: ])m+(?:[-\/: ]|$)/i.test(stripped);
+        .replace(/"[^"]*"|[\\_*].|\[(?![hms]+\])[^\]]*\]/gi, '')
+        .replace(/AM\/PM|A\/P/gi, '')
+        .toLowerCase();
+    return stripped.split(';').some(section => {
+        const tokens = section.match(/\[[hms]+\]|y+|d+|m+|h+|s+/g) ?? [];
+        return tokens.some((token, i) => {
+            if (/^[yd]|^mmm/.test(token)) return true;
+            // A short m token means minutes after hours or before seconds.
+            return /^m{1,2}$/.test(token)
+                && !/^\[?h/.test(tokens[i - 1] ?? '')
+                && !/^\[?s/.test(tokens[i + 1] ?? '');
+        });
+    });
 }
 
 function normalizeColor(attrs: Record<string, {value: string}>): string | undefined {
@@ -284,39 +302,14 @@ function hasExternalWorkbookRef(expr: string): boolean {
 
 function shiftSharedFormula(formula: string, rowDelta: number, colDelta: number): string {
     if (rowDelta === 0 && colDelta === 0) return formula;
-    let out = '';
-    let inString = false;
-    let i = 0;
-    while (i < formula.length) {
-        const ch = formula[i];
-        if (ch === '"') {
-            out += ch;
-            i++;
-            if (inString && formula[i] === '"') {
-                out += '"';
-                i++;
-            } else {
-                inString = !inString;
-            }
-            continue;
-        }
-        if (!inString) {
-            const slice = formula.slice(i);
-            const match = /^(\$?)([A-Z]{1,3})(\$?)([1-9]\d{0,6})\b/.exec(slice);
-            if (match && (i === 0 || !/[A-Za-z0-9_.]/.test(formula[i - 1])) && formula[i + match[0].length] !== '(') {
-                const colAbs = match[1] === '$';
-                const rowAbs = match[3] === '$';
-                const col = colAbs ? parseColLetters(match[2]) : Math.max(1, parseColLetters(match[2]) + colDelta);
-                const row = rowAbs ? Number(match[4]) : Math.max(1, Number(match[4]) + rowDelta);
-                out += `${match[1]}${columnLetters(col)}${match[3]}${row}`;
-                i += match[0].length;
-                continue;
-            }
-        }
-        out += ch;
-        i++;
-    }
-    return out;
+    // Match strings and sheet qualifiers first so that A1-like names stay intact.
+    const token = /"[^"]*(?:""[^"]*)*"|'[^']*(?:''[^']*)*'|(?<![\w.])[\w.]+(?::[\w.]+)?(?=!)|(?<![\w.])(\$?)([A-Z]{1,3})(\$?)([1-9]\d{0,6})(?![\w.(!])/gi;
+    return formula.replace(token, (match, absoluteCol, colLetters, absoluteRow, rowNumber) => {
+        if (colLetters === undefined) return match;
+        const col = Math.max(1, parseColLetters(colLetters) + (absoluteCol ? 0 : colDelta));
+        const row = Math.max(1, Number(rowNumber) + (absoluteRow ? 0 : rowDelta));
+        return `${absoluteCol}${columnLetters(col)}${absoluteRow}${row}`;
+    });
 }
 
 function parseSharedStrings(xmlText: string | undefined): string[] {
@@ -363,7 +356,7 @@ interface ParsedStyles {
     dxfs: UniverStyle[];
 }
 
-function parseStylesXml(xmlText: string | undefined): ParsedStyles {
+function parseStylesXml(xmlText: string | undefined, losses: ExchangeLossEntry[]): ParsedStyles {
     if (!xmlText) {
         return {styles: [{}], numFmtIds: [0], numFmtPatterns: [undefined], dxfs: []};
     }
@@ -386,8 +379,6 @@ function parseStylesXml(xmlText: string | undefined): ParsedStyles {
 
     const alignHt = (v?: string): number | undefined => v === 'left' ? 1 : v === 'center' ? 2 : v === 'right' ? 3 : undefined;
     const alignVt = (v?: string): number | undefined => v === 'top' ? 1 : v === 'center' ? 2 : v === 'bottom' ? 3 : undefined;
-    const borderStyleMap = (v?: string): number => v === 'thin' ? 1 : v === 'medium' ? 8 : v === 'thick' ? 13 : v === 'dashed' ? 3 : v === 'dotted' ? 4 : v === 'double' ? 6 : 1;
-
     const parser = new SaxesParser({xmlns: true, position: false});
     parser.on('opentag', tag => {
         const name = tag.local;
@@ -428,14 +419,25 @@ function parseStylesXml(xmlText: string | undefined): ParsedStyles {
             }
         } else if (section === 'borders') {
             if (name === 'border') currentBorder = {};
-            else if (currentBorder && (name === 'left' || name === 'right' || name === 'top' || name === 'bottom')) {
-                const styleStr = attrVal(tag, 'style');
-                const key = name[0];
-                currentBorderSide = styleStr ? key : null;
-                if (styleStr) currentBorder[key] = {s: borderStyleMap(styleStr), cl: {rgb: '#000000'}};
-            } else if (currentBorder && currentBorderSide && name === 'color') {
+            else if (currentBorder && name === 'color') {
                 const rgb = normalizeColor(tag.attributes);
-                if (rgb) currentBorder[currentBorderSide].cl = {rgb};
+                if (currentBorderSide && rgb) currentBorder[currentBorderSide].cl = {rgb};
+            } else if (currentBorder) {
+                currentBorderSide = null;
+                const style = attrVal(tag, 'style');
+                if (style && style !== 'none') {
+                    const key = BORDER_SIDES.get(name);
+                    const mapped = BORDER_STYLES.get(style);
+                    if (key && mapped !== undefined) {
+                        currentBorderSide = key;
+                        currentBorder[key] = {s: mapped, cl: {rgb: '#000000'}};
+                    } else {
+                        losses.push({
+                            scope: 'object', target: `xl/styles.xml#border-${borders.length}:${name}`,
+                            property: 'border', status: 'lost', reason: 'unsupported_ooxml_border',
+                        });
+                    }
+                }
             }
         } else if (section === 'cellXfs') {
             if (name === 'xf') {
@@ -492,7 +494,7 @@ function parseStylesXml(xmlText: string | undefined): ParsedStyles {
             borders.push(Object.keys(currentBorder).length > 0 ? {bd: currentBorder} : {});
             currentBorder = null;
             currentBorderSide = null;
-        } else if (section === 'borders' && (name === 'left' || name === 'right' || name === 'top' || name === 'bottom')) {
+        } else if (section === 'borders' && BORDER_SIDES.has(name)) {
             currentBorderSide = null;
         } else if (section === 'cellXfs' && name === 'xf' && currentXf) {
             cellXfs.push(currentXf);
@@ -635,14 +637,14 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
     const wbRelsXml = archive.xmlTexts.get('xl/_rels/workbook.xml.rels');
     const wbRels = wbRelsXml ? parseRelsXml(wbRelsXml) : new Map();
     const sharedStrings = parseSharedStrings(archive.xmlTexts.get('xl/sharedStrings.xml'));
-    const parsedStyles = parseStylesXml(archive.xmlTexts.get('xl/styles.xml'));
+    const losses: ExchangeLossEntry[] = [];
+    const parsedStyles = parseStylesXml(archive.xmlTexts.get('xl/styles.xml'), losses);
 
     const unitId = `wb_${randomUUID()}`;
     const sheetOrder: string[] = [];
     const sheets: Record<string, JsonObject> = {};
     const univerStyles: Record<string, JsonObject> = {};
     const styleIdByXf = new Map<number, string>();
-    const losses: ExchangeLossEntry[] = [];
     const diagnostics: ExchangeDiagnostic[] = [];
     const sheetSummaries: SheetExchangeSummary[] = [];
     const dataValidationsBySheet: Record<string, JsonObject[]> = {};
@@ -858,6 +860,15 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
                         };
                     }
                 }
+            } else if (name === 'hyperlink') {
+                const ref = attrVal(tag, 'ref');
+                losses.push({
+                    scope: 'object',
+                    target: ref ? `${meta.name}!${ref}` : meta.name,
+                    property: 'hyperlink',
+                    status: 'lost',
+                    reason: 'unsupported_ooxml_sheet_object',
+                });
             } else if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'controls' || name === 'sparklineGroups') {
                 losses.push({
                     scope: 'object',
@@ -906,11 +917,19 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
                 }));
                 if (ranges.length > 0 && currentDv.type !== 'none') {
                     let f1 = currentDv.formula1.trim();
-                    if (currentDv.type === 'list' && !f1.startsWith('=') && !f1.startsWith('[')) {
-                        const stripped = f1.startsWith('"') && f1.endsWith('"') ? f1.slice(1, -1) : f1;
-                        f1 = JSON.stringify(stripped.split(',').map(item => item.trim()));
-                    } else if (currentDv.type === 'list' && !f1.startsWith('=') && f1.includes('!')) {
-                        f1 = `=${f1}`;
+                    if (currentDv.type === 'list' && f1 !== '') {
+                        if (/^"(?:[^"]|"")*"$/.test(f1)) {
+                            f1 = JSON.stringify(f1.slice(1, -1).replaceAll('""', '"').split(','));
+                        } else if (hasExternalWorkbookRef(f1)) {
+                            losses.push({
+                                scope: 'object', target: `${meta.name}!${currentDv.sqref}`,
+                                property: 'list_validation', status: 'lost', reason: 'external_ref_stripped',
+                            });
+                            currentDv = null;
+                            return;
+                        } else if (!f1.startsWith('=')) {
+                            f1 = `=${f1}`;
+                        }
                     }
                     const dvEntry: JsonObject = {
                         uid: `dv_${randomUUID().slice(0, 12)}`,
@@ -999,7 +1018,10 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
                     if (coord.row > maxRowSeen) maxRowSeen = coord.row;
                     if (coord.col > maxColSeen) maxColSeen = coord.col;
                     const cellObj: JsonObject = {};
-                    const styleKey = currentCellStyleIdx > 0 ? styleKeyForXf(currentCellStyleIdx) : undefined;
+                    const defaultStyle = parsedStyles.styles[0];
+                    const styleKey = currentCellStyleIdx > 0 || defaultStyle?.bd || defaultStyle?.n
+                        ? styleKeyForXf(currentCellStyleIdx)
+                        : undefined;
                     if (styleKey) {
                         cellObj.s = styleKey;
                         sheetStyledKeys.add(styleKey);
@@ -1087,7 +1109,7 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
                                 const numFmtId = parsedStyles.numFmtIds[currentCellStyleIdx] ?? 0;
                                 const numFmtPat = parsedStyles.numFmtPatterns[currentCellStyleIdx];
                                 let adjusted = num;
-                                if (isDateNumFmt(numFmtId, numFmtPat)) {
+                                if (isCalendarNumFmt(numFmtId, numFmtPat)) {
                                     if (wbMeta.date1904) {
                                         adjusted = num + EXCEL_1904_OFFSET_DAYS;
                                         diagnostics.push({
@@ -1255,10 +1277,24 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
         }
     }
 
-    if (options.strict_profile === true && losses.some(entry => entry.status === 'lost')) {
+    const report: Omit<ExchangeReport, 'output_sha256'> = {
+        format: 'xlsx',
+        operation: 'import',
+        source_sha256: sourceSha,
+        date_system: wbMeta.date1904 ? '1904' : '1900',
+        sheets: sheetSummaries,
+        defined_names: {preserved: defPreserved, lost: defLost},
+        losses,
+        diagnostics,
+        unknown_parts: unknownParts.sort(),
+        editable_published: false,
+    };
+    const lossCount = losses.filter(entry => entry.status === 'lost').length;
+    if (options.strict_profile === true && lossCount > 0) {
         throw new ExchangeError('unsupported_content', 'Strict profile refuses publishing lossy XLSX import as editable workbook', {
             reason: 'strict_profile_loss',
-            loss_count: losses.length,
+            loss_count: lossCount,
+            report: report as unknown as JsonObject,
         });
     }
 
@@ -1297,16 +1333,8 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
     return {
         workbook,
         report: {
-            format: 'xlsx',
-            operation: 'import',
-            source_sha256: sourceSha,
+            ...report,
             output_sha256: outputSha,
-            date_system: wbMeta.date1904 ? '1904' : '1900',
-            sheets: sheetSummaries,
-            defined_names: {preserved: defPreserved, lost: defLost},
-            losses,
-            diagnostics,
-            unknown_parts: unknownParts.sort(),
             editable_published: true,
         },
     };
@@ -1431,19 +1459,31 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
 
     const bordersXml: string[] = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
     const borderIdxByKey = new Map<string, number>([['none', 0]]);
-    const ensureBorder = (st: UniverStyle): number => {
+    const ensureBorder = (st: UniverStyle, styleKey: string): number => {
         if (!st.bd || Object.keys(st.bd).length === 0) return 0;
         const key = JSON.stringify(st.bd);
         const existing = borderIdxByKey.get(key);
         if (existing !== undefined) return existing;
-        const sideXml = (side: 'l' | 'r' | 't' | 'b', tag: string): string => {
-            const entry = st.bd?.[side];
-            if (!entry) return `<${tag}/>`;
-            const cl = rgbHexForOoxml(entry.cl?.rgb) ?? 'FF000000';
-            return `<${tag} style="thin"><color rgb="${cl}"/></${tag}>`;
-        };
+        const sidesXml = new Map(Array.from(BORDER_SIDES.values(), side => [side, '']));
+        for (const [side, entry] of Object.entries(st.bd)) {
+            if (!entry || entry.s === BorderStyleTypes.NONE) continue;
+            const style = OOXML_BORDER_STYLES.get(entry.s);
+            if (style && sidesXml.has(side)) {
+                const cl = rgbHexForOoxml(entry.cl?.rgb) ?? 'FF000000';
+                sidesXml.set(side, ` style="${style}"><color rgb="${cl}"/>`);
+            } else {
+                losses.push({
+                    scope: 'object', target: `${styleKey}:${side}`, property: 'border',
+                    status: 'lost', reason: 'unsupported_univer_border',
+                });
+            }
+        }
+        const sides = Array.from(BORDER_SIDES, ([tag, side]) => {
+            const styleXml = sidesXml.get(side);
+            return styleXml ? `<${tag}${styleXml}</${tag}>` : `<${tag}/>`;
+        });
         const idx = bordersXml.length;
-        bordersXml.push(`<border>${sideXml('l', 'left')}${sideXml('r', 'right')}${sideXml('t', 'top')}${sideXml('b', 'bottom')}<diagonal/></border>`);
+        bordersXml.push(`<border>${sides.join('')}<diagonal/></border>`);
         borderIdxByKey.set(key, idx);
         return idx;
     };
@@ -1461,8 +1501,8 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
         const numFmtId = ensureNumFmt(st.n?.pattern);
         const fontId = ensureFont(st);
         const fillId = ensureFill(st);
-        const borderId = ensureBorder(st);
-        const isDate = isDateNumFmt(numFmtId, st.n?.pattern);
+        const borderId = ensureBorder(st, styleKey);
+        const isDate = isCalendarNumFmt(numFmtId, st.n?.pattern);
         const alignParts: string[] = [];
         if (st.ht === 1) alignParts.push('horizontal="left"');
         else if (st.ht === 2) alignParts.push('horizontal="center"');
@@ -1654,7 +1694,7 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
             if (dvType === 'list' && f1.startsWith('[')) {
                 try {
                     const parsed = JSON.parse(f1) as unknown[];
-                    f1 = `"${parsed.map(String).join(',')}"`;
+                    f1 = `"${parsed.map(String).join(',').replaceAll('"', '""')}"`;
                 } catch {
                     // Keep raw formula1.
                 }

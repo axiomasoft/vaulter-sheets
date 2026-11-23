@@ -44,6 +44,8 @@ final class ExchangeWire
             || ($response->request_id ?? null) !== $reqId || !is_bool($response->ok ?? null)) {
             throw new WorkbookProblem('runtime_failed', 503);
         }
+        $operation = is_string($request->operation ?? null) ? $request->operation : '';
+        $format = is_string($request->format ?? null) ? $request->format : '';
         if (!$response->ok) {
             if (!self::only($response, ['version', 'request_id', 'ok', 'error'])
                 || !($response->error ?? null) instanceof stdClass
@@ -69,10 +71,16 @@ final class ExchangeWire
                 'calculation_timeout' => ['calculation_pending', 503],
                 default => ['runtime_failed', 503],
             };
+            if ($operation === 'import' && $code === 'unsupported_content' && ($detail['reason'] ?? null) === 'strict_profile_loss' && isset($detail['report'])) {
+                if (!$detail['report'] instanceof stdClass) {
+                    throw new WorkbookProblem('runtime_failed', 503);
+                }
+                self::assertValidReport($detail['report'], $operation, $format, published: false);
+            } else {
+                unset($detail['report']);
+            }
             throw new WorkbookProblem($code, $status, $detail);
         }
-        $operation = is_string($request->operation ?? null) ? $request->operation : '';
-        $format = is_string($request->format ?? null) ? $request->format : '';
         if (!self::only($response, ['version', 'request_id', 'ok', 'operation', 'format', 'output_b64', 'output_sha256', 'report'])
             || ($response->operation ?? null) !== $operation
             || ($response->format ?? null) !== $format
@@ -109,16 +117,17 @@ final class ExchangeWire
         return $decoded;
     }
 
-    private static function assertValidReport(stdClass $report, string $operation, string $format): void
+    private static function assertValidReport(stdClass $report, string $operation, string $format, ?bool $published = null): void
     {
-        foreach (['format', 'operation', 'source_sha256', 'output_sha256', 'sheets', 'defined_names', 'losses', 'diagnostics', 'unknown_parts', 'editable_published'] as $key) {
+        foreach (['format', 'operation', 'source_sha256', 'sheets', 'defined_names', 'losses', 'diagnostics', 'unknown_parts', 'editable_published'] as $key) {
             if (!property_exists($report, $key)) {
                 throw new WorkbookProblem('runtime_failed', 503);
             }
         }
         if ($report->format !== $format || $report->operation !== $operation
             || !is_string($report->source_sha256 ?? null)
-            || !is_string($report->output_sha256 ?? null)
+            || ($published === null && !is_string($report->output_sha256 ?? null))
+            || ($published !== null && $report->editable_published !== $published)
             || !is_array($report->sheets ?? null)
             || !($report->defined_names ?? null) instanceof stdClass
             || !is_array($report->losses ?? null)

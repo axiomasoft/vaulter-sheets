@@ -141,6 +141,7 @@ final readonly class WorkbookExchange
         }
 
         $wbState = $this->loadWorkbook($context, $node);
+        $scope = $this->scope($context, $wbState->documentId, $requestKey);
 
         if ($kind === 'import') {
             if (!$this->access->canEdit($context, $node)) {
@@ -155,7 +156,21 @@ final readonly class WorkbookExchange
             if (($abilities[Ability::Download->value] ?? false) !== true) {
                 throw new WorkbookProblem('permission_denied', 403);
             }
-            $prepared = $this->prepareExportSource($context, $node, $wbState, $format, $source, $optionsRaw);
+            $sourceIdentity = $this->exportSourceIdentity($source);
+            $shaExpected = $source->sha256 ?? null;
+            $findReplay = fn (): ?array => $this->findExportReplay($scope, $format, $sourceIdentity, $shaExpected, $optionsRaw);
+            $replay = $findReplay();
+            if ($replay !== null) {
+                return $replay;
+            }
+            try {
+                $prepared = $this->prepareExportSource($context, $node, $wbState, $format, $sourceIdentity, $shaExpected, $optionsRaw);
+            } catch (WorkbookProblem $problem) {
+                if ($problem->status === 409 && ($replay = $findReplay()) !== null) {
+                    return $replay;
+                }
+                throw $problem;
+            }
         }
 
         $storedOptions = clone $optionsRaw;
@@ -166,9 +181,7 @@ final readonly class WorkbookExchange
 
         /** @var array{created: bool, job: array<string, mixed>} $result */
         $result = $this->database->transaction(function (Connection $db) use (
-            $context,
-            $wbState,
-            $requestKey,
+            $scope,
             $kind,
             $format,
             $prepared,
@@ -176,22 +189,7 @@ final readonly class WorkbookExchange
             $keepSeconds,
             $jobId,
         ): array {
-            $scope = $this->scope($context, $wbState->documentId, $requestKey);
-            $existing = $this->records($db)->where($scope)->lockForUpdate()->first();
-            if ($existing instanceof stdClass) {
-                $existingFingerprint = is_string($existing->fingerprint ?? null) ? $existing->fingerprint : '';
-                if (!hash_equals($existingFingerprint, $prepared['fingerprint'])) {
-                    throw new WorkbookProblem('idempotency_conflict', 409);
-                }
-                $keepUntil = is_string($existing->keep_until ?? null) ? $existing->keep_until : null;
-                if (!$this->future($db, $keepUntil)) {
-                    throw new WorkbookProblem('idempotency_window_expired', 410);
-                }
-
-                return ['created' => false, 'job' => $this->presentJob($existing)];
-            }
-
-            $this->records($db)->insert($scope + [
+            $insertedRows = $this->records($db)->insertOrIgnoreReturning($scope + [
                 'id' => $jobId,
                 'fingerprint' => $prepared['fingerprint'],
                 'kind' => $kind,
@@ -209,13 +207,17 @@ final readonly class WorkbookExchange
                 'lease_until' => null,
                 'finished_at' => null,
                 'keep_until' => $this->futureTimestamp($db, $keepSeconds),
-            ]);
-            $this->pins->pin($prepared['source_blob_id'], self::SOURCE_PIN_OWNER, $jobId);
-
-            $inserted = $this->records($db)->where('id', $jobId)->first();
+            ], ['*'], array_keys($scope));
+            $inserted = $insertedRows[0] ?? null;
             if (!$inserted instanceof stdClass) {
-                throw new WorkbookProblem('runtime_failed', 503);
+                $existing = $this->records($db)->where($scope)->lockForUpdate()->first();
+                if (!$existing instanceof stdClass) {
+                    throw new WorkbookProblem('runtime_failed', 503);
+                }
+
+                return $this->replay($db, $existing, $prepared['fingerprint']);
             }
+            $this->pins->pin($prepared['source_blob_id'], self::SOURCE_PIN_OWNER, $jobId);
 
             $this->database->afterCommit(static function () use ($jobId): void {
                 RunWorkbookExchange::dispatch($jobId);
@@ -225,6 +227,47 @@ final readonly class WorkbookExchange
         });
 
         return $result;
+    }
+
+    /**
+     * @param array<string, int|string> $scope
+     * @return array{created: bool, job: array<string, mixed>}|null
+     */
+    private function findExportReplay(array $scope, string $format, stdClass $source, mixed $shaExpected, stdClass $options): ?array
+    {
+        return $this->database->transaction(function (Connection $db) use ($scope, $format, $source, $shaExpected, $options): ?array {
+            $job = $this->records($db)->where($scope)->lockForUpdate()->first();
+            if (!$job instanceof stdClass) {
+                return null;
+            }
+            if ($job->kind !== 'export' || $job->format !== $format) {
+                throw new WorkbookProblem('idempotency_conflict', 409);
+            }
+            // The pinned snapshot also supplies the source digest for jobs registered before this change.
+            $sourceSha = hash('sha256', $this->readBlobBytes(self::str($job->source_blob_id), $this->codec->maxSizeBytes()));
+            if (!isset($source->revision_id) && $shaExpected !== null
+                && (!is_string($shaExpected) || !hash_equals($sourceSha, $shaExpected))) {
+                throw new WorkbookProblem('idempotency_conflict', 409);
+            }
+            $fingerprint = $this->exportFingerprint(
+                $format, self::intVal($job->generation), self::intVal($job->source_position), $sourceSha, $source, $options,
+            );
+
+            return $this->replay($db, $job, $fingerprint);
+        });
+    }
+
+    /** @return array{created: bool, job: array<string, mixed>} */
+    private function replay(Connection $db, stdClass $existing, string $fingerprint): array
+    {
+        if (!hash_equals(self::str($existing->fingerprint), $fingerprint)) {
+            throw new WorkbookProblem('idempotency_conflict', 409);
+        }
+        if (!$this->future($db, self::str($existing->keep_until))) {
+            throw new WorkbookProblem('idempotency_window_expired', 410);
+        }
+
+        return ['created' => false, 'job' => $this->presentJob($existing)];
     }
 
     public function process(string $jobId, ?DriveContext $context = null): void
@@ -322,7 +365,7 @@ final readonly class WorkbookExchange
                 $this->releaseLease($jobId, $token);
                 throw $problem;
             }
-            $this->failJob($jobId, $token, $problem->problem);
+            $this->failJob($jobId, $token, $problem);
         }
     }
 
@@ -492,6 +535,25 @@ final readonly class WorkbookExchange
         ];
     }
 
+    private function exportSourceIdentity(stdClass $source): stdClass
+    {
+        $revRaw = $source->revision_id ?? null;
+        if ($revRaw !== null) {
+            if ((!is_string($revRaw) && !is_int($revRaw)) || (string) $revRaw === '') {
+                throw new WorkbookProblem('invalid_command', 422);
+            }
+
+            return (object) ['revision_id' => (string) $revRaw];
+        }
+        $generation = $source->generation ?? null;
+        $position = $source->position ?? null;
+        if (!is_int($generation) || $generation < 0 || !is_int($position) || $position < 0) {
+            throw new WorkbookProblem('invalid_command', 422);
+        }
+
+        return (object) ['generation' => $generation, 'position' => $position];
+    }
+
     /**
      * @return array{generation: int, source_position: int, source_blob_id: string, fingerprint: string}
      */
@@ -500,38 +562,29 @@ final readonly class WorkbookExchange
         string $node,
         DocumentSnapshot $headState,
         string $format,
-        stdClass $source,
+        stdClass $sourceIdentity,
+        mixed $shaExpected,
         stdClass $optionsRaw,
     ): array {
-        if (property_exists($source, 'revision_id') && $source->revision_id !== null) {
-            $revRaw = $source->revision_id;
-            if ((!is_string($revRaw) && !is_int($revRaw)) || (string) $revRaw === '') {
-                throw new WorkbookProblem('invalid_command', 422);
-            }
-            $targetState = $this->loadWorkbook($context, $node, (string) $revRaw);
+        if (isset($sourceIdentity->revision_id)) {
+            $targetState = $this->loadWorkbook($context, $node, self::str($sourceIdentity->revision_id));
             $generation = $targetState->revision !== null ? $targetState->revision->epoch : $targetState->epoch;
             $position = $targetState->revision !== null ? $targetState->revision->stateVersion : $targetState->stateVersion;
-            $sourceFingerprintPart = (object) ['revision_id' => (string) $revRaw];
         } else {
-            $generation = $source->generation ?? null;
-            $position = $source->position ?? null;
-            if (!is_int($generation) || $generation < 0 || !is_int($position) || $position < 0) {
-                throw new WorkbookProblem('invalid_command', 422);
-            }
+            $generation = self::intVal($sourceIdentity->generation);
+            $position = self::intVal($sourceIdentity->position);
             if ($generation !== $headState->epoch) {
                 throw new WorkbookProblem('generation_changed', 409);
             }
             if ($position !== $headState->stateVersion) {
                 throw new WorkbookProblem('version_conflict', 409);
             }
-            $shaExpected = $source->sha256 ?? null;
             if ($shaExpected !== null) {
                 if (!is_string($shaExpected) || !hash_equals($headState->content->contentHash(), $shaExpected)) {
                     throw new WorkbookProblem('version_conflict', 409);
                 }
             }
             $targetState = $headState;
-            $sourceFingerprintPart = (object) ['generation' => $generation, 'position' => $position];
         }
 
         $snapshotObj = $this->codec->snapshot($targetState->content);
@@ -539,24 +592,25 @@ final readonly class WorkbookExchange
         if (strlen($canonical) > $this->codec->maxSizeBytes()) {
             throw new WorkbookProblem('limit_exceeded', 413);
         }
-        $sourceSha = hash('sha256', $canonical);
-        $blobId = $this->commitBlobBytes($context, $canonical);
-        $fingerprint = CanonicalJson::sha256((object) [
+        return [
+            'generation' => $generation,
+            'source_position' => $position,
+            'source_blob_id' => $this->commitBlobBytes($context, $canonical),
+            'fingerprint' => $this->exportFingerprint($format, $generation, $position, hash('sha256', $canonical), $sourceIdentity, $optionsRaw),
+        ];
+    }
+
+    private function exportFingerprint(string $format, int $generation, int $position, string $sourceSha, stdClass $sourceIdentity, stdClass $options): string
+    {
+        return CanonicalJson::sha256((object) [
             'kind' => 'export',
             'format' => $format,
             'generation' => $generation,
             'source_position' => $position,
             'source_sha256' => $sourceSha,
-            'source' => $sourceFingerprintPart,
-            'options' => $optionsRaw,
+            'source' => $sourceIdentity,
+            'options' => $options,
         ]);
-
-        return [
-            'generation' => $generation,
-            'source_position' => $position,
-            'source_blob_id' => $blobId,
-            'fingerprint' => $fingerprint,
-        ];
     }
 
     private function executeImport(
@@ -636,6 +690,10 @@ final readonly class WorkbookExchange
             if ($lockedState->generation !== $expectedGen) {
                 throw new WorkbookProblem('generation_changed', 409);
             }
+            $expectedPosition = self::intVal($job->source_position ?? null);
+            if ($lockedState->position !== $expectedPosition) {
+                throw new WorkbookProblem('version_conflict', 409);
+            }
 
             $oldSheets = [];
             if ($lockedState->content instanceof WorkbookContent) {
@@ -652,7 +710,7 @@ final readonly class WorkbookExchange
                 : [];
             $structuralSheets = array_values(array_unique([...$oldSheets, ...$newSheets]));
 
-            $next = $locked->replace($prepared, $lockedState->position);
+            $next = $locked->replace($prepared, $expectedPosition);
             if ($next->generation !== $expectedGen) {
                 throw new WorkbookProblem('generation_changed', 409);
             }
@@ -782,9 +840,10 @@ final readonly class WorkbookExchange
         });
     }
 
-    private function failJob(string $jobId, string $token, string $errorCode): void
+    private function failJob(string $jobId, string $token, WorkbookProblem $problem): void
     {
-        $this->database->transaction(function (Connection $db) use ($jobId, $token, $errorCode): void {
+        $report = $problem->detail['report'] ?? null;
+        $this->database->transaction(function (Connection $db) use ($jobId, $token, $problem, $report): void {
             $now = $this->nowExpr($db);
             $this->records($db)
                 ->where('id', $jobId)
@@ -793,7 +852,8 @@ final readonly class WorkbookExchange
                 ->where('lease_until', '>', $now)
                 ->update([
                     'state' => 'failed',
-                    'error_code' => $errorCode,
+                    'error_code' => $problem->problem,
+                    'report' => $report instanceof stdClass ? json_encode($report, JSON_THROW_ON_ERROR) : null,
                     'worker_token' => null,
                     'lease_until' => null,
                     'finished_at' => $now,
@@ -809,6 +869,7 @@ final readonly class WorkbookExchange
                 ->where('state', 'running')
                 ->where('worker_token', $token)
                 ->update([
+                    'state' => 'queued',
                     'worker_token' => null,
                     'lease_until' => null,
                 ]);

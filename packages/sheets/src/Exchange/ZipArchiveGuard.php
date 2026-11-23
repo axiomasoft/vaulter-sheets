@@ -81,8 +81,8 @@ final class ZipArchiveGuard
         }
 
         $seen = [];
+        $entries = [];
         $declaredTotal = 0;
-        $actualTotal = 0;
 
         for ($i = 0; $i < $count; $i++) {
             $stat = $zip->statIndex($i, ZipArchive::FL_ENC_RAW);
@@ -116,7 +116,11 @@ final class ZipArchiveGuard
             if ($isRels && $size > self::MAX_RELS_BYTES) {
                 throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'oversized_rels', 'entry' => $rawName]);
             }
+            $entries[$i] = [$rawName, $size, $isRels, $isXml];
+        }
 
+        $actualTotal = 0;
+        foreach ($entries as $i => [$rawName, $size, $isRels, $isXml]) {
             $remaining = self::MAX_TOTAL_BYTES - $actualTotal;
             $content = $this->readBoundedEntry($zip, $i, $rawName, $size, $remaining);
             $actualTotal += strlen($content);

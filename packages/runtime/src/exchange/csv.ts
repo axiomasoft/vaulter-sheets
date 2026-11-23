@@ -141,16 +141,14 @@ function classifyCsvCell(
         });
         return {t: 1, v: raw};
     }
-    // Preserve leading zeros (e.g. "00123", "007", "-005") as text so identifiers/codes are not truncated.
-    if (/^[+-]?0\d+(?:\.\d+)?$/.test(raw) && !/^[+-]?0(?:\.\d+)?$/.test(raw)) {
-        return {t: 1, v: raw};
-    }
-    if (/^[+-]/.test(raw) && !/^[+-]?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(raw)) {
-        return {t: 1, v: raw};
-    }
-    if (!quoted && (raw === 'TRUE' || raw === 'FALSE')) {
+    return (quoted ? null : coerceCsvScalar(raw)) ?? {t: 1, v: raw};
+}
+
+function coerceCsvScalar(raw: string): {t: number; v: number} | null {
+    if (raw === 'TRUE' || raw === 'FALSE') {
         return {t: 3, v: raw === 'TRUE' ? 1 : 0};
     }
+    // Leading zeros are excluded so text identifiers such as 00123 keep their exact values.
     if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/.test(raw)) {
         const num = Number(raw);
         const hasFractionOrExp = raw.includes('.') || raw.includes('e') || raw.includes('E');
@@ -158,7 +156,7 @@ function classifyCsvCell(
             return {t: 2, v: num};
         }
     }
-    return {t: 1, v: raw};
+    return null;
 }
 
 export async function importCsv(bytes: Buffer, options: JsonObject): Promise<ImportResult> {
@@ -270,9 +268,8 @@ export async function importCsv(bytes: Buffer, options: JsonObject): Promise<Imp
     };
 }
 
-function escapeCsvField(value: string, delimiter: string, quote: string): string {
-    if (value === '') return '';
-    if (value.includes(delimiter) || value.includes(quote) || value.includes('\n') || value.includes('\r')) {
+function escapeCsvText(value: string, delimiter: string, quote: string): string {
+    if (value === '' || coerceCsvScalar(value) !== null || value.includes(delimiter) || value.includes(quote) || value.includes('\n') || value.includes('\r')) {
         return `${quote}${value.replaceAll(quote, quote + quote)}${quote}`;
     }
     return value;
@@ -417,13 +414,8 @@ export async function exportCsv(workbook: WorkbookV2, options: JsonObject): Prom
                     }
                     fields.push(String(cell.v));
                 } else {
-                    const str = String(cell.v);
-                    if (str === '') {
-                        fields.push(`${dialect.quote}${dialect.quote}`);
-                    } else {
-                        const safe = sanitizeFormulaInjection(str, coord, diagnostics);
-                        fields.push(escapeCsvField(safe, dialect.delimiter, dialect.quote));
-                    }
+                    const safe = sanitizeFormulaInjection(String(cell.v), coord, diagnostics);
+                    fields.push(escapeCsvText(safe, dialect.delimiter, dialect.quote));
                 }
             }
             lines.push(fields.join(dialect.delimiter));

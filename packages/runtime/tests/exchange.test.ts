@@ -4,7 +4,7 @@ import {Readable} from 'node:stream';
 import {test} from 'node:test';
 import {deflateRawSync} from 'node:zlib';
 import type {IncomingMessage, ServerResponse} from 'node:http';
-import {zipSync} from 'fflate';
+import {unzipSync, zipSync} from 'fflate';
 import {runOperation} from '../src/operation.ts';
 import {WIRE_PROFILE} from '../src/profile.ts';
 import {canonicalize, sha256Canonical, type JsonObject, type WorkbookV2} from '../src/protocol.ts';
@@ -254,6 +254,131 @@ test('imports and exports CSV with dialect options, leading zeros, multiline str
         () => importCsv(Buffer.from([0xff, 0xfe, 0x00]), {}),
         /valid UTF-8/,
     );
+});
+
+test('preserves quoted CSV text that would otherwise be coerced', async () => {
+    const dialect = {delimiter: ';', quote: '|'};
+    const imported = await importCsv(Buffer.from('|TRUE|;TRUE;|FALSE|;FALSE;|42|;42\n'), dialect);
+    const exported = await exportCsv(imported.workbook, dialect);
+    assert.equal(exported.bytes.toString().trimEnd(), '|TRUE|;TRUE;|FALSE|;FALSE;|42|;42');
+    const reopened = await importCsv(exported.bytes, dialect);
+    const cells = (reopened.workbook.native.sheets as Record<string, JsonObject>).sheet_1.cellData as Record<string, Record<string, JsonObject>>;
+    assert.deepEqual(Object.values(cells['0']), [
+        {t: 1, v: 'TRUE'}, {t: 3, v: 1}, {t: 1, v: 'FALSE'}, {t: 3, v: 0}, {t: 1, v: '42'}, {t: 2, v: 42},
+    ]);
+});
+
+test('round-trips XLSX list formulas separately from inline options', async () => {
+    const input = makeMinimalXlsx({},
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' +
+        '<row r="1"><c r="A1"><v>1</v></c></row><row r="2"><c r="A2"><v>2</v></c></row><row r="3"><c r="A3"><v>3</v></c></row>' +
+        '</sheetData><dataValidations count="3">' +
+        '<dataValidation type="list" sqref="B1"><formula1>A1:A3</formula1></dataValidation>' +
+        '<dataValidation type="list" sqref="B2"><formula1>"open,closed"</formula1></dataValidation>' +
+        '<dataValidation type="list" sqref="B3"><formula1>Sheet1!$A$1:$A$3</formula1></dataValidation>' +
+        '</dataValidations></worksheet>');
+    const {workbook} = await importXlsx(input, {});
+    const readFormulas = (value: WorkbookV2): string[] => {
+        const validation = (value.native.resources as JsonObject[]).find(resource => resource.name === 'SHEET_DATA_VALIDATION_PLUGIN');
+        const rules = JSON.parse(String(validation?.data)).sheet_1 as {formula1: string}[];
+        return rules.map(rule => rule.formula1);
+    };
+    assert.deepEqual(readFormulas(workbook), ['=A1:A3', '["open","closed"]', '=Sheet1!$A$1:$A$3']);
+    const exported = await exportXlsx(workbook, {});
+    assert.deepEqual(readFormulas((await importXlsx(exported.bytes, {})).workbook), readFormulas(workbook));
+});
+
+test('reports worksheet hyperlinks and refuses strict publication with the loss report', async () => {
+    const rels = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const input = makeMinimalXlsx({
+        'xl/worksheets/_rels/sheet1.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+            `<Relationship Id="rId1" Type="${rels}/hyperlink" Target="https://example.com/" TargetMode="External"/></Relationships>`,
+    }, '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"' +
+        ` xmlns:r="${rels}"><sheetData/><hyperlinks><hyperlink ref="A1" r:id="rId1"/></hyperlinks></worksheet>`);
+    const {report} = await importXlsx(input, {});
+    assert.ok(report.losses.some(loss => loss.target === 'Sheet1!A1' && loss.property === 'hyperlink' && loss.status === 'lost'));
+    await assert.rejects(() => importXlsx(input, {strict_profile: true}), {
+        code: 'unsupported_content',
+        detail: {
+            reason: 'strict_profile_loss', loss_count: 1,
+            report: {
+                format: 'xlsx', operation: 'import', source_sha256: report.source_sha256, date_system: '1900',
+                sheets: report.sheets, defined_names: report.defined_names, losses: report.losses,
+                diagnostics: report.diagnostics, unknown_parts: [], editable_published: false,
+            },
+        },
+    });
+});
+
+test('keeps elapsed and time-only values separate from calendar dates in the 1904 system', async () => {
+    const input = makeMinimalXlsx({
+        'xl/styles.xml': '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+            '<numFmts count="2"><numFmt numFmtId="164" formatCode="[mm]:ss"/><numFmt numFmtId="165" formatCode="mm:ss"/></numFmts>' +
+            '<cellXfs count="5"><xf numFmtId="46"/><xf numFmtId="164"/><xf numFmtId="165"/><xf numFmtId="22"/><xf numFmtId="20"/></cellXfs></styleSheet>',
+    }, '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">' +
+        ['A', 'B', 'C', 'D', 'E'].map((column, index) => `<c r="${column}1" s="${index}"><v>0.5</v></c>`).join('') +
+        '</row></sheetData></worksheet>', '<workbookPr date1904="1"/>');
+    const {workbook} = await importXlsx(input, {});
+    const readValues = (value: WorkbookV2): unknown[] => {
+        const cells = (value.native.sheets as Record<string, JsonObject>).sheet_1.cellData as Record<string, Record<string, JsonObject>>;
+        return Object.values(cells['0']).map(cell => cell.v);
+    };
+    assert.deepEqual(readValues(workbook), [0.5, 0.5, 0.5, 1462.5, 0.5]);
+    const cells = (workbook.native.sheets as Record<string, JsonObject>).sheet_1.cellData as Record<string, Record<string, JsonObject>>;
+    const styles = workbook.native.styles as Record<string, JsonObject>;
+    assert.deepEqual(styles[String(cells['0']['0'].s)].n, {pattern: '[h]:mm:ss'});
+    for (const date_system of ['1900', '1904']) {
+        const exported = await exportXlsx(workbook, {date_system});
+        const sheet = Buffer.from(unzipSync(exported.bytes)['xl/worksheets/sheet1.xml']).toString();
+        assert.match(sheet, /<c r="A1" s="\d+"><v>0\.5<\/v><\/c>/);
+        assert.match(sheet, date_system === '1904'
+            ? /<c r="D1" s="\d+"><v>0\.5<\/v><\/c>/
+            : /<c r="D1" s="\d+"><v>1462\.5<\/v><\/c>/);
+        assert.deepEqual(readValues((await importXlsx(exported.bytes, {})).workbook), readValues(workbook));
+    }
+});
+
+test('shifts shared formula cell references without changing their sheet names', async () => {
+    const ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    const rels = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const sheet = (data: string): string => `<worksheet xmlns="${ns}"><sheetData>${data}</sheetData></worksheet>`;
+    const input = makeMinimalXlsx({
+        'xl/workbook.xml': `<workbook xmlns="${ns}" xmlns:r="${rels}"><sheets>` +
+            ['Summary', 'Q1', 'Q2'].map((name, i) => `<sheet name="${name}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') +
+            '</sheets></workbook>',
+        'xl/_rels/workbook.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+            [1, 2, 3].map(i => `<Relationship Id="rId${i}" Type="${rels}/worksheet" Target="worksheets/sheet${i}.xml"/>`).join('') +
+            '</Relationships>',
+        'xl/worksheets/sheet2.xml': sheet('<row r="1"><c r="A1"><v>4</v></c></row><row r="2"><c r="A2"><v>5</v></c></row>'),
+        'xl/worksheets/sheet3.xml': sheet('<row r="2"><c r="A2"><v>999</v></c></row>'),
+    }, sheet('<row r="1"><c r="A1"><f t="shared" ref="A1:A2" si="0">\'Q1\'!A1+Q1!A1</f><v>0</v></c></row>' +
+        '<row r="2"><c r="A2"><f t="shared" si="0"/><v>0</v></c></row>'));
+    const {workbook} = await importXlsx(input, {});
+    const cells = (workbook.native.sheets as Record<string, JsonObject>).sheet_1.cellData as Record<string, Record<string, JsonObject>>;
+    assert.equal(cells['1']['0'].f, "='Q1'!A2+Q1!A2");
+    assert.equal(cells['1']['0'].v, 10);
+});
+
+test('round-trips XLSX border styles and reports unsupported borders', async () => {
+    const input = makeMinimalXlsx({
+        'xl/styles.xml': '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+            '<borders count="1"><border><left style="double"/><right style="dashed"/><top style="dotted"/><bottom style="thin"/>' +
+            '<diagonal style="thin"/></border></borders><cellXfs count="1"><xf borderId="0"/></cellXfs></styleSheet>',
+    });
+    const {workbook, report} = await importXlsx(input, {});
+    const readBorder = (value: WorkbookV2): JsonObject => {
+        const cells = (value.native.sheets as Record<string, JsonObject>).sheet_1.cellData as Record<string, Record<string, JsonObject>>;
+        return (value.native.styles as Record<string, JsonObject>)[String(cells['0']['0'].s)].bd as JsonObject;
+    };
+    const border = readBorder(workbook);
+    assert.equal((border.l as JsonObject).s, 7);
+    assert.equal((border.r as JsonObject).s, 4);
+    assert.equal((border.t as JsonObject).s, 3);
+    assert.ok(report.losses.some(loss => loss.property === 'border' && loss.status === 'lost'));
+    const {bytes} = await exportXlsx(workbook, {});
+    assert.deepEqual(readBorder((await importXlsx(bytes, {})).workbook), border);
+    (border.l as JsonObject).s = 99;
+    assert.ok((await exportXlsx(workbook, {})).report.losses.some(loss => loss.property === 'border' && loss.status === 'lost'));
 });
 
 test('round-trips XLSX features, handles 1900/1904 dates, reports losses/unknown parts and supports post-import insert_row_before', async () => {
