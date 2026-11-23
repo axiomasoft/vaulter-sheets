@@ -159,3 +159,41 @@ test('emits checks.cells for already-matching fill_formula targets and verifies 
     const formulaRejected = await processFrame(Buffer.from(JSON.stringify(formulaInputReq) + '\n'));
     assert.equal(formulaRejected.ok ? null : formulaRejected.error.code, 'precondition_failed');
 });
+
+test('checks settled fill_formula operands before destination writes can change them', async () => {
+    const input = request('scope-changed');
+    const workbook = input.workbook as JsonObject;
+    const sheets = (workbook.native as JsonObject).sheets as JsonObject;
+    const cellData = (sheets.expenses as JsonObject).cellData as JsonObject;
+    const row3 = cellData['2'] as JsonObject;
+    row3['2'] = {f: '=SUM(D2,E3)', t: 2, v: 120};
+    row3['4'] = {t: 2, v: 100};
+    (input.base as JsonObject).sha256 = sha256Canonical(workbook);
+
+    const [fill] = input.commands as JsonObject[];
+    fill.scope = 'fixed_members';
+    fill.row_ids = ['r-telecom', 'r-telecom2'];
+    fill.expected_inputs = [
+        {left: {content: {number: 120}, value: 120}, right: {content: {number: 100}, value: 100}},
+        {left: {content: {formula: '=SUM(D2,E3)'}, value: 120}, right: {content: {number: 40}, value: 40}},
+    ];
+
+    // Filling D2 with 20 would bring C3 back to the approved 120.
+    const rejected = await processFrame(Buffer.from(JSON.stringify(input) + '\n'));
+    assert.equal(rejected.ok ? null : rejected.error.code, 'precondition_failed');
+    if (!rejected.ok) {
+        assert.deepEqual(rejected.error.detail, {
+            sheet_id: 'expenses', a1: 'C3', row_id: 'r-telecom2', operand: 'left', expected_value: 120, actual_value: 100,
+        });
+    }
+
+    row3['2'] = {f: '=SUM(D2,E3)', t: 2, v: 100};
+    row3['4'] = {t: 2, v: 120};
+    (input.base as JsonObject).sha256 = sha256Canonical(workbook);
+    const accepted = await processFrame(Buffer.from(JSON.stringify(input) + '\n'));
+    assert.ok(accepted.ok && accepted.operation === 'apply', JSON.stringify(accepted));
+    assert.deepEqual(accepted.checks.cells.map(({a1, value}) => ({a1, value})), [
+        {a1: 'D2', value: 20},
+        {a1: 'D3', value: 100},
+    ]);
+});

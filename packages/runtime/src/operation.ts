@@ -268,7 +268,7 @@ export function assertResourcesPreserved(before: JsonObject, after: JsonObject):
 
 interface Written {sheet_id: string; coord: CellCoord}
 
-function applyCommand(session: UniverWorkbookSession, bindings: TableBindings, cmd: Command, limits: Limits, checked: Written[], changed: RangeSelector[]): void {
+async function applyCommand(session: UniverWorkbookSession, bindings: TableBindings, cmd: Command, limits: Limits, checked: Written[], changed: RangeSelector[]): Promise<void> {
     switch (cmd.kind) {
         case 'set_number':
         case 'set_text':
@@ -331,6 +331,10 @@ function applyCommand(session: UniverWorkbookSession, bindings: TableBindings, c
                 }
                 return {row, formula: `=${toA1({row, column: left})}-${toA1({row, column: right})}`};
             });
+            if (cmd.expected_inputs?.some(({left, right}) => left.value !== undefined || right.value !== undefined)) {
+                await session.settle(limits.calculation_timeout_ms);
+                verifySettledOperandValues(session, bindings, cmd);
+            }
             for (const [index, {row, formula}] of targets.entries()) {
                 const coord = {row, column: destination};
                 checked.push({sheet_id: cmd.sheet_id, coord});
@@ -412,12 +416,9 @@ export async function runOperation(message: Json, profile: ProfileRef = WIRE_PRO
         const checked: Written[] = [];
         const changed: RangeSelector[] = [];
         if (request.operation === 'apply') {
-            for (const cmd of request.commands) applyCommand(session, bindings, cmd, limits, checked, changed);
+            for (const cmd of request.commands) await applyCommand(session, bindings, cmd, limits, checked, changed);
         }
         await session.settle(limits.calculation_timeout_ms);
-        if (request.operation === 'apply') {
-            for (const cmd of request.commands) verifySettledOperandValues(session, bindings, cmd);
-        }
         const native = session.save();
         if (unknown.length > 0 && Array.isArray(request.workbook.native.resources)) {
             const preservedUnknown = request.workbook.native.resources.filter(resource =>
