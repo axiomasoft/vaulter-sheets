@@ -46,6 +46,9 @@ export class WorkbookRoomClient {
         if (!/^[A-Za-z0-9._-]{1,255}$/.test(id) || this.#pending.length >= 64 || this.#pending.some(item => item.intent.command_id === id)) {
             throw new Error('Invalid or duplicate pending intent');
         }
+        if (policy !== 'revalidate_by_id' && this.#pending.some(({intent}) => intent.commands.some(command => command.kind === 'insert_row_before'))) {
+            throw new Error('Wait for the pending row insertion before submitting a positional edit');
+        }
         this.#pending.push({
             intent: {command_id: id, expected_generation: this.#state.generation, policy, commands: structuredClone(commands)},
             if_match: policy === 'revalidate_by_id' ? null : this.#state.etag,

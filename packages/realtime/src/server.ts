@@ -8,6 +8,7 @@ import {replay} from './replay.ts';
 
 const REQUEST_LIMIT = 1024 * 1024;
 const RESPONSE_LIMIT = 24 * 1024 * 1024;
+const OWNER_RENEW_MS = 5_000; // The PHP owner lease lasts 15 seconds.
 const TERMINAL_ROOM_CODES = new Set(['generation_changed', 'room_not_active', 'stale_owner', 'owner_busy']);
 
 class OwnerProblem extends Error {
@@ -63,6 +64,23 @@ export function createRealtimeServer(options: Options) {
         const data = await responseJson(result);
         if (!result.ok) throw new OwnerProblem(result.status, record(data) && typeof data.code === 'string' ? data.code : 'room_unavailable');
         return data;
+    }
+
+    async function append(room: string, token: string, fence: number, body: Record<string, unknown>, traceparent?: string): Promise<unknown> {
+        const renew = () => call('renew', room, token, {owner_fence: fence});
+        await renew();
+        let renewing: Promise<void> | undefined;
+        const heartbeat = setInterval(() => {
+            // PHP checks the fence when it publishes, including after a failed renewal.
+            renewing ??= renew().catch(() => {}).then(() => { renewing = undefined; });
+        }, OWNER_RENEW_MS);
+        heartbeat.unref();
+        try {
+            return await call('append', room, token, {...body, owner_fence: fence}, traceparent);
+        } finally {
+            clearInterval(heartbeat);
+            await renewing;
+        }
     }
 
     const server = createServer(async (request, response) => {
@@ -187,8 +205,7 @@ export function createRealtimeServer(options: Options) {
                     if (socket.readyState !== WebSocket.OPEN) return;
                     const lease = await call('acquire', roomId, peer.token);
                     if (!record(lease) || !position(lease.owner_fence) || !position(lease.head_seq)) throw new Error('Invalid room lease');
-                    await call('renew', roomId, peer.token, {owner_fence: lease.owner_fence});
-                    const receipt = await call('append', roomId, peer.token, {owner_fence: lease.owner_fence, base_seq: lease.head_seq, intent, if_match: tag}, traceparent);
+                    const receipt = await append(roomId, peer.token, lease.owner_fence, {base_seq: lease.head_seq, intent, if_match: tag}, traceparent);
                     if (!record(receipt) || receipt.state !== 'committed' || receipt.command_id !== commandId || !position(receipt.seq)) throw new Error('Invalid workbook receipt');
                     send(peer, {type: 'ack', receipt: receipt as unknown as WorkbookReceipt});
                     await updatePeers(roomId, room);
