@@ -154,20 +154,36 @@ export class UniverWorkbookSession {
     save(): JsonObject {
         const native = JSON.parse(JSON.stringify(this.#book.save())) as JsonObject;
         const styles = native.styles;
-        if (!styles || typeof styles !== 'object' || Array.isArray(styles)) return native;
-        const ids = new Map(Object.entries(styles).map(([id, style]) => [id, `st_${sha256Canonical(style).slice(0, 12)}`]));
-        native.styles = Object.fromEntries(Object.entries(styles).map(([id, style]) => [ids.get(id)!, style]));
-        const rewrite = (value: unknown): void => {
-            if (!value || typeof value !== 'object') return;
-            for (const [key, item] of Object.entries(value)) {
-                if ((key === 's' || key === 'defaultStyle') && typeof item === 'string' && ids.has(item)) {
-                    (value as Record<string, unknown>)[key] = ids.get(item);
-                } else {
-                    rewrite(item);
+        if (styles && typeof styles === 'object' && !Array.isArray(styles)) {
+            const ids = new Map(Object.entries(styles).map(([id, style]) => [id, `st_${sha256Canonical(style).slice(0, 12)}`]));
+            native.styles = Object.fromEntries(Object.entries(styles).map(([id, style]) => [ids.get(id)!, style]));
+            const rewrite = (value: unknown): void => {
+                if (!value || typeof value !== 'object') return;
+                for (const [key, item] of Object.entries(value)) {
+                    if ((key === 's' || key === 'defaultStyle') && typeof item === 'string' && ids.has(item)) {
+                        (value as Record<string, unknown>)[key] = ids.get(item);
+                    } else {
+                        rewrite(item);
+                    }
                 }
-            }
-        };
-        rewrite(native.sheets);
+            };
+            rewrite(native.sheets);
+        }
+        // xlsx/csv call save() directly, so the canonical (name, id) order lives here.
+        if (Array.isArray(native.resources)) {
+            const key = (value: unknown): string => {
+                if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+                const record = value as Record<string, unknown>;
+                const name = typeof record.name === 'string' ? record.name : '';
+                const id = record.id == null ? '' : String(record.id);
+                return `${name}\u0000${id}`;
+            };
+            native.resources.sort((left, right) => {
+                const a = key(left);
+                const b = key(right);
+                return a < b ? -1 : a > b ? 1 : 0;
+            });
+        }
         return native;
     }
 

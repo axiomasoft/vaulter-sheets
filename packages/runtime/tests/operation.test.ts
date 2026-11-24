@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {test} from 'node:test';
+import {UniverWorkbookSession} from '../src/engine/univer.ts';
 import {processFrame} from '../src/frame.ts';
 import {decodeRequest} from '../src/operation.ts';
 import {sha256Canonical, type JsonObject} from '../src/protocol.ts';
@@ -196,4 +197,22 @@ test('checks settled fill_formula operands before destination writes can change 
         {a1: 'D2', value: 20},
         {a1: 'D3', value: 100},
     ]);
+});
+
+test('save() sorts native.resources by name then id', () => {
+    const input = request('apply');
+    const native = structuredClone((input.workbook as JsonObject).native) as JsonObject;
+    const resources = native.resources as JsonObject[];
+    native.resources = [...resources].reverse();
+    const session = UniverWorkbookSession.open(native);
+    try {
+        const saved = session.save().resources as JsonObject[];
+        const keys = saved.map(item => `${String(item.name)}\u0000${item.id ?? ''}`);
+        const ordered = [...keys].sort((left, right) => left < right ? -1 : left > right ? 1 : 0);
+        assert.deepEqual(keys, ordered);
+        assert.ok(keys.length > 1);
+        assert.notEqual(keys[0], keys[keys.length - 1]);
+    } finally {
+        session.dispose();
+    }
 });

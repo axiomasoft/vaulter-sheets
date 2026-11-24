@@ -2,7 +2,7 @@
   "name": "@vaulter/sheets-tiptap",
   "version": "1.0.0",
   "description": "Tiptap workbook range link for Vaulter Sheets. The saved mark is an ordinary link; preview and export re-check book access.",
-  "license": "UNLICENSED",
+  "license": "proprietary",
   "type": "module",
   "engines": {
     "node": ">=26.13.1"

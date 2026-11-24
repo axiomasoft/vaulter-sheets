@@ -2,7 +2,9 @@
 
 declare(strict_types=1);
 
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Vaulter\Database\VaulterDatabase;
 use Vaulter\Drive\Access\Roles\RoleRegistry;
 use Vaulter\Drive\Access\ValueObjects\Subject;
 use Vaulter\Drive\Data\Access\GrantInput;
@@ -11,6 +13,10 @@ use Vaulter\Drive\Operations\DriveContext;
 use Vaulter\Drive\Testing\Drive\DriveTestHelpers;
 use Vaulter\Drive\Testing\Http\V1;
 use Vaulter\Media\Contracts\Cas\BlobPins;
+use Vaulter\Media\Contracts\Cas\BlobStore;
+use Vaulter\Media\ValueObjects\Cas\BlobScope;
+use Vaulter\Schema\SchemaHelpers;
+use Vaulter\Sheets\Console\RecoverWorkbookJobs;
 use Vaulter\Sheets\Content\WorkbookCodec;
 use Vaulter\Sheets\Contracts\WorkbookOperations;
 use Vaulter\Sheets\Contracts\WorkbookRuntime;
@@ -367,4 +373,53 @@ it('durably rejects fill_formula when expected_inputs changed and keeps rejectio
         ->assertStatus(409)->assertJsonPath('data.state', 'rejected')->assertJsonPath('data.error.code', 'version_conflict');
     $this->getJson($url.'/ranges?sheet_id=detail&range=E2:E3')->assertOk()
         ->assertJsonPath('data.0.cells.0.value', null)->assertJsonPath('data.0.cells.1.value', null);
+});
+
+it('expires a committed command and unpins its evidence blob', function (): void {
+    $url = createWorkbookTestUrl($this);
+    $head = $this->getJson($url)->assertOk();
+    $generation = $head->json('data.marker.generation');
+    $change = ['kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 3, 'column' => 3, 'expected' => ['number' => 5], 'value' => 6];
+    $this->postJson($url.'/commands', workbookTestPlan($generation, 'expire-evidence', $change), ['If-Match' => $head->headers->get('ETag')])->assertOk();
+    $plain = $this->postJson($url.'/commands', workbookTestPlan($generation, 'expire-plain', [
+        'kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 3, 'column' => 2, 'expected' => ['number' => 3], 'value' => 4,
+    ]), ['If-Match' => $this->getJson($url)->headers->get('ETag')])->assertOk();
+    expect($plain->json('data.state'))->toBe('committed');
+
+    $commands = app(SchemaHelpers::class)->table('sheets_commands');
+    $row = DB::table($commands)->where('command_id', 'expire-evidence')->first();
+    expect($row)->not->toBeNull();
+    $stream = fopen('php://memory', 'r+');
+    expect(is_resource($stream))->toBeTrue();
+    fwrite($stream, 'command-evidence');
+    rewind($stream);
+    $blob = app(BlobStore::class)->commit($stream, BlobScope::unshared());
+
+    app(VaulterDatabase::class)->transaction(function () use ($commands, $row, $blob): void {
+        DB::table($commands)->where('command_id', 'expire-evidence')->update([
+            'created_at' => '2020-01-01 00:00:00',
+            'replay_until' => '2020-01-01 00:01:00',
+            'evidence_blob_id' => $blob->id,
+        ]);
+        DB::table($commands)->where('command_id', 'expire-plain')->update([
+            'created_at' => '2020-01-01 00:00:00',
+            'replay_until' => '2020-01-01 00:01:00',
+        ]);
+        app(BlobPins::class)->pin($blob->id, RecoverWorkbookJobs::EVIDENCE_PIN_OWNER, (string) $row->id);
+    });
+    expect(app(BlobPins::class)->countByOwner()[RecoverWorkbookJobs::EVIDENCE_PIN_OWNER] ?? 0)->toBe(1);
+
+    $this->artisan(RecoverWorkbookJobs::class)->assertSuccessful();
+
+    $expired = DB::table($commands)->where('command_id', 'expire-evidence')->first();
+    $plainRow = DB::table($commands)->where('command_id', 'expire-plain')->first();
+    expect($expired->state)->toBe('expired')
+        ->and($expired->evidence)->toBeNull()
+        ->and($expired->evidence_blob_id)->toBeNull()
+        ->and($expired->intent)->toBeNull()
+        ->and($expired->error_code)->toBeNull()
+        ->and($expired->finished_at)->not->toBeNull()
+        ->and($plainRow->state)->toBe('expired')
+        ->and($plainRow->evidence_blob_id)->toBeNull()
+        ->and(app(BlobPins::class)->countByOwner()[RecoverWorkbookJobs::EVIDENCE_PIN_OWNER] ?? 0)->toBe(0);
 });

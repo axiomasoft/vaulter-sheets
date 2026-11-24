@@ -17,6 +17,9 @@ use Vaulter\Sheets\Jobs\RunWorkbookExchange;
 
 final class RecoverWorkbookJobs extends Command
 {
+    /** Owner of a command evidence pin. The reference key is the command row id. */
+    public const string EVIDENCE_PIN_OWNER = 'sheets.command_evidence';
+
     protected $signature = 'vaulter-sheets:recover';
 
     protected $description = 'Reclaim interrupted workbook commands/exchange jobs and expire old outcomes';
@@ -32,11 +35,20 @@ final class RecoverWorkbookJobs extends Command
 
             $ledger = $db->table($commandsTable);
             $expiredCommands = (clone $ledger)->whereIn('state', ['committed', 'rejected'])
-                ->where('replay_until', '<=', $now)->orderBy('replay_until')->limit(100)->pluck('id');
+                ->where('replay_until', '<=', $now)->orderBy('replay_until')->limit(100)
+                ->lockForUpdate()->get(['id', 'evidence_blob_id']);
             if ($expiredCommands->isNotEmpty()) {
-                (clone $ledger)->whereIn('id', $expiredCommands)->whereIn('state', ['committed', 'rejected'])
+                foreach ($expiredCommands as $row) {
+                    $commandId = self::str($row->id ?? null);
+                    $blobId = self::str($row->evidence_blob_id ?? null);
+                    if ($commandId !== '' && $blobId !== '') {
+                        $pins->unpin($blobId, self::EVIDENCE_PIN_OWNER, $commandId);
+                    }
+                }
+                (clone $ledger)->whereIn('id', $expiredCommands->pluck('id'))->whereIn('state', ['committed', 'rejected'])
                     ->where('replay_until', '<=', $now)->update([
-                        'state' => 'expired', 'intent' => null, 'evidence' => null, 'error_code' => null,
+                        'state' => 'expired', 'intent' => null, 'evidence' => null,
+                        'evidence_blob_id' => null, 'error_code' => null,
                     ]);
             }
 

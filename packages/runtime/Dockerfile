@@ -6,13 +6,18 @@ WORKDIR /build
 COPY package.json package-lock.json ./
 COPY packages/runtime/package.json packages/runtime/package.json
 COPY packages/vue/package.json packages/vue/package.json
+COPY packages/realtime/package.json packages/realtime/package.json
+COPY packages/tiptap/package.json packages/tiptap/package.json
 COPY patches/ patches/
 COPY scripts/patch-univer.mjs scripts/patch-univer.mjs
-RUN npm ci --ignore-scripts --workspace @vaulter/sheets-runtime --include-workspace-root=false && node scripts/patch-univer.mjs
+RUN npm ci --ignore-scripts --workspace @vaulter/sheets-runtime --include-workspace-root=false
 COPY contracts/ contracts/
 COPY packages/runtime/ packages/runtime/
-RUN npm run build --workspace @vaulter/sheets-runtime \
-    && npm prune --omit=dev --ignore-scripts --workspace @vaulter/sheets-runtime --include-workspace-root=false
+RUN node scripts/patch-univer.mjs \
+    && npm run build --workspace @vaulter/sheets-runtime \
+    && npm prune --omit=dev --ignore-scripts --workspace @vaulter/sheets-runtime --include-workspace-root=false \
+    && node scripts/patch-univer.mjs \
+    && node -e 'const fs=require("node:fs"); const patch=fs.readFileSync("patches/@univerjs__engine-formula@1.5.2.patch","utf8"); for (const section of patch.split(/^--- a\//m).slice(1)) { const [rel,...lines]=section.trimEnd().split("\n"); const added=lines.find(line=>/^\+\s/.test(line))?.slice(1); const removed=lines.find(line=>/^-\s/.test(line))?.slice(1); const text=fs.readFileSync("node_modules/@univerjs/engine-formula/"+rel,"utf8"); if (!added || !removed || !text.includes(added) || text.includes(removed)) { console.error("patch #7936 missing after prune: "+rel); process.exit(1);} }'
 
 FROM node:${NODE_VERSION}-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 && rm -rf /var/lib/apt/lists/*

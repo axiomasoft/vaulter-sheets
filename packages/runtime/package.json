@@ -1,9 +1,9 @@
 {
   "name": "@vaulter/sheets-runtime",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": false,
   "description": "Vaulter Sheets single-workbook runtime for Univer OSS.",
-  "license": "UNLICENSED",
+  "license": "proprietary",
   "type": "module",
   "engines": {
     "node": ">=26.13.1"
@@ -28,6 +28,7 @@
   ],
   "dependencies": {
     "@univerjs/core": "1.5.2",
+    "@univerjs/data-validation": "1.5.2",
     "@univerjs/docs": "1.5.2",
     "@univerjs/engine-formula": "1.5.2",
     "@univerjs/engine-render": "1.5.2",
@@ -43,7 +44,7 @@
     "yauzl": "^3.4.0"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.0.0",
     "@types/yauzl": "^3.4.0",
     "typescript": "^5.9.3"
   }

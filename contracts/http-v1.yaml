@@ -161,6 +161,108 @@ paths:
         '403': {description: Caller lacks download ability}
         '404': {$ref: '#/components/responses/unavailable'}
         '409': {description: Export is not ready}
+  /workbooks/{node}/realtime/session:
+    parameters:
+      - $ref: '#/components/parameters/node'
+    post:
+      operationId: openWorkbookRealtimeSession
+      responses:
+        '200':
+          description: Room credential for the caller's current grant
+          headers:
+            Cache-Control: {schema: {type: string}}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/realtimeSession'}
+        '404': {$ref: '#/components/responses/unavailable'}
+        '409': {description: Workbook is not in journal mode}
+  /workbooks/{node}/realtime/profile:
+    parameters:
+      - $ref: '#/components/parameters/node'
+      - $ref: '#/components/parameters/ifMatch'
+    put:
+      operationId: switchWorkbookRealtimeProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mode]
+              properties:
+                mode: {enum: [snapshot, journal]}
+      responses:
+        '200':
+          description: Workbook write mode after the switch
+          headers:
+            Cache-Control: {schema: {type: string}}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: {$ref: '#/components/schemas/realtimeProfile'}
+        '404': {$ref: '#/components/responses/unavailable'}
+        '409': {description: If-Match does not match the current marker}
+        '422': {description: Mode or If-Match is missing}
+  /realtime/owner/ready:
+    post:
+      operationId: workbookRealtimeOwnerReady
+      parameters:
+        - $ref: '#/components/parameters/ownerCredential'
+      responses:
+        '200':
+          description: Owner protocol the hub should speak
+          headers:
+            Cache-Control: {schema: {type: string}}
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [protocol]
+                properties:
+                  protocol: {const: univer-sheets/1}
+        '401': {description: Owner credential is missing or wrong}
+  /realtime/owner/{action}:
+    parameters:
+      - $ref: '#/components/parameters/ownerCredential'
+      - in: path
+        name: action
+        required: true
+        schema: {enum: [acquire, renew, release, read, append]}
+    post:
+      operationId: workbookRealtimeOwnerCall
+      parameters:
+        - in: header
+          name: Authorization
+          required: true
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/realtimeOwnerRequest'}
+      responses:
+        '200':
+          description: Lease, snapshot, release, or committed mutation receipt
+          headers:
+            Cache-Control: {schema: {type: string}}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/realtimeOwnerResult'}
+        '401': {description: Owner credential or room token is invalid}
+        '403': {description: Room grant is read-only}
+        '404': {$ref: '#/components/responses/unavailable'}
+        '409': {description: Fence, base sequence, or generation conflict}
+        '412': {description: Room binding does not match the credential}
+        '413': {description: Owner body exceeds 1 MiB}
+        '422': {description: Owner body failed validation}
+        '503': {description: Room checkpoint is unavailable}
 components:
   parameters:
     node:
@@ -168,6 +270,16 @@ components:
       name: node
       required: true
       schema: {type: string}
+    ifMatch:
+      in: header
+      name: If-Match
+      required: true
+      schema: {type: string}
+    ownerCredential:
+      in: header
+      name: X-Vaulter-Sheets-Owner
+      required: true
+      schema: {type: string, minLength: 32, maxLength: 4096}
   schemas:
     exchangeCapabilities:
       type: object
@@ -183,6 +295,60 @@ components:
         generation: {type: integer, minimum: 0, maximum: 9007199254740991}
         position: {type: integer, minimum: 0, maximum: 9007199254740991}
         sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
+    realtimeSession:
+      type: object
+      required: [protocol, version, endpoint, token, expires_at, mode, node_id, generation, schema_version, options]
+      properties:
+        protocol: {type: string}
+        version: {const: univer-sheets/1}
+        endpoint: {type: [string, 'null']}
+        token: {type: string}
+        expires_at: {type: integer}
+        mode: {enum: [read, write]}
+        node_id: {type: string}
+        generation: {type: integer, minimum: 0}
+        schema_version: {type: integer}
+        options:
+          type: object
+          additionalProperties: {type: [string, integer, boolean, 'null']}
+    realtimeProfile:
+      type: object
+      required: [generation, position, mode]
+      properties:
+        generation: {type: integer, minimum: 0}
+        position: {type: integer, minimum: 0}
+        mode: {enum: [snapshot, journal]}
+    realtimeOwnerRequest:
+      type: object
+      required: [room, owner_id]
+      properties:
+        room: {type: string}
+        owner_id: {type: string, format: uuid}
+        owner_fence: {type: integer, minimum: 1, maximum: 9007199254740991}
+        after_seq: {type: integer, minimum: 0, maximum: 9007199254740991}
+        include_state: {type: boolean}
+        base_seq: {type: integer, minimum: 0, maximum: 9007199254740991}
+        if_match: {type: [string, 'null']}
+        intent: {type: object}
+    realtimeOwnerResult:
+      type: object
+      properties:
+        owner_fence: {type: integer, minimum: 1}
+        head_seq: {type: integer, minimum: 0}
+        owner_expires_at: {type: [string, 'null']}
+        released: {type: boolean}
+        unchanged: {type: boolean}
+        generation: {type: integer, minimum: 0}
+        checkpoint_seq: {type: integer, minimum: 0}
+        checkpoint: {type: string}
+        tail: {type: array, items: {type: object}}
+        etag: {type: string}
+        marker: {$ref: '#/components/schemas/marker'}
+        insertions: {type: [array, 'null'], items: {}}
+        receipt_id: {type: string}
+        seq: {type: integer, minimum: 0}
+        command_id: {type: string}
+        state: {type: string}
   responses:
     unavailable:
       description: Resource unavailable to the caller
