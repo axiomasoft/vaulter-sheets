@@ -4,7 +4,6 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VAULTER_DIR="${VAULTER_DIR:-$(cd "${ROOT}/../vaulter" && pwd)}"
 OUT="${ROOT}/bench/results/4.1"
 mkdir -p "${OUT}/headless"
 export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-/tmp/npm-cache}"
@@ -22,10 +21,10 @@ fi
 node -v | tee "${OUT}/node.txt"
 
 set +e
-bash "${VAULTER_DIR}/plan/checks/univer-headless.sh" > "${OUT}/headless/univer-headless.log" 2>&1
+bash "${ROOT}/bench/probes/univer-headless.sh" > "${OUT}/headless/univer-headless.log" 2>&1
 headless_exit=$?
 echo "${headless_exit}" > "${OUT}/headless/exit"
-bash "${VAULTER_DIR}/plan/checks/sheets-browser/run.sh" > "${OUT}/sheets-browser.log" 2>&1
+bash "${ROOT}/bench/probes/sheets-browser/run.sh" > "${OUT}/sheets-browser.log" 2>&1
 browser_exit=$?
 echo "${browser_exit}" > "${OUT}/sheets-browser.exit"
 set -e

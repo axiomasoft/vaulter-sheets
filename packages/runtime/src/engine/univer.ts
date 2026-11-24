@@ -3,7 +3,7 @@
  * Method names are taken from the installed .d.ts files of the pinned packages
  * (FWorksheet.getRange/insertRowsBefore, FRange.setValue/setFormula/getFormula/getRawValue,
  * FFormula.executeCalculation/onCalculationResultApplied, FWorkbook.save) and from
- * plan/checks/sheets-headless/smoke.mjs, which calls them the same way.
+ * bench/probes/sheets-headless/smoke.mjs, which calls them the same way.
  */
 import {BorderStyleTypes, CellValueType, HorizontalAlign, LocaleType, Univer, VerticalAlign, WrapStrategy, type IStyleData, type IWorkbookData} from '@univerjs/core';
 import {FUniver} from '@univerjs/core/facade';

@@ -1,6 +1,6 @@
 /**
  * Private PHP <-> Node wire contract v1 of vaulter-sheets runtime.
- * Normative description: plan/spec/implementation/sheets-runtime-wire.md, schema: runtime-v1.schema.json.
+ * Normative description: docs/runtime-wire-v1.md, schema: runtime-v1.schema.json.
  * Target file in vaulter-sheets: packages/runtime/src/protocol.ts.
  */
 import {createHash} from 'node:crypto';

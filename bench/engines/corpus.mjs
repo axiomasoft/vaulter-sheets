@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-/** Shared formula vector. Origin: vaulter plan/examples/workbook.json, copied into this repo. */
+/** Shared formula vector. Copied into examples/workbook.json from the upstream Vaulter spreadsheet vector. */
 export function loadCorpus() {
     const url = new URL('../../examples/workbook.json', import.meta.url);
     const text = readFileSync(url, 'utf8');

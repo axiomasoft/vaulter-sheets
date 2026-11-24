@@ -30,29 +30,29 @@ Vector: `examples/workbook.json`. Expected path: 35, then price 7 → 41, then i
 
 ## Resources and commands
 
-Approved resources: SHEET_AuthzIoMockService_PLUGIN, SHEET_CONDITIONAL_FORMATTING_PLUGIN, SHEET_DATA_VALIDATION_PLUGIN, SHEET_DEFINED_NAME_PLUGIN, SHEET_FILTER_PLUGIN, SHEET_RANGE_PROTECTION_PLUGIN, SHEET_RANGE_THEME_MODEL_PLUGIN, SHEET_WORKSHEET_PROTECTION_PLUGIN, SHEET_WORKSHEET_PROTECTION_POINT_PLUGIN.
+Approved resources: SHEET_AuthzIoMockService_PLUGIN, SHEET_CONDITIONAL_FORMATTING_PLUGIN, SHEET_DATA_VALIDATION_PLUGIN, SHEET_DEFINED_NAME_PLUGIN, SHEET_FILTER_PLUGIN, SHEET_HYPER_LINK_PLUGIN, SHEET_RANGE_PROTECTION_PLUGIN, SHEET_RANGE_THEME_MODEL_PLUGIN, SHEET_WORKSHEET_PROTECTION_PLUGIN, SHEET_WORKSHEET_PROTECTION_POINT_PLUGIN.
 Measured save() resources: SHEET_AuthzIoMockService_PLUGIN, SHEET_CONDITIONAL_FORMATTING_PLUGIN, SHEET_DATA_VALIDATION_PLUGIN, SHEET_DEFINED_NAME_PLUGIN, SHEET_FILTER_PLUGIN, SHEET_RANGE_PROTECTION_PLUGIN, SHEET_RANGE_THEME_MODEL_PLUGIN, SHEET_WORKSHEET_PROTECTION_PLUGIN, SHEET_WORKSHEET_PROTECTION_POINT_PLUGIN.
-Only measured: (none). Only approved: (none).
+Only measured: (none). Only approved: SHEET_HYPER_LINK_PLUGIN.
 
 A persisting command on an unknown resource returns `unsupported_content` before the write.
 `insert_row_before` on `SHEET_CONDITIONAL_FORMATTING_PLUGIN` returns `unsupported_content` before the write.
 
 ## Timing and memory
 
-- Univer open of 100k cells / 10k formulas (forced): p50 361.262 ms, p95 405.239 ms (n=3)
-- Univer 100×100 paste: 22.014 ms
-- Univer 20× open/dispose Node heap delta: 9338512 bytes (gc=true)
-- Browser CDP heap delta: -9550776 bytes
-- Browser long tasks: [221,198,59,117,127]
-- IronCalc large book: p50 6.402 ms, p95 6.428 ms (n=3)
+- Univer open of 100k cells / 10k formulas (forced): p50 333.878 ms, p95 387.197 ms (n=3)
+- Univer 100×100 paste: 21.912 ms
+- Univer 20× open/dispose Node heap delta: 9340120 bytes (gc=true)
+- Browser CDP heap delta: -9557792 bytes
+- Browser long tasks: [210,187,55,117,115]
+- IronCalc large book: p50 5.841 ms, p95 5.944 ms (n=3)
 
 ## Browser, clipboard, undo, accessibility
 
 - Official sheets-browser exit: 0
 - Official univer-headless exit: 0
 - Bench browser input: {"price":7,"line":21,"total":41}
-- Bench clipboard: {"source":7,"pastedByValue":7,"keyboard":true,"keyboardPaste":null}
-- Bench undo: {"available":true,"before":7,"after":7}
+- Bench clipboard: {"source":7,"pastedByValue":7,"keyboard":true,"keyboardPaste":7}
+- Bench undo: {"available":true,"before":7,"after":5}
 - Bench accessibility snapshot: recorded in manifest.json
 
 ## Process rules

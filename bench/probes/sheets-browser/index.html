@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><link rel="icon" href="data:,"><title>Univer Vue browser probe</title></head>
+<body style="margin:0"><div id="app"></div><script type="module">
+import { createApp, h, onBeforeUnmount, onMounted, ref } from 'vue'
+import { createUniver, LocaleType } from '@univerjs/presets'
+import { UniverSheetsCorePreset } from '@univerjs/preset-sheets-core'
+import enUS from '@univerjs/preset-sheets-core/locales/en-US'
+import '@univerjs/preset-sheets-core/lib/index.css'
+import snapshot from './snapshot-v1.json'
+
+createApp({
+  setup() {
+    const host = ref(null)
+    let instance
+    onMounted(() => {
+      const { univer, univerAPI } = createUniver({
+        locale: LocaleType.EN_US,
+        locales: { [LocaleType.EN_US]: enUS },
+        presets: [UniverSheetsCorePreset({ container: host.value })],
+      })
+      instance = univer
+      window.probeWorkbook = univerAPI.createWorkbook(snapshot)
+    })
+    onBeforeUnmount(() => instance?.dispose())
+    return () => h('main', { ref: host, style: 'height:100vh' })
+  },
+}).mount('#app')
+</script></body>
+</html>

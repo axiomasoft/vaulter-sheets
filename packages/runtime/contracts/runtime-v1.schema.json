@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://vaulter.invalid/sheets/runtime-v1.schema.json",
   "title": "vaulter-sheets runtime wire v1 (PHP owner <-> Node runtime)",
-  "description": "Normative text: plan/spec/implementation/sheets-runtime-wire.md. Target copy: vaulter-sheets/contracts/runtime-v1.schema.json. Strict decoding rules (duplicate keys, lossy integers) cannot be expressed in JSON Schema and are checked by the decoders.",
+  "description": "Normative text: docs/runtime-wire-v1.md. Target copy: vaulter-sheets/contracts/runtime-v1.schema.json. Strict decoding rules (duplicate keys, lossy integers) cannot be expressed in JSON Schema and are checked by the decoders.",
   "oneOf": [
     {"$ref": "#/$defs/applyRequest"},
     {"$ref": "#/$defs/readRequest"},

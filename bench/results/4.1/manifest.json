@@ -22,6 +22,11 @@
     "license": "Apache-2.0",
     "plugins": [
       {
+        "name": "@univerjs/data-validation",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
         "name": "@univerjs/docs",
         "version": "1.5.2",
         "license": "Apache-2.0"
@@ -42,17 +47,7 @@
         "license": "Apache-2.0"
       },
       {
-        "name": "@univerjs/sheets-formula",
-        "version": "1.5.2",
-        "license": "Apache-2.0"
-      },
-      {
-        "name": "@univerjs/sheets-numfmt",
-        "version": "1.5.2",
-        "license": "Apache-2.0"
-      },
-      {
-        "name": "@univerjs/data-validation",
+        "name": "@univerjs/sheets-conditional-formatting",
         "version": "1.5.2",
         "license": "Apache-2.0"
       },
@@ -62,17 +57,22 @@
         "license": "Apache-2.0"
       },
       {
-        "name": "@univerjs/sheets-conditional-formatting",
-        "version": "1.5.2",
-        "license": "Apache-2.0"
-      },
-      {
         "name": "@univerjs/sheets-filter",
         "version": "1.5.2",
         "license": "Apache-2.0"
       },
       {
+        "name": "@univerjs/sheets-formula",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
         "name": "@univerjs/sheets-hyper-link",
+        "version": "1.5.2",
+        "license": "Apache-2.0"
+      },
+      {
+        "name": "@univerjs/sheets-numfmt",
         "version": "1.5.2",
         "license": "Apache-2.0"
       }
@@ -83,6 +83,7 @@
       "SHEET_DATA_VALIDATION_PLUGIN",
       "SHEET_DEFINED_NAME_PLUGIN",
       "SHEET_FILTER_PLUGIN",
+      "SHEET_HYPER_LINK_PLUGIN",
       "SHEET_RANGE_PROTECTION_PLUGIN",
       "SHEET_RANGE_THEME_MODEL_PLUGIN",
       "SHEET_WORKSHEET_PROTECTION_PLUGIN",
@@ -91,9 +92,20 @@
     "commands": [
       "set_number",
       "set_text",
+      "set_boolean",
       "set_formula",
       "set_values",
       "insert_row_before",
+      "delete_row",
+      "insert_column_before",
+      "delete_column",
+      "add_sheet",
+      "rename_sheet",
+      "delete_sheet",
+      "set_format",
+      "merge_cells",
+      "unmerge_cells",
+      "set_freeze",
       "fill_formula"
     ],
     "limits": {
@@ -154,13 +166,16 @@
       "SHEET_DATA_VALIDATION_PLUGIN",
       "SHEET_DEFINED_NAME_PLUGIN",
       "SHEET_FILTER_PLUGIN",
+      "SHEET_HYPER_LINK_PLUGIN",
       "SHEET_RANGE_PROTECTION_PLUGIN",
       "SHEET_RANGE_THEME_MODEL_PLUGIN",
       "SHEET_WORKSHEET_PROTECTION_PLUGIN",
       "SHEET_WORKSHEET_PROTECTION_POINT_PLUGIN"
     ],
     "onlyMeasured": [],
-    "onlyApproved": []
+    "onlyApproved": [
+      "SHEET_HYPER_LINK_PLUGIN"
+    ]
   },
   "univer": {
     "engine": "@univerjs/core",
@@ -341,7 +356,7 @@
     "largePaste": {
       "rows": 100,
       "columns": 100,
-      "ms": 22.014
+      "ms": 21.912
     },
     "resources": [
       "SHEET_AuthzIoMockService_PLUGIN",
@@ -379,20 +394,20 @@
     "timings": {
       "openForced100kCells10kFormulas": {
         "n": 3,
-        "p50_ms": 361.262,
-        "p95_ms": 405.239,
-        "max_ms": 405.239
+        "p50_ms": 333.878,
+        "p95_ms": 387.197,
+        "max_ms": 387.197
       }
     },
     "memory": {
       "cycles": 20,
-      "deltaBytes": 9338512,
+      "deltaBytes": 9340120,
       "gc": true,
       "note": "Node heapUsed around open/dispose. The browser CDP budget is recorded by browser.mjs."
     },
     "coldCache": {
       "exit": 0,
-      "stderr": "(node:83186) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.\n(Use `node --trace-warnings ...` to show where the warning was created)\n",
+      "stderr": "",
       "result": {
         "phase": "cold",
         "afterDefaultInitialization": 999,
@@ -567,9 +582,9 @@
         "buildMs": 33,
         "open": {
           "n": 3,
-          "p50_ms": 6.402,
-          "p95_ms": 6.428,
-          "max_ms": 6.428
+          "p50_ms": 5.841,
+          "p95_ms": 5.944,
+          "max_ms": 5.944
         },
         "cells": 100000,
         "formulas": 10000
@@ -673,32 +688,32 @@
       "source": 7,
       "pastedByValue": 7,
       "keyboard": true,
-      "keyboardPaste": null
+      "keyboardPaste": 7
     },
     "undo": {
       "available": true,
       "before": 7,
-      "after": 7
+      "after": 5
     },
     "largePaste": {
       "rows": 100,
       "columns": 100,
-      "ms": 32.7
+      "ms": 29.5
     },
     "memory": {
       "cycles": 20,
       "liveUniver": 0,
-      "heapBefore": 40354016,
-      "heapAfter": 30803240,
-      "deltaBytes": -9550776,
+      "heapBefore": 41190604,
+      "heapAfter": 31632812,
+      "deltaBytes": -9557792,
       "budgetBytes": 5242880
     },
     "longTasks": [
-      221,
-      198,
-      59,
+      210,
+      187,
+      55,
       117,
-      127
+      115
     ],
     "pageErrors": []
   }

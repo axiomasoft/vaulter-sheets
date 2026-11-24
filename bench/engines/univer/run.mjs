@@ -1,6 +1,6 @@
 /**
  * Univer OSS 1.5.2 Plugin Mode corpus.
- * Calls match plan/checks/sheets-headless: createWorkbook, getRange, setValue,
+ * Calls match bench/probes/sheets-headless: createWorkbook, getRange, setValue,
  * setFormula, insertRowsBefore, executeCalculation, onCalculationResultApplied,
  * save, and the conditional-formatting facade used by resources.mjs.
  */

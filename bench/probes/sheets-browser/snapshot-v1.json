@@ -1,0 +1,193 @@
+{
+  "id": "vaulter-smoke",
+  "sheetOrder": [
+    "bkFrlRRXDpvUu29xAWUtV",
+    "k4og5eppGmOIE-qF-SRtK"
+  ],
+  "name": "Fruit",
+  "appVersion": "1.5.2",
+  "locale": "zhCN",
+  "styles": {
+    "5cWruF": {
+      "n": {
+        "pattern": "0"
+      }
+    },
+    "FttLzN": {
+      "n": {
+        "pattern": "0.00"
+      }
+    }
+  },
+  "sheets": {
+    "bkFrlRRXDpvUu29xAWUtV": {
+      "id": "bkFrlRRXDpvUu29xAWUtV",
+      "name": "Detail",
+      "tabColor": "",
+      "hidden": 0,
+      "rowCount": 1000,
+      "columnCount": 20,
+      "zoomRatio": 1,
+      "freeze": {
+        "xSplit": 0,
+        "ySplit": 0,
+        "startRow": -1,
+        "startColumn": -1
+      },
+      "scrollTop": 0,
+      "scrollLeft": 0,
+      "defaultColumnWidth": 88,
+      "defaultRowHeight": 24,
+      "mergeData": [],
+      "cellData": {
+        "0": {
+          "0": {
+            "v": "Товар",
+            "t": 1
+          },
+          "1": {
+            "v": "Количество",
+            "t": 1
+          },
+          "2": {
+            "v": "Цена",
+            "t": 1
+          },
+          "3": {
+            "v": "Сумма",
+            "t": 1
+          }
+        },
+        "1": {
+          "0": {
+            "v": "Яблоки",
+            "t": 1
+          },
+          "1": {
+            "v": 2,
+            "t": 2,
+            "s": "5cWruF"
+          },
+          "2": {
+            "v": 10,
+            "t": 2,
+            "s": "FttLzN"
+          },
+          "3": {
+            "f": "=B2*C2",
+            "s": "FttLzN",
+            "v": 20,
+            "t": 2
+          }
+        },
+        "2": {
+          "0": {
+            "v": "Груши",
+            "t": 1
+          },
+          "1": {
+            "v": 3,
+            "t": 2,
+            "s": "5cWruF"
+          },
+          "2": {
+            "v": 5,
+            "t": 2,
+            "s": "FttLzN"
+          },
+          "3": {
+            "f": "=B3*C3",
+            "s": "FttLzN",
+            "v": 15,
+            "t": 2
+          }
+        }
+      },
+      "rowData": {},
+      "columnData": {},
+      "showGridlines": 1,
+      "rowHeader": {
+        "width": 46,
+        "hidden": 0
+      },
+      "columnHeader": {
+        "height": 20,
+        "hidden": 0
+      },
+      "rightToLeft": 0
+    },
+    "k4og5eppGmOIE-qF-SRtK": {
+      "id": "k4og5eppGmOIE-qF-SRtK",
+      "name": "Summary",
+      "tabColor": "",
+      "hidden": 0,
+      "rowCount": 1000,
+      "columnCount": 20,
+      "zoomRatio": 1,
+      "scrollTop": 0,
+      "scrollLeft": 0,
+      "defaultColumnWidth": 88,
+      "defaultRowHeight": 24,
+      "showGridlines": 1,
+      "rightToLeft": 0,
+      "freeze": {
+        "xSplit": 0,
+        "ySplit": 0,
+        "startRow": -1,
+        "startColumn": -1
+      },
+      "rowHeader": {
+        "width": 46,
+        "hidden": 0
+      },
+      "columnHeader": {
+        "height": 20,
+        "hidden": 0
+      },
+      "mergeData": [],
+      "cellData": {
+        "1": {
+          "1": {
+            "f": "=SUM(Detail!D2:D3)",
+            "s": "FttLzN",
+            "v": 35,
+            "t": 2
+          }
+        }
+      },
+      "rowData": {},
+      "columnData": {}
+    }
+  },
+  "resources": [
+    {
+      "name": "SHEET_RANGE_PROTECTION_PLUGIN",
+      "data": ""
+    },
+    {
+      "name": "SHEET_AuthzIoMockService_PLUGIN",
+      "data": "{}"
+    },
+    {
+      "name": "SHEET_WORKSHEET_PROTECTION_PLUGIN",
+      "data": "{}"
+    },
+    {
+      "name": "SHEET_WORKSHEET_PROTECTION_POINT_PLUGIN",
+      "data": "{}"
+    },
+    {
+      "name": "SHEET_DEFINED_NAME_PLUGIN",
+      "data": ""
+    },
+    {
+      "name": "SHEET_RANGE_THEME_MODEL_PLUGIN",
+      "data": "{}"
+    }
+  ],
+  "calculationSettings": {
+    "iterativeCalculation": false,
+    "maxIterations": 100,
+    "maxChange": 0.001
+  }
+}
