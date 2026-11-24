@@ -16,6 +16,8 @@ export interface WorkbookReferenceLocation {
 export interface WorkbookCell {
   a1: string
   value: string | number | boolean | null
+  format?: string | null
+  formula?: string | null
 }
 
 export interface WorkbookRangeRequest extends WorkbookReferenceTarget {
@@ -107,7 +109,11 @@ export function settleRange(result: WorkbookRangeResult): WorkbookRangeResult {
   return {
     status: 'ready',
     title: result.title,
-    cells: result.cells.map(cell => ({a1: cell.a1, value: cell.value ?? null})),
+    cells: result.cells.map(cell => ({
+      a1: cell.a1,
+      value: cell.value ?? null,
+      ...(cell.format !== undefined ? {format: cell.format} : {}),
+    })),
   }
 }
 
@@ -154,6 +160,8 @@ export interface WorkbookRangeClientOptions {
   headers?: () => HeadersInit
   /** Re-read on every export. A false result is neutral and does not return cells. */
   canExport?: () => boolean | Promise<boolean>
+  /** Optional title lookup when the `/ranges` response omits `title`. */
+  readTitle?: (nodeId: string, request: WorkbookRangeRequest) => Promise<string | undefined>
 }
 
 /** Same-origin reader for `GET /workbooks/{node}/ranges`. The href itself is never fetched. */
@@ -178,19 +186,42 @@ export function createWorkbookRangeReader(options: WorkbookRangeClientOptions = 
     } catch {
       return {status: 'unavailable'}
     }
-    const data = payload && typeof payload === 'object' && 'data' in payload ? payload.data : null
+    const obj = payload && typeof payload === 'object' ? payload as Record<string, unknown> : null
+    const data = obj && 'data' in obj ? obj.data : null
     if (!Array.isArray(data)) return {status: 'unavailable'}
+    let title: string | undefined = typeof obj?.title === 'string' && obj.title !== '' ? obj.title : undefined
+    if (title === undefined && obj?.meta && typeof obj.meta === 'object' && 'title' in obj.meta && typeof (obj.meta as {title?: unknown}).title === 'string') {
+      const metaTitle = (obj.meta as {title: string}).title
+      if (metaTitle !== '') title = metaTitle
+    }
     const cells: WorkbookCell[] = []
     for (const part of data) {
+      if (title === undefined && part && typeof part === 'object' && 'title' in part && typeof (part as {title?: unknown}).title === 'string') {
+        const partTitle = (part as {title: string}).title
+        if (partTitle !== '') title = partTitle
+      }
       const rows = part && typeof part === 'object' && 'cells' in part ? part.cells : null
       if (!Array.isArray(rows)) continue
       for (const cell of rows) {
         if (!cell || typeof cell !== 'object' || !('a1' in cell) || typeof cell.a1 !== 'string') continue
         const value = 'value' in cell ? cell.value : null
-        cells.push({a1: cell.a1, value: typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : null})
+        const entry: WorkbookCell = {
+          a1: cell.a1,
+          value: typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : null,
+        }
+        if ('format' in cell && typeof cell.format === 'string') entry.format = cell.format
+        cells.push(entry)
       }
     }
-    return {status: 'ready', cells}
+    if (title === undefined && options.readTitle) {
+      try {
+        const resolved = await options.readTitle(request.nodeId, request)
+        if (typeof resolved === 'string' && resolved !== '') title = resolved
+      } catch {
+        // Title lookup failure does not invalidate already-authorized range cells.
+      }
+    }
+    return title !== undefined ? {status: 'ready', title, cells} : {status: 'ready', cells}
   }
 }
 

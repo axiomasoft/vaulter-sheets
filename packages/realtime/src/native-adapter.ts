@@ -1,8 +1,14 @@
 import {CanceledError, CellValueType, CommandType, type ICommandService, type IExecutionOptions} from '@univerjs/core';
-import {InsertRowMutation, SetRangeValuesMutation} from '@univerjs/sheets';
+import {
+    AddWorksheetMergeMutation, InsertColMutation, InsertRowMutation, InsertSheetMutation,
+    RemoveColMutation, RemoveNumfmtMutation, RemoveRowMutation, RemoveSheetMutation,
+    RemoveWorksheetMergeMutation, SetFrozenMutation, SetNumfmtMutation, SetRangeValuesMutation,
+    SetWorksheetNameMutation,
+} from '@univerjs/sheets';
 import {SetCellEditVisibleOperation, type IEditorBridgeService, type IEditorBridgeServiceVisibleParam} from '@univerjs/sheets-ui';
 import type {CellContent, Command, WorkbookV2} from '@vaulter/sheets-runtime/browser';
-import {WorkbookRoomClient, type PendingIntent} from './client.ts';
+type FormatSpec = Extract<Command, {kind: 'set_format'}>['format'];
+import {WorkbookRoomClient, type PendingIntent, type WorkbookPresence, type WorkbookPresenceSelection} from './client.ts';
 import {position, record, type WorkbookIntent, type WorkbookRoomDelta, type WorkbookRoomState} from './protocol.ts';
 
 interface WorkbookView {
@@ -26,6 +32,9 @@ function cellCommand(value: unknown, sheet: string, row: number, column: number,
     }
     if (!record(value) || Object.keys(value).some(key => !['v', 't', 'f'].includes(key))) return null;
     if (typeof value.f === 'string' && value.f.startsWith('=')) return {kind: 'set_formula', sheet_id: sheet, row, column, expected, formula: value.f};
+    if (value.t === CellValueType.BOOLEAN && (typeof value.v === 'boolean' || typeof value.v === 'number')) {
+        return {kind: 'set_boolean', sheet_id: sheet, row, column, expected, value: Boolean(value.v)};
+    }
     if (value.t !== CellValueType.BOOLEAN && typeof value.v === 'number' && Number.isFinite(value.v)) {
         return {kind: 'set_number', sheet_id: sheet, row, column, expected, value: value.v};
     }
@@ -33,13 +42,98 @@ function cellCommand(value: unknown, sheet: string, row: number, column: number,
     return null;
 }
 
+function styleFormatSpec(s: unknown): FormatSpec | null {
+    if (s === null) return {font: {bold: false, italic: false, color: null}, fill: null, borders: {all: null}, alignment: {horizontal: null, vertical: null, wrap: false}, numFmt: null};
+    if (!record(s)) return null;
+    const out: FormatSpec = {};
+    const font: NonNullable<FormatSpec['font']> = {};
+    if (s.bl !== undefined) font.bold = s.bl === 1;
+    if (s.it !== undefined) font.italic = s.it === 1;
+    if (typeof s.fs === 'number' && s.fs >= 1 && s.fs <= 409) font.size = s.fs;
+    if ('cl' in s) {
+        const rgb = record(s.cl) && typeof s.cl.rgb === 'string' ? s.cl.rgb : null;
+        if (rgb && /^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(rgb)) font.color = rgb;
+        else if (s.cl === null) font.color = null;
+    }
+    if (Object.keys(font).length > 0) out.font = font;
+    if ('bg' in s) {
+        const rgb = record(s.bg) && typeof s.bg.rgb === 'string' ? s.bg.rgb : null;
+        if (rgb && /^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(rgb)) out.fill = rgb;
+        else if (s.bg === null) out.fill = null;
+    }
+    if (s.ht !== undefined) {
+        out.alignment = {...out.alignment, horizontal: s.ht === 1 ? 'left' : s.ht === 2 ? 'center' : s.ht === 3 ? 'right' : null};
+    }
+    if (s.vt !== undefined) {
+        out.alignment = {...out.alignment, vertical: s.vt === 1 ? 'top' : s.vt === 2 ? 'middle' : s.vt === 3 ? 'bottom' : null};
+    }
+    if (s.tb !== undefined) {
+        out.alignment = {...out.alignment, wrap: s.tb === 3};
+    }
+    if (record(s.n) && typeof s.n.pattern === 'string') out.numFmt = s.n.pattern;
+    else if ('n' in s && s.n === null) out.numFmt = null;
+    return Object.keys(out).length > 0 ? out : null;
+}
+
 function typedMutation(id: string, params: Record<string, unknown>, view: WorkbookView): {policy: WorkbookIntent['policy']; commands: Command[]} | null {
+    if (id === InsertSheetMutation.id && record(params.sheet) && typeof params.sheet.id === 'string' && typeof params.sheet.name === 'string') {
+        const cmd: Extract<Command, {kind: 'add_sheet'}> = {kind: 'add_sheet', sheet_id: params.sheet.id, name: params.sheet.name};
+        if (position(params.index)) cmd.index = params.index;
+        if (position(params.sheet.rowCount) && params.sheet.rowCount > 0) cmd.row_count = params.sheet.rowCount;
+        if (position(params.sheet.columnCount) && params.sheet.columnCount > 0) cmd.column_count = params.sheet.columnCount;
+        return {policy: 'exact_base', commands: [cmd]};
+    }
     const sheet = params.subUnitId;
     if (typeof sheet !== 'string') return null;
-    if (id === InsertRowMutation.id && record(params.range) && position(params.range.startRow) && position(params.range.endRow)
-        && params.range.endRow >= params.range.startRow) {
-        return {policy: 'exact_base', commands: [{kind: 'insert_row_before', sheet_id: sheet,
-            row: params.range.startRow + 1, count: params.range.endRow - params.range.startRow + 1}]};
+    if (id === RemoveSheetMutation.id) return {policy: 'exact_base', commands: [{kind: 'delete_sheet', sheet_id: sheet}]};
+    if (id === SetWorksheetNameMutation.id && typeof params.name === 'string') {
+        return {policy: 'exact_base', commands: [{kind: 'rename_sheet', sheet_id: sheet, name: params.name, ...(typeof params.oldName === 'string' ? {expected_name: params.oldName} : {})}]};
+    }
+    if (id === InsertRowMutation.id && record(params.range) && position(params.range.startRow) && position(params.range.endRow) && params.range.endRow >= params.range.startRow) {
+        return {policy: 'exact_base', commands: [{kind: 'insert_row_before', sheet_id: sheet, row: params.range.startRow + 1, count: params.range.endRow - params.range.startRow + 1}]};
+    }
+    if (id === RemoveRowMutation.id && record(params.range) && position(params.range.startRow) && position(params.range.endRow) && params.range.endRow >= params.range.startRow) {
+        return {policy: 'exact_base', commands: [{kind: 'delete_row', sheet_id: sheet, row: params.range.startRow + 1, count: params.range.endRow - params.range.startRow + 1}]};
+    }
+    if (id === InsertColMutation.id && record(params.range) && position(params.range.startColumn) && position(params.range.endColumn) && params.range.endColumn >= params.range.startColumn) {
+        return {policy: 'exact_base', commands: [{kind: 'insert_column_before', sheet_id: sheet, column: params.range.startColumn + 1, count: params.range.endColumn - params.range.startColumn + 1}]};
+    }
+    if (id === RemoveColMutation.id && record(params.range) && position(params.range.startColumn) && position(params.range.endColumn) && params.range.endColumn >= params.range.startColumn) {
+        return {policy: 'exact_base', commands: [{kind: 'delete_column', sheet_id: sheet, column: params.range.startColumn + 1, count: params.range.endColumn - params.range.startColumn + 1}]};
+    }
+    if (id === SetFrozenMutation.id && typeof params.ySplit === 'number' && typeof params.xSplit === 'number') {
+        return {policy: 'rebase_cells', commands: [{kind: 'set_freeze', sheet_id: sheet, row_count: Math.max(0, params.ySplit), column_count: Math.max(0, params.xSplit)}]};
+    }
+    if ((id === AddWorksheetMergeMutation.id || id === RemoveWorksheetMergeMutation.id) && Array.isArray(params.ranges)) {
+        const commands: Command[] = [];
+        for (const r of params.ranges) {
+            if (!record(r) || !position(r.startRow) || !position(r.startColumn) || !position(r.endRow) || !position(r.endColumn)) continue;
+            commands.push({
+                kind: id === AddWorksheetMergeMutation.id ? 'merge_cells' : 'unmerge_cells',
+                sheet_id: sheet, start_row: r.startRow + 1, start_column: r.startColumn + 1, end_row: r.endRow + 1, end_column: r.endColumn + 1,
+            });
+        }
+        return commands.length ? {policy: 'rebase_cells', commands} : null;
+    }
+    if (id === SetNumfmtMutation.id && record(params.values) && record(params.refMap)) {
+        const commands: Command[] = [];
+        for (const [key, entry] of Object.entries(params.values)) {
+            const ref = params.refMap[key];
+            if (!record(entry) || !Array.isArray(entry.ranges) || !record(ref) || typeof ref.pattern !== 'string') continue;
+            for (const r of entry.ranges) {
+                if (!record(r) || !position(r.startRow) || !position(r.startColumn) || !position(r.endRow) || !position(r.endColumn)) continue;
+                commands.push({kind: 'set_format', sheet_id: sheet, start_row: r.startRow + 1, start_column: r.startColumn + 1, end_row: r.endRow + 1, end_column: r.endColumn + 1, format: {numFmt: ref.pattern}});
+            }
+        }
+        return commands.length ? {policy: 'rebase_cells', commands} : null;
+    }
+    if (id === RemoveNumfmtMutation.id && Array.isArray(params.ranges)) {
+        const commands: Command[] = [];
+        for (const r of params.ranges) {
+            if (!record(r) || !position(r.startRow) || !position(r.startColumn) || !position(r.endRow) || !position(r.endColumn)) continue;
+            commands.push({kind: 'set_format', sheet_id: sheet, start_row: r.startRow + 1, start_column: r.startColumn + 1, end_row: r.endRow + 1, end_column: r.endColumn + 1, format: {numFmt: null}});
+        }
+        return commands.length ? {policy: 'rebase_cells', commands} : null;
     }
     if (id !== SetRangeValuesMutation.id || !record(params.cellValue)) return null;
     const commands: Command[] = [];
@@ -49,6 +143,12 @@ function typedMutation(id: string, params: Record<string, unknown>, view: Workbo
         for (const [x, data] of Object.entries(cells)) {
             const column = Number(x);
             if (!position(column) || commands.length >= 64) return null;
+            if (record(data) && 's' in data && !('v' in data) && !('f' in data) && !('t' in data)) {
+                const format = styleFormatSpec(data.s);
+                if (!format) return null;
+                commands.push({kind: 'set_format', sheet_id: sheet, start_row: row + 1, start_column: column + 1, end_row: row + 1, end_column: column + 1, format});
+                continue;
+            }
             const command = cellCommand(data, sheet, row + 1, column + 1, view.readCell(sheet, row, column));
             if (!command) return null;
             commands.push(command);
@@ -285,5 +385,11 @@ export function connectNativeWorkbook(view: WorkbookView, options: Omit<Construc
         if (client.state) render(client.state, pendingView);
     });
     client.connect();
-    return {client, dispose: () => { disposed = true; before.dispose(); after.dispose(); client.close(); }};
+    return {
+        client,
+        updateAwareness: (presence: {client_id?: string; user?: WorkbookPresence['user']; selection?: WorkbookPresenceSelection | null}) => {
+            client.updateAwareness(presence);
+        },
+        dispose: () => { disposed = true; before.dispose(); after.dispose(); client.close(); },
+    };
 }

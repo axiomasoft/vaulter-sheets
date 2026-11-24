@@ -5,7 +5,9 @@ import {createServer} from 'node:http';
 import {test, type TestContext} from 'node:test';
 import assert from 'node:assert/strict';
 import {CanceledError, CommandType, type CommandListener, type IExecutionOptions} from '@univerjs/core';
-import {InsertRowMutation, SetRangeValuesMutation} from '@univerjs/sheets';
+import {
+    AddWorksheetMergeMutation, InsertRowMutation, SetFrozenMutation, SetRangeValuesMutation,
+} from '@univerjs/sheets';
 import {SetCellEditVisibleOperation} from '@univerjs/sheets-ui';
 import {WebSocket, WebSocketServer} from 'ws';
 import {replay} from '../src/replay.ts';
@@ -81,6 +83,7 @@ test('captures the prior cell value and suppresses local-only and echoed mutatio
     }, {session: async () => ({endpoint: `ws://127.0.0.1:${address.port}`, token: 'fixture', generation: 2, mode: 'write'})});
     try {
         await ready;
+    await new Promise<void>(resolve => setImmediate(resolve));
         await new Promise<void>(resolve => setImmediate(resolve));
         const mutation = {id: SetRangeValuesMutation.id, type: CommandType.MUTATION, params: {
             unitId: 'budget-probe', subUnitId: 'detail', cellValue: {2: {2: {v: 8, t: 2}}},
@@ -291,4 +294,95 @@ test('renews the same owner fence during a slow append and stops after the recei
     const afterReceipt = renewAttempts;
     await new Promise(resolve => setTimeout(resolve, 5500));
     assert.equal(renewAttempts, afterReceipt);
+});
+
+test('broadcasts awareness presence between peers and removes on disconnect', {timeout: 5000}, async t => {
+    const checkpoint = Buffer.from(JSON.stringify({workbook, update_id: null})).toString('base64');
+    const owner = createServer(async (request, response) => {
+        const reply = (data: object) => response.writeHead(200, {'Content-Type': 'application/json'}).end(JSON.stringify(data));
+        if (request.url === '/read') return reply({generation: 2, head_seq: 0, checkpoint_seq: 0, checkpoint, marker, etag: initial.etag, tail: [], insertions: []});
+        return reply({}, 404);
+    });
+    owner.listen(0, '127.0.0.1');
+    t.after(() => { owner.close(); owner.closeAllConnections(); });
+    await once(owner, 'listening');
+    const ownerAddress = owner.address();
+    assert.ok(ownerAddress && typeof ownerAddress !== 'string');
+    const app = createRealtimeServer({ownerUrl: `http://127.0.0.1:${ownerAddress.port}`, ownerToken: 'x'.repeat(32)});
+    app.server.listen(0, '127.0.0.1');
+    t.after(app.close);
+    await once(app.server, 'listening');
+    const address = app.server.address();
+    assert.ok(address && typeof address !== 'string');
+
+    const peersA: unknown[] = [];
+    const peersB: unknown[] = [];
+    const {WorkbookRoomClient} = await import('../src/client.ts');
+    const clientA = new WorkbookRoomClient({
+        session: async () => ({endpoint: `ws://127.0.0.1:${address.port}/v1/rooms/aw`, token: 'tokA', generation: 2, mode: 'write'}),
+        onState: () => {},
+        onAwareness: peers => { peersA.push([...peers]); },
+    });
+    const clientB = new WorkbookRoomClient({
+        session: async () => ({endpoint: `ws://127.0.0.1:${address.port}/v1/rooms/aw`, token: 'tokB', generation: 2, mode: 'write'}),
+        onState: () => {},
+        onAwareness: peers => { peersB.push([...peers]); },
+    });
+    t.after(() => { clientA.close(); clientB.close(); });
+    clientA.connect();
+    clientB.connect();
+    await waitFor(() => Boolean(clientA.state && clientB.state));
+
+    clientA.updateAwareness({client_id: 'c-a', user: {name: 'Alice', color: '#2563eb'}, selection: {sheet_id: 'detail', start_row: 2, start_column: 2, end_row: 3, end_column: 4}});
+    await waitFor(() => peersB.some(list => Array.isArray(list) && list.length === 1));
+    assert.equal((peersB.at(-1) as {client_id: string}[])[0].client_id, 'c-a');
+
+    clientA.close();
+    await waitFor(() => Array.isArray(peersB.at(-1)) && (peersB.at(-1) as unknown[]).length === 0);
+});
+
+test('captures F-09a format, freeze, and merge mutations in connectNativeWorkbook', {timeout: 5000}, async t => {
+    const peer = new WebSocketServer({port: 0, host: '127.0.0.1'});
+    await once(peer, 'listening');
+    const address = peer.address();
+    assert.ok(address && typeof address !== 'string');
+    const intents: {commands: unknown[]; policy: string}[] = [];
+    peer.on('connection', socket => socket.on('message', bytes => {
+        const message = JSON.parse(bytes.toString());
+        if (message.type === 'open') socket.send(JSON.stringify({type: 'state', state: initial}));
+        else if (message.type === 'intent') intents.push(message.intent);
+    }));
+    let before: CommandListener | undefined;
+    let after: CommandListener | undefined;
+    let readyResolve!: () => void;
+    const ready = new Promise<void>(resolve => { readyResolve = resolve; });
+    const binding = connectNativeWorkbook({
+        unitId: 'wb',
+        commands: {
+            beforeCommandExecuted(l) { before = l; return {dispose() {}}; },
+            onCommandExecuted(l) { after = l; return {dispose() {}}; },
+            async executeCommand() { return true; },
+        },
+        readCell: () => null,
+        replace() { readyResolve(); },
+    }, {session: async () => ({endpoint: `ws://127.0.0.1:${address.port}`, token: 'fixture', generation: 2, mode: 'write'})});
+    t.after(() => {
+        binding.dispose();
+        for (const client of peer.clients) client.terminate();
+        peer.close();
+    });
+    await ready;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await new Promise<void>(resolve => setImmediate(resolve));
+
+    const mutations = [
+        {id: SetRangeValuesMutation.id, type: CommandType.MUTATION, params: {unitId: 'wb', subUnitId: 'detail', cellValue: {1: {1: {s: {bl: 1}}}}}},
+        {id: SetFrozenMutation.id, type: CommandType.MUTATION, params: {unitId: 'wb', subUnitId: 'detail', startRow: 1, startColumn: 0, ySplit: 1, xSplit: 0}},
+        {id: AddWorksheetMergeMutation.id, type: CommandType.MUTATION, params: {unitId: 'wb', subUnitId: 'detail', ranges: [{startRow: 0, startColumn: 0, endRow: 0, endColumn: 1}]}},
+    ];
+    for (const m of mutations) { before?.(m); after?.(m); }
+    await waitFor(() => intents.length === 3);
+    assert.deepEqual(intents[0].commands, [{kind: 'set_format', sheet_id: 'detail', start_row: 2, start_column: 2, end_row: 2, end_column: 2, format: {font: {bold: true}}}]);
+    assert.deepEqual(intents[1].commands, [{kind: 'set_freeze', sheet_id: 'detail', row_count: 1, column_count: 0}]);
+    assert.deepEqual(intents[2].commands, [{kind: 'merge_cells', sheet_id: 'detail', start_row: 1, start_column: 1, end_row: 1, end_column: 2}]);
 });

@@ -1,11 +1,13 @@
 import {Editor, type JSONContent} from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import {afterEach, describe, expect, it, vi} from 'vitest'
+import {mount as mountVue, flushPromises} from '@vue/test-utils'
 import {
   buildWorkbookReferenceUrl,
   createWorkbookRangeReader,
   exportWorkbookReferences,
   parseWorkbookReference,
+  WorkbookPreview,
   WorkbookReference,
   type WorkbookRangeReader,
   type WorkbookRangeRequest,
@@ -192,6 +194,46 @@ describe('createWorkbookRangeReader', () => {
     fetchImpl.mockResolvedValueOnce(new Response(JSON.stringify({code: 'resource_unavailable', title}), {status: 404}))
     const denied = createWorkbookRangeReader({fetch: fetchImpl, canExport: () => true})
     expect(await denied({...target, purpose: 'export'})).toEqual({status: 'unavailable'})
+
+    fetchImpl.mockResolvedValueOnce(new Response(JSON.stringify({title, data: [{cells: [{a1: 'D2', value: 20}]}]}), {status: 200}))
+    const withTitle = createWorkbookRangeReader({fetch: fetchImpl})
+    expect(await withTitle({...target, purpose: 'preview'})).toEqual({status: 'ready', title, cells: [{a1: 'D2', value: 20}]})
+  })
+})
+
+describe('WorkbookPreview', () => {
+  it('renders a formatted mini-table with title, reacts to prop updates, and refreshes on manual/auto events', async () => {
+    let currentValue = 20
+    const readRange = reader(async req => ({
+      status: 'ready',
+      title: `${title} (${req.range})`,
+      cells: [{a1: 'D2', value: currentValue}, {a1: 'E2', value: 0.5, format: '0%'}],
+    }))
+    const wrapper = mountVue(WorkbookPreview, {
+      props: {target, invalid: false, readRange},
+    })
+    await flushPromises()
+    expect(wrapper.get('[data-workbook-title]').text()).toBe(`${title} (D2:D4)`)
+    expect(wrapper.get('[data-workbook-table] thead').text()).toContain('D')
+    expect(wrapper.get('[data-workbook-table] thead').text()).toContain('E')
+    expect(wrapper.get('[data-cell="D2"]').text()).toBe('20')
+    expect(wrapper.get('[data-cell="E2"]').text()).toBe('50%')
+
+    await wrapper.setProps({target: {...target, range: 'D2:E2'}})
+    await flushPromises()
+    expect(wrapper.get('[data-workbook-title]').text()).toBe(`${title} (D2:E2)`)
+
+    currentValue = 42
+    await wrapper.get('[data-workbook-refresh]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-cell="D2"]').text()).toBe('42')
+    expect(wrapper.emitted('refresh')?.length).toBeGreaterThanOrEqual(2)
+
+    currentValue = 99
+    window.dispatchEvent(new CustomEvent('vaulter-sheets:workbook-changed', {detail: {nodeId: target.nodeId}}))
+    await flushPromises()
+    expect(wrapper.get('[data-cell="D2"]').text()).toBe('99')
+    wrapper.unmount()
   })
 })
 

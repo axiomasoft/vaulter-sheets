@@ -79,15 +79,32 @@ export interface WorkbookRoomDelta {
     updates: WorkbookDeltaUpdate[];
 }
 
+export interface WorkbookPresenceSelection {
+    sheet_id: string;
+    start_row: number;
+    start_column: number;
+    end_row: number;
+    end_column: number;
+}
+
+export interface WorkbookPresence {
+    client_id: string;
+    user?: {id?: string | number; name?: string; color?: string};
+    selection?: WorkbookPresenceSelection | null;
+    updated_at: number;
+}
+
 export type ClientMessage =
     | {type: 'open'; token: string; after_seq?: number}
-    | {type: 'intent'; intent: WorkbookIntent; if_match: string | null; traceparent?: string};
+    | {type: 'intent'; intent: WorkbookIntent; if_match: string | null; traceparent?: string}
+    | {type: 'awareness'; client_id: string; user?: WorkbookPresence['user']; selection?: WorkbookPresenceSelection | null};
 
 export type ServerMessage =
     | {type: 'state'; state: WorkbookRoomState; delta?: never}
     | {type: 'state'; delta: WorkbookRoomDelta; state?: never}
     | {type: 'ack'; receipt: WorkbookReceipt}
-    | {type: 'error'; command_id: string; code: string; retryable: boolean};
+    | {type: 'error'; command_id: string; code: string; retryable: boolean}
+    | {type: 'awareness'; peers: WorkbookPresence[]};
 
 export function record(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);

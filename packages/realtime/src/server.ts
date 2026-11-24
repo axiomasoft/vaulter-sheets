@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {pathToFileURL} from 'node:url';
 import {WebSocket, WebSocketServer} from 'ws';
-import {PROTOCOL, WEBSOCKET_SUBPROTOCOL, position, record, type ServerMessage, type WorkbookDeltaPayload, type WorkbookDeltaUpdate, type WorkbookReceipt, type WorkbookRoomMarker, type WorkbookRoomState} from './protocol.ts';
+import {PROTOCOL, WEBSOCKET_SUBPROTOCOL, position, record, type ServerMessage, type WorkbookDeltaPayload, type WorkbookDeltaUpdate, type WorkbookPresence, type WorkbookPresenceSelection, type WorkbookReceipt, type WorkbookRoomMarker, type WorkbookRoomState} from './protocol.ts';
 import {applyDeltaPayload, replay} from './replay.ts';
 
 const REQUEST_LIMIT = 1024 * 1024;
@@ -26,7 +26,7 @@ class OwnerProblem extends Error {
 }
 
 interface Options {ownerUrl: string; ownerToken: string; refreshMs?: number}
-interface Peer {socket: WebSocket; token: string; seq: number; opening: boolean}
+interface Peer {socket: WebSocket; token: string; seq: number; opening: boolean; presence?: WorkbookPresence}
 interface RoomLease {fence: number; headSeq: number; expiresAt: number}
 interface Room {
     peers: Set<Peer>;
@@ -213,6 +213,61 @@ export function createRealtimeServer(options: Options) {
         }
     }
 
+    function broadcastAwareness(room: Room): void {
+        for (const recipient of room.peers) {
+            if (!recipient.token || recipient.opening || recipient.socket.readyState !== WebSocket.OPEN) continue;
+            const peers: WorkbookPresence[] = [];
+            for (const other of room.peers) {
+                if (other === recipient || !other.presence || other.opening || other.socket.readyState !== WebSocket.OPEN) continue;
+                peers.push(other.presence);
+            }
+            send(recipient, {type: 'awareness', peers});
+        }
+    }
+
+    function parseAwareness(message: Record<string, unknown>): WorkbookPresence | null {
+        if (typeof message.client_id !== 'string' || message.client_id.length === 0 || message.client_id.length > 128) return null;
+        const presence: WorkbookPresence = {client_id: message.client_id, updated_at: Date.now()};
+        if (message.user !== undefined) {
+            if (!record(message.user)) return null;
+            const user: NonNullable<WorkbookPresence['user']> = {};
+            if (message.user.id !== undefined) {
+                if (typeof message.user.id !== 'string' && typeof message.user.id !== 'number') return null;
+                user.id = message.user.id;
+            }
+            if (message.user.name !== undefined) {
+                if (typeof message.user.name !== 'string' || message.user.name.length > 128) return null;
+                user.name = message.user.name;
+            }
+            if (message.user.color !== undefined) {
+                if (typeof message.user.color !== 'string' || message.user.color.length > 32) return null;
+                user.color = message.user.color;
+            }
+            presence.user = user;
+        }
+        if (message.selection !== undefined) {
+            if (message.selection === null) {
+                presence.selection = null;
+            } else if (record(message.selection)
+                && typeof message.selection.sheet_id === 'string' && message.selection.sheet_id.length > 0 && message.selection.sheet_id.length <= 128
+                && position(message.selection.start_row) && message.selection.start_row > 0
+                && position(message.selection.start_column) && message.selection.start_column > 0
+                && position(message.selection.end_row) && message.selection.end_row >= message.selection.start_row
+                && position(message.selection.end_column) && message.selection.end_column >= message.selection.start_column) {
+                presence.selection = {
+                    sheet_id: message.selection.sheet_id,
+                    start_row: message.selection.start_row,
+                    start_column: message.selection.start_column,
+                    end_row: message.selection.end_row,
+                    end_column: message.selection.end_column,
+                } satisfies WorkbookPresenceSelection;
+            } else {
+                return null;
+            }
+        }
+        return presence;
+    }
+
     function extractTailUpdates(log: unknown): WorkbookDeltaUpdate[] {
         if (!record(log) || !Array.isArray(log.tail)) return [];
         const updates: WorkbookDeltaUpdate[] = [];
@@ -326,7 +381,9 @@ export function createRealtimeServer(options: Options) {
         socket.on('error', () => socket.terminate());
         socket.on('close', () => {
             clearTimeout(timer);
+            const hadPresence = Boolean(peer.presence);
             room.peers.delete(peer);
+            if (hadPresence) broadcastAwareness(room);
             if (!room.peers.size && !room.queued) rooms.delete(roomId);
         });
         socket.on('message', (data, binary) => {
@@ -345,7 +402,21 @@ export function createRealtimeServer(options: Options) {
                     sendPeerState(room, peer, resume);
                     peer.opening = false;
                     clearTimeout(timer);
+                    const activePeers = Array.from(room.peers)
+                        .filter(other => other !== peer && other.presence && !other.opening && other.socket.readyState === WebSocket.OPEN)
+                        .map(other => other.presence!);
+                    if (activePeers.length > 0) send(peer, {type: 'awareness', peers: activePeers});
                 }, cause => error(peer, cause));
+                return;
+            }
+            if (!peer.opening && message.type === 'awareness') {
+                const parsed = parseAwareness(message);
+                if (!parsed) {
+                    socket.close(1007, 'Invalid awareness message');
+                    return;
+                }
+                peer.presence = parsed;
+                broadcastAwareness(room);
                 return;
             }
             const intent = message.intent;

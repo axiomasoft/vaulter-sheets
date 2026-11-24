@@ -34,6 +34,32 @@ function setNativeCell(
   rowObj[colKey] = merged
 }
 
+const STRUCTURAL_KINDS = new Set<Command['kind']>([
+  'insert_row_before',
+  'delete_row',
+  'insert_column_before',
+  'delete_column',
+  'add_sheet',
+  'rename_sheet',
+  'delete_sheet',
+])
+
+export function pendingCellKeys(commands: readonly Command[]): Set<string> {
+  const keys = new Set<string>()
+  for (const cmd of commands) {
+    if (cmd.kind === 'set_number' || cmd.kind === 'set_text' || cmd.kind === 'set_boolean' || cmd.kind === 'set_formula') {
+      keys.add(`${cmd.sheet_id}\0${cmd.row - 1}\0${cmd.column - 1}`)
+    } else if (cmd.kind === 'set_values') {
+      for (let r = 0; r < cmd.values.length; r++) {
+        for (let c = 0; c < cmd.values[r].length; c++) {
+          keys.add(`${cmd.sheet_id}\0${cmd.row - 1 + r}\0${cmd.column - 1 + c}`)
+        }
+      }
+    }
+  }
+  return keys
+}
+
 function applyCommittedCommands(base: Workbook, commands: Command[], checks?: {cells?: CheckCell[]}): Workbook {
   const next = structuredClone(base)
   const sheets = (next.native.sheets ?? {}) as Record<string, Record<string, unknown>>
@@ -46,6 +72,8 @@ function applyCommittedCommands(base: Workbook, commands: Command[], checks?: {c
       setNativeCell(sheets, cmd.sheet_id, cmd.row - 1, cmd.column - 1, {v: cmd.value, t: 2})
     } else if (cmd.kind === 'set_text') {
       setNativeCell(sheets, cmd.sheet_id, cmd.row - 1, cmd.column - 1, {v: cmd.value, t: 1})
+    } else if (cmd.kind === 'set_boolean') {
+      setNativeCell(sheets, cmd.sheet_id, cmd.row - 1, cmd.column - 1, {v: cmd.value ? 1 : 0, t: 3})
     } else if (cmd.kind === 'set_formula') {
       const checked = checkMap.get(`${cmd.sheet_id}\0${cmd.row}\0${cmd.column}`)
       const cell: Record<string, unknown> = {f: cmd.formula}
@@ -60,7 +88,7 @@ function applyCommittedCommands(base: Workbook, commands: Command[], checks?: {c
       for (let r = 0; r < cmd.values.length; r++) {
         for (let c = 0; c < cmd.values[r].length; c++) {
           const val = cmd.values[r][c]
-          const nextCell = val === null ? null : 'number' in val ? {v: val.number, t: 2} : {v: val.text, t: 1}
+          const nextCell = val === null ? null : 'number' in val ? {v: val.number, t: 2} : 'boolean' in val ? {v: val.boolean ? 1 : 0, t: 3} : {v: val.text, t: 1}
           setNativeCell(sheets, cmd.sheet_id, cmd.row - 1 + r, cmd.column - 1 + c, nextCell)
         }
       }
@@ -77,6 +105,7 @@ export function useWorkbook(node: string, client: WorkbooksClient) {
   const saving = ref(false)
   const error = ref<string>()
   const conflict = ref(false)
+  let tailQueue: Promise<Receipt | undefined> = Promise.resolve(undefined)
 
   async function load() {
     loading.value = true
@@ -100,7 +129,8 @@ export function useWorkbook(node: string, client: WorkbooksClient) {
     try {
       let outcome
       try {
-        outcome = await client.submit(node, submission.intent, submission.base.etag)
+        const ifMatch = submission.intent.policy === 'revalidate_by_id' ? '' : submission.base.etag
+        outcome = await client.submit(node, submission.intent, ifMatch)
       } catch (failure) {
         if (failure instanceof WorkbookApiError && failure.status < 500) throw failure
         outcome = await client.status(node, submission.intent.command_id)
@@ -117,7 +147,7 @@ export function useWorkbook(node: string, client: WorkbooksClient) {
       const nextPosition = outcome.marker.position === base.marker.position + 1
       const sameSnapshot = outcome.marker.position === base.marker.position && outcome.marker.sha256 === base.marker.sha256
       const cellOnly = submission.intent.commands.every(
-        command => command.kind === 'set_number' || command.kind === 'set_text' || command.kind === 'set_formula' || command.kind === 'set_values',
+        command => command.kind === 'set_number' || command.kind === 'set_text' || command.kind === 'set_boolean' || command.kind === 'set_formula' || command.kind === 'set_values',
       )
       if (sameGeneration && head.value === base && (sameSnapshot || (nextPosition && cellOnly))) {
         const opened: OpenedWorkbook = sameSnapshot
@@ -157,17 +187,37 @@ export function useWorkbook(node: string, client: WorkbooksClient) {
     }
   }
 
-  function submit(commands: Command[], locallyApplied = false) {
+  function submit(commands: Command[], locallyApplied = false): Promise<Receipt | undefined> {
+    if (saving.value && !conflict.value && locallyApplied) {
+      tailQueue = tailQueue.then(() => submit(commands, locallyApplied))
+      return tailQueue
+    }
     const base = head.value
     if (!base || pending.value || commands.length === 0 || commands.some(command => !base.commands.includes(command.kind))) {
       return Promise.resolve(undefined)
     }
-    const policy = commands.some(command => command.kind === 'insert_row_before') ? 'exact_base' : 'rebase_cells'
+    const policy: WorkbookIntent['policy'] = commands.some(command => STRUCTURAL_KINDS.has(command.kind))
+      ? 'exact_base'
+      : commands.every(command => command.kind === 'fill_formula')
+        ? 'revalidate_by_id'
+        : 'rebase_cells'
     const commandId = globalThis.crypto.randomUUID()
-    pending.value = {base, locallyApplied: locallyApplied && policy === 'rebase_cells', intent: {
+    pending.value = {base, locallyApplied: locallyApplied && policy !== 'revalidate_by_id', intent: {
         command_id: commandId, expected_generation: base.marker.generation, policy, commands,
     }}
     return save()
+  }
+
+  async function refresh(): Promise<OpenedWorkbook | undefined> {
+    if (loading.value || saving.value) return head.value
+    try {
+      const opened = await client.open(node)
+      localAcknowledgement.value = undefined
+      head.value = opened
+      return opened
+    } catch {
+      return undefined
+    }
   }
 
   async function loadCurrent() {
@@ -176,5 +226,5 @@ export function useWorkbook(node: string, client: WorkbooksClient) {
     await load()
   }
 
-  return {head, localAcknowledgement, pending, loading, saving, error, conflict, load, save, submit, loadCurrent}
+  return {head, localAcknowledgement, pending, loading, saving, error, conflict, load, save, submit, refresh, loadCurrent}
 }

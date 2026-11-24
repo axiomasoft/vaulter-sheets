@@ -1,10 +1,10 @@
 import type {Command} from '@vaulter/sheets-runtime/browser';
 import {
     WEBSOCKET_SUBPROTOCOL, applyRoomDelta, record, type ClientMessage, type ServerMessage,
-    type WorkbookIntent, type WorkbookReceipt, type WorkbookRoomDelta, type WorkbookRoomSession, type WorkbookRoomState,
+    type WorkbookIntent, type WorkbookPresence, type WorkbookPresenceSelection, type WorkbookReceipt, type WorkbookRoomDelta, type WorkbookRoomSession, type WorkbookRoomState,
 } from './protocol.ts';
 
-export type {WorkbookIntent, WorkbookReceipt, WorkbookRoomDelta, WorkbookRoomSession, WorkbookRoomState} from './protocol.ts';
+export type {WorkbookIntent, WorkbookPresence, WorkbookPresenceSelection, WorkbookReceipt, WorkbookRoomDelta, WorkbookRoomSession, WorkbookRoomState} from './protocol.ts';
 
 export interface PendingIntent {intent: WorkbookIntent; if_match: string | null}
 
@@ -14,6 +14,7 @@ interface Options {
     onReceipt?: (receipt: WorkbookReceipt) => void;
     onConflict?: (intent: WorkbookIntent, code: string) => void;
     onConnection?: (state: 'connected' | 'reconnecting' | 'closed') => void;
+    onAwareness?: (peers: readonly WorkbookPresence[]) => void;
     traceparent?: () => string | undefined;
 }
 
@@ -30,6 +31,7 @@ export class WorkbookRoomClient {
     #connecting = false;
     #retry: ReturnType<typeof setTimeout> | undefined;
     #delay = 200;
+    #localPresence: {client_id: string; user?: WorkbookPresence['user']; selection?: WorkbookPresenceSelection | null} | undefined;
 
     private readonly options: Options;
 
@@ -61,10 +63,21 @@ export class WorkbookRoomClient {
         return id;
     }
 
+    updateAwareness(presence: {client_id?: string; user?: WorkbookPresence['user']; selection?: WorkbookPresenceSelection | null}): void {
+        if (this.#closed) return;
+        const clientId = presence.client_id ?? this.#localPresence?.client_id ?? crypto.randomUUID();
+        this.#localPresence = {client_id: clientId, user: presence.user, selection: presence.selection};
+        if (this.#ready) {
+            this.send({type: 'awareness', ...this.#localPresence});
+        }
+    }
+
     close(): void {
         this.#closed = true;
         clearTimeout(this.#retry);
+        this.#localPresence = undefined;
         this.#socket?.close();
+        this.options.onAwareness?.([]);
         this.options.onConnection?.('closed');
     }
 
@@ -125,9 +138,15 @@ export class WorkbookRoomClient {
                 this.#acknowledged.delete(intent.command_id);
                 return false;
             });
-            if (!this.#ready) this.options.onConnection?.('connected');
+            if (!this.#ready) {
+                this.options.onConnection?.('connected');
+                if (this.#localPresence) this.send({type: 'awareness', ...this.#localPresence});
+            }
             this.#ready = true;
             this.#delay = 200;
+        } else if (message.type === 'awareness') {
+            this.options.onAwareness?.(Array.isArray(message.peers) ? message.peers : []);
+            return;
         } else if (message.type === 'ack' && message.receipt.command_id === this.#sent) {
             const {command_id, seq} = message.receipt;
             this.#sent = undefined;

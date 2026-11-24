@@ -59,8 +59,8 @@ fi
 SHEETS_BUILD="${WORK_DIR}/sheets"
 mkdir -p "${SHEETS_BUILD}"
 ln -s "${VAULTER_DIR}" "${WORK_DIR}/vaulter"
-tar -C "${ROOT_DIR}" --exclude=packages/vue/node_modules --exclude=packages/vue/dist \
-    -cf - package.json package-lock.json patches scripts/patch-univer.mjs packages/vue packages/runtime/package.json packages/realtime/package.json packages/tiptap/package.json | tar -C "${SHEETS_BUILD}" -xf -
+tar -C "${ROOT_DIR}" --exclude=packages/vue/node_modules --exclude=packages/vue/dist --exclude=packages/realtime/node_modules --exclude=packages/runtime/node_modules \
+    -cf - package.json package-lock.json patches scripts/patch-univer.mjs packages/vue packages/runtime/package.json packages/runtime/dist packages/runtime/tsconfig.json packages/realtime/package.json packages/realtime/dist packages/realtime/tsconfig.json packages/tiptap/package.json | tar -C "${SHEETS_BUILD}" -xf -
 (cd "${SHEETS_BUILD}" && npm ci --no-audit --no-fund)
 if [[ ! "${SHEETS_BUILD}/node_modules/@vaulter/vue" -ef "${VAULTER_DIR}/packages/vue" ]]; then
     printf 'Expected @vaulter/vue to link to %s\n' "${VAULTER_DIR}/packages/vue" >&2
