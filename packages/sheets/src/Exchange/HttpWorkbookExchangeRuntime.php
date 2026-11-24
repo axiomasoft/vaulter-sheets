@@ -15,11 +15,12 @@ use Vaulter\Sheets\Runtime\WireException;
 
 final class HttpWorkbookExchangeRuntime implements WorkbookExchangeRuntime
 {
+    /** @var array<string, array{mtime: int, size: int, token: string}> */
+    private static array $tokenCache = [];
+
     public function exchange(stdClass $request): stdClass
     {
-        $file = config('vaulter-sheets.runtime_token_file');
-        $tokenRaw = is_string($file) && is_readable($file) ? file_get_contents($file) : false;
-        $token = is_string($tokenRaw) ? trim($tokenRaw) : '';
+        $token = self::readToken(config('vaulter-sheets.runtime_token_file'));
         $urlRaw = config('vaulter-sheets.runtime_url');
         $url = is_string($urlRaw) ? rtrim($urlRaw, '/') : '';
         if ($token === '' || $url === '') {
@@ -29,7 +30,9 @@ final class HttpWorkbookExchangeRuntime implements WorkbookExchangeRuntime
         $timeout = is_int($timeoutRaw) || is_float($timeoutRaw) ? (float) $timeoutRaw : 25.0;
 
         try {
-            $response = Http::withToken($token)->withOptions(['allow_redirects' => false, 'stream' => true])
+            $response = Http::withToken($token)
+                ->withHeaders(['Accept-Encoding' => 'gzip'])
+                ->withOptions(['allow_redirects' => false, 'stream' => true])
                 ->timeout($timeout)
                 ->withBody(ExchangeWire::request($request), 'application/json')
                 ->post($url.'/v1/exchange');
@@ -50,6 +53,32 @@ final class HttpWorkbookExchangeRuntime implements WorkbookExchangeRuntime
         } catch (ConnectionException|\RuntimeException $error) {
             throw $error instanceof WorkbookProblem ? $error : new WorkbookProblem('runtime_failed', 503);
         }
+    }
+
+    private static function readToken(mixed $file): string
+    {
+        if (!is_string($file) || $file === '') {
+            return '';
+        }
+        clearstatcache(false, $file);
+        $mtime = @filemtime($file);
+        $size = @filesize($file);
+        if ($mtime === false || $size === false) {
+            unset(self::$tokenCache[$file]);
+
+            return '';
+        }
+        $cached = self::$tokenCache[$file] ?? null;
+        if ($cached !== null && $cached['mtime'] === $mtime && $cached['size'] === $size) {
+            return $cached['token'];
+        }
+        $raw = is_readable($file) ? file_get_contents($file) : false;
+        $token = is_string($raw) ? trim($raw) : '';
+        if ($token !== '') {
+            self::$tokenCache[$file] = ['mtime' => $mtime, 'size' => $size, 'token' => $token];
+        }
+
+        return $token;
     }
 
     private static function handleNotFound(string $body): never
@@ -73,7 +102,7 @@ final class HttpWorkbookExchangeRuntime implements WorkbookExchangeRuntime
         while (!$stream->eof()) {
             $chunk = $stream->read(min(65_536, $limit + 1 - strlen($result)));
             if ($chunk === '') {
-                throw new WorkbookProblem('runtime_failed', 503);
+                break;
             }
             $result .= $chunk;
             if (strlen($result) > $limit) {

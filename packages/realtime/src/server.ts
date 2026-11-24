@@ -3,12 +3,15 @@ import {readFileSync} from 'node:fs';
 import {createServer} from 'node:http';
 import {pathToFileURL} from 'node:url';
 import {WebSocket, WebSocketServer} from 'ws';
-import {PROTOCOL, WEBSOCKET_SUBPROTOCOL, position, record, type ServerMessage, type WorkbookReceipt} from './protocol.ts';
-import {replay} from './replay.ts';
+import {PROTOCOL, WEBSOCKET_SUBPROTOCOL, position, record, type ServerMessage, type WorkbookDeltaPayload, type WorkbookDeltaUpdate, type WorkbookReceipt, type WorkbookRoomMarker, type WorkbookRoomState} from './protocol.ts';
+import {applyDeltaPayload, replay} from './replay.ts';
 
 const REQUEST_LIMIT = 1024 * 1024;
 const RESPONSE_LIMIT = 24 * 1024 * 1024;
 const OWNER_RENEW_MS = 5_000; // The PHP owner lease lasts 15 seconds.
+const LEASE_SAFETY_MS = 5_000;
+const DEFAULT_LEASE_TTL_MS = 10_000;
+const HISTORY_LIMIT = 64;
 const TERMINAL_ROOM_CODES = new Set(['generation_changed', 'room_not_active', 'stale_owner', 'owner_busy']);
 
 class OwnerProblem extends Error {
@@ -23,8 +26,19 @@ class OwnerProblem extends Error {
 }
 
 interface Options {ownerUrl: string; ownerToken: string; refreshMs?: number}
-interface Peer {socket: WebSocket; token: string; seq: number; busy: boolean; opening: boolean}
-interface Room {peers: Set<Peer>; work: Promise<void>; queued: number}
+interface Peer {socket: WebSocket; token: string; seq: number; opening: boolean}
+interface RoomLease {fence: number; headSeq: number; expiresAt: number}
+interface Room {
+    peers: Set<Peer>;
+    work: Promise<void>;
+    queued: number;
+    state?: WorkbookRoomState;
+    history: Map<number, WorkbookDeltaUpdate>;
+    lease?: RoomLease;
+    refreshInFlight?: Promise<void>;
+    idleStreak: number;
+    nextPollAt: number;
+}
 
 async function responseJson(response: Response): Promise<unknown> {
     if (!response.body) throw new Error('Empty response from PHP owner');
@@ -66,9 +80,25 @@ export function createRealtimeServer(options: Options) {
         return data;
     }
 
-    async function append(room: string, token: string, fence: number, body: Record<string, unknown>, traceparent?: string): Promise<unknown> {
-        const renew = () => call('renew', room, token, {owner_fence: fence});
-        await renew();
+    const baseRefreshMs = options.refreshMs ?? 5_000;
+    const maxIdleRefreshMs = options.refreshMs !== undefined ? Math.max(options.refreshMs * 4, 2_000) : 30_000;
+
+    function leaseExpiry(raw: unknown): number {
+        if (typeof raw === 'string') {
+            const parsed = Date.parse(raw);
+            if (Number.isFinite(parsed)) return Math.max(Date.now(), parsed - LEASE_SAFETY_MS);
+        }
+        return Date.now() + DEFAULT_LEASE_TTL_MS;
+    }
+
+    async function append(room: Room, roomId: string, token: string, fence: number, body: Record<string, unknown>, traceparent?: string): Promise<unknown> {
+        const renew = () => call('renew', roomId, token, {owner_fence: fence}).then(data => {
+            if (room.lease && room.lease.fence === fence) {
+                room.lease.expiresAt = record(data) && data.owner_expires_at !== undefined
+                    ? leaseExpiry(data.owner_expires_at)
+                    : Date.now() + DEFAULT_LEASE_TTL_MS;
+            }
+        });
         let renewing: Promise<void> | undefined;
         const heartbeat = setInterval(() => {
             // PHP checks the fence when it publishes, including after a failed renewal.
@@ -76,7 +106,7 @@ export function createRealtimeServer(options: Options) {
         }, OWNER_RENEW_MS);
         heartbeat.unref();
         try {
-            return await call('append', room, token, {...body, owner_fence: fence}, traceparent);
+            return await call('append', roomId, token, {...body, owner_fence: fence}, traceparent);
         } finally {
             clearInterval(heartbeat);
             await renewing;
@@ -125,27 +155,154 @@ export function createRealtimeServer(options: Options) {
         }
     }
 
-    async function refresh(roomId: string, peer: Peer, resume: number | null = null): Promise<void> {
-        const log = await call('read', roomId, peer.token, {
-            after_seq: peer.seq < 0 ? resume : peer.seq,
-            include_state: peer.opening,
-        });
-        if (record(log) && log.unchanged === true) return;
-        const state = replay(log);
-        if (state.seq < peer.seq) throw new OwnerProblem(409, 'generation_changed');
-        if (state.seq !== peer.seq) {
-            peer.seq = state.seq;
-            send(peer, {type: 'state', state});
+    function recordHistory(room: Room, update: WorkbookDeltaUpdate): void {
+        room.history.set(update.seq, update);
+        while (room.history.size > HISTORY_LIMIT) {
+            const oldest = room.history.keys().next().value;
+            if (oldest === undefined) break;
+            room.history.delete(oldest);
         }
     }
 
-    function updatePeers(roomId: string, room: Room): Promise<unknown> {
-        return Promise.allSettled(Array.from(room.peers, async peer => {
-            if (!peer.token || peer.opening || peer.busy || peer.socket.readyState !== WebSocket.OPEN) return;
-            peer.busy = true;
-            try { await refresh(roomId, peer); } catch (cause) { error(peer, cause); }
-            finally { peer.busy = false; }
-        }));
+    function deltaSlice(room: Room, fromSeq: number): WorkbookDeltaUpdate[] | null {
+        if (!room.state || fromSeq < 0 || fromSeq > room.state.seq) return null;
+        if (fromSeq === room.state.seq) return [];
+        const updates: WorkbookDeltaUpdate[] = [];
+        for (let seq = fromSeq + 1; seq <= room.state.seq; seq++) {
+            const entry = room.history.get(seq);
+            if (!entry) return null;
+            updates.push(entry);
+        }
+        return updates;
+    }
+
+    function sendPeerState(room: Room, peer: Peer, fromSeq: number | null = null): void {
+        if (!room.state || peer.socket.readyState !== WebSocket.OPEN) return;
+        const baseSeq = fromSeq ?? peer.seq;
+        if (baseSeq >= 0 && baseSeq <= room.state.seq) {
+            const updates = deltaSlice(room, baseSeq);
+            if (updates !== null) {
+                const insertions = updates.flatMap(u => u.commands.filter((c): c is Extract<typeof c, {kind: 'insert_row_before'}> => c.kind === 'insert_row_before')
+                    .map(c => ({sheet_id: c.sheet_id, row: c.row, count: c.count})));
+                peer.seq = room.state.seq;
+                send(peer, {
+                    type: 'state',
+                    delta: {
+                        generation: room.state.generation,
+                        from_seq: baseSeq,
+                        seq: room.state.seq,
+                        etag: room.state.etag,
+                        marker: room.state.marker,
+                        insertions,
+                        updates,
+                    },
+                });
+                return;
+            }
+        }
+        peer.seq = room.state.seq;
+        send(peer, {type: 'state', state: room.state});
+    }
+
+    function fanOut(room: Room): void {
+        if (!room.state) return;
+        for (const peer of room.peers) {
+            if (!peer.token || peer.opening || peer.socket.readyState !== WebSocket.OPEN) continue;
+            if (peer.seq === room.state.seq) continue;
+            sendPeerState(room, peer);
+        }
+    }
+
+    function extractTailUpdates(log: unknown): WorkbookDeltaUpdate[] {
+        if (!record(log) || !Array.isArray(log.tail)) return [];
+        const updates: WorkbookDeltaUpdate[] = [];
+        for (const item of log.tail) {
+            if (!record(item) || !position(item.seq) || typeof item.update_id !== 'string' || typeof item.payload !== 'string') continue;
+            try {
+                const decoded = JSON.parse(Buffer.from(item.payload, 'base64').toString('utf8')) as unknown;
+                if (!record(decoded) || !Array.isArray(decoded.commands)) continue;
+                if (record(decoded.delta)) {
+                    updates.push({
+                        seq: item.seq,
+                        update_id: item.update_id,
+                        commands: decoded.commands as WorkbookDeltaUpdate['commands'],
+                        delta: decoded.delta as WorkbookDeltaPayload,
+                    });
+                } else if (record(decoded.workbook)) {
+                    updates.push({
+                        seq: item.seq,
+                        update_id: item.update_id,
+                        commands: decoded.commands as WorkbookDeltaUpdate['commands'],
+                        workbook: decoded.workbook as unknown as WorkbookDeltaUpdate['workbook'],
+                    });
+                }
+            } catch { /* ignore malformed tail entry; replay() validates */ }
+        }
+        return updates;
+    }
+
+    async function syncRoom(roomId: string, room: Room, token: string, forceFull = false): Promise<void> {
+        if (room.refreshInFlight) {
+            await room.refreshInFlight;
+            return;
+        }
+        const run = (async () => {
+            const needFull = forceFull || !room.state;
+            const log = await call('read', roomId, token, {
+                after_seq: needFull ? null : room.state!.seq,
+                include_state: needFull,
+            });
+            if (record(log) && log.unchanged === true) {
+                room.idleStreak++;
+                const delay = Math.min(maxIdleRefreshMs, baseRefreshMs * (2 ** Math.min(room.idleStreak, 4)));
+                room.nextPollAt = Date.now() + delay;
+                return;
+            }
+            let nextState: WorkbookRoomState;
+            try {
+                nextState = replay(log, needFull ? undefined : room.state);
+            } catch {
+                if (needFull) throw new OwnerProblem(503, 'room_unavailable');
+                const fullLog = await call('read', roomId, token, {after_seq: null, include_state: true});
+                nextState = replay(fullLog);
+                room.history.clear();
+            }
+            if (room.state && nextState.generation !== room.state.generation) {
+                room.history.clear();
+                room.lease = undefined;
+            } else if (room.state && nextState.seq < room.state.seq) {
+                throw new OwnerProblem(409, 'generation_changed');
+            }
+            for (const entry of extractTailUpdates(log)) recordHistory(room, entry);
+            room.state = nextState;
+            room.idleStreak = 0;
+            room.nextPollAt = Date.now() + baseRefreshMs;
+            fanOut(room);
+        })();
+        room.refreshInFlight = run;
+        try {
+            await run;
+        } finally {
+            if (room.refreshInFlight === run) room.refreshInFlight = undefined;
+        }
+    }
+
+    async function pollRoom(roomId: string, room: Room): Promise<void> {
+        const candidates = Array.from(room.peers).filter(p => p.token && !p.opening && p.socket.readyState === WebSocket.OPEN);
+        if (candidates.length === 0) return;
+        for (const peer of candidates) {
+            try {
+                await syncRoom(roomId, room, peer.token);
+                return;
+            } catch (cause) {
+                if (cause instanceof OwnerProblem && (cause.status === 401 || cause.status === 403 || cause.status === 404)) {
+                    error(peer, cause);
+                    continue;
+                }
+                for (const p of candidates) error(p, cause);
+                return;
+            }
+        }
     }
 
     server.on('upgrade', (request, socket, head) => {
@@ -160,9 +317,9 @@ export function createRealtimeServer(options: Options) {
     });
 
     function attach(roomId: string, socket: WebSocket): void {
-        const room = rooms.get(roomId) ?? {peers: new Set<Peer>(), work: Promise.resolve(), queued: 0};
+        const room = rooms.get(roomId) ?? {peers: new Set<Peer>(), work: Promise.resolve(), queued: 0, history: new Map<number, WorkbookDeltaUpdate>(), idleStreak: 0, nextPollAt: Date.now() + baseRefreshMs};
         rooms.set(roomId, room);
-        const peer: Peer = {socket, token: '', seq: -1, busy: false, opening: true};
+        const peer: Peer = {socket, token: '', seq: -1, opening: true};
         room.peers.add(peer);
         const timer = setTimeout(() => socket.close(4403, 'Room credential required'), 5000);
 
@@ -183,7 +340,12 @@ export function createRealtimeServer(options: Options) {
                 }
                 peer.token = message.token;
                 const resume = position(message.after_seq) ? message.after_seq : null;
-                void refresh(roomId, peer, resume).then(() => { peer.opening = false; clearTimeout(timer); }, cause => error(peer, cause));
+                void syncRoom(roomId, room, peer.token).then(() => {
+                    if (socket.readyState !== WebSocket.OPEN) return;
+                    sendPeerState(room, peer, resume);
+                    peer.opening = false;
+                    clearTimeout(timer);
+                }, cause => error(peer, cause));
                 return;
             }
             const intent = message.intent;
@@ -203,12 +365,65 @@ export function createRealtimeServer(options: Options) {
             room.work = room.work.then(async () => {
                 try {
                     if (socket.readyState !== WebSocket.OPEN) return;
-                    const lease = await call('acquire', roomId, peer.token);
-                    if (!record(lease) || !position(lease.owner_fence) || !position(lease.head_seq)) throw new Error('Invalid room lease');
-                    const receipt = await append(roomId, peer.token, lease.owner_fence, {base_seq: lease.head_seq, intent, if_match: tag}, traceparent);
+                    let usedCachedLease = false;
+                    let lease = room.lease;
+                    if (lease && Date.now() < lease.expiresAt) {
+                        usedCachedLease = true;
+                    } else {
+                        const acquired = await call('acquire', roomId, peer.token);
+                        if (!record(acquired) || !position(acquired.owner_fence) || !position(acquired.head_seq)) throw new Error('Invalid room lease');
+                        lease = {fence: acquired.owner_fence, headSeq: acquired.head_seq, expiresAt: leaseExpiry(acquired.owner_expires_at)};
+                        room.lease = lease;
+                    }
+                    let receipt: unknown;
+                    try {
+                        receipt = await append(room, roomId, peer.token, lease.fence, {base_seq: lease.headSeq, intent, if_match: tag}, traceparent);
+                    } catch (cause) {
+                        if (usedCachedLease && cause instanceof OwnerProblem && (cause.code === 'stale_owner' || cause.code === 'base_moved')) {
+                            room.lease = undefined;
+                            const reacquired = await call('acquire', roomId, peer.token);
+                            if (!record(reacquired) || !position(reacquired.owner_fence) || !position(reacquired.head_seq)) throw new Error('Invalid room lease');
+                            lease = {fence: reacquired.owner_fence, headSeq: reacquired.head_seq, expiresAt: leaseExpiry(reacquired.owner_expires_at)};
+                            room.lease = lease;
+                            receipt = await append(room, roomId, peer.token, lease.fence, {base_seq: lease.headSeq, intent, if_match: tag}, traceparent);
+                        } else {
+                            if (cause instanceof OwnerProblem && TERMINAL_ROOM_CODES.has(cause.code)) room.lease = undefined;
+                            throw cause;
+                        }
+                    }
                     if (!record(receipt) || receipt.state !== 'committed' || receipt.command_id !== commandId || !position(receipt.seq)) throw new Error('Invalid workbook receipt');
+                    if (room.lease && room.lease.fence === lease.fence) room.lease.headSeq = receipt.seq;
                     send(peer, {type: 'ack', receipt: receipt as unknown as WorkbookReceipt});
-                    await updatePeers(roomId, room);
+
+                    const update = record(receipt.update) ? receipt.update : null;
+                    if (update && room.state && receipt.seq === room.state.seq + 1
+                        && record(receipt.marker) && receipt.marker.generation === room.state.generation
+                        && typeof receipt.etag === 'string' && Array.isArray(update.commands) && record(update.delta) && typeof update.update_id === 'string') {
+                        const deltaEntry: WorkbookDeltaUpdate = {
+                            seq: receipt.seq,
+                            update_id: update.update_id,
+                            commands: update.commands as WorkbookDeltaUpdate['commands'],
+                            delta: update.delta as WorkbookDeltaPayload,
+                        };
+                        recordHistory(room, deltaEntry);
+                        const insertions = Array.isArray(receipt.insertions)
+                            ? receipt.insertions as NonNullable<WorkbookRoomState['insertions']>
+                            : deltaEntry.commands.filter((c): c is Extract<typeof c, {kind: 'insert_row_before'}> => c.kind === 'insert_row_before')
+                                .map(c => ({sheet_id: c.sheet_id, row: c.row, count: c.count}));
+                        room.state = {
+                            generation: room.state.generation,
+                            seq: receipt.seq,
+                            etag: receipt.etag,
+                            marker: receipt.marker as unknown as WorkbookRoomMarker,
+                            workbook: applyDeltaPayload(room.state.workbook, deltaEntry.commands, deltaEntry.delta!),
+                            insertions,
+                        };
+                        room.idleStreak = 0;
+                        room.nextPollAt = Date.now() + baseRefreshMs;
+                        fanOut(room);
+                    } else {
+                        await syncRoom(roomId, room, peer.token);
+                    }
                 } catch (cause) {
                     error(peer, cause, commandId);
                 } finally {
@@ -220,10 +435,11 @@ export function createRealtimeServer(options: Options) {
     }
 
     const timer = setInterval(() => {
+        const now = Date.now();
         for (const [id, room] of rooms) {
-            if (!room.queued) void updatePeers(id, room);
+            if (!room.queued && !room.refreshInFlight && now >= room.nextPollAt) void pollRoom(id, room);
         }
-    }, options.refreshMs ?? 2000);
+    }, Math.min(baseRefreshMs, 1_000));
     timer.unref();
     server.on('close', () => { clearInterval(timer); sockets.close(); });
     return {server, close: () => { for (const socket of sockets.clients) socket.terminate(); server.close(); }};

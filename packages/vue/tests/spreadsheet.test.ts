@@ -96,8 +96,10 @@ describe('VaulterSpreadsheet', () => {
     wrapper.unmount()
   })
 
-  it('sends a command using the observed generation and ETag, then refreshes from the owner', async () => {
+  it('sends a command using the observed generation and ETag, and skips reload on contiguous marker', async () => {
     const workbooks = client()
+    const contiguous = {...receipt, marker: {...snapshot.marker, position: 2, sha256: 'b'.repeat(64)}}
+    workbooks.submit.mockResolvedValueOnce(contiguous)
     const wrapper = view(workbooks)
     await flushPromises()
     await wrapper.get('button').trigger('click')
@@ -105,21 +107,28 @@ describe('VaulterSpreadsheet', () => {
     expect(workbooks.submit).toHaveBeenCalledWith('20', {
       command_id: expect.any(String), expected_generation: 0, policy: 'rebase_cells', commands: [command],
     }, '"20.0.1"')
-    expect(workbooks.open).toHaveBeenCalledTimes(2)
-    expect(wrapper.emitted('save')).toEqual([[receipt]])
+    expect(workbooks.open).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('save')).toEqual([[contiguous]])
     wrapper.unmount()
   })
 
-  it('keeps the editor mounted for an acknowledged local edit and remounts for a newer owner head', async () => {
+  it('keeps the editor mounted for local and compatible remote updates, and remounts on format change', async () => {
     const workbooks = client()
     const accepted = {...snapshot, etag: '"20.0.2"', marker: {...snapshot.marker, position: 2, sha256: 'b'.repeat(64)}}
     const newer = {...accepted, etag: '"20.0.4"', marker: {...accepted.marker, position: 4, sha256: 'd'.repeat(64)}}
-    workbooks.open.mockResolvedValueOnce(snapshot).mockResolvedValueOnce(accepted).mockResolvedValueOnce(newer)
+    const incompatible = {
+      ...newer,
+      etag: '"20.1.5"',
+      marker: {generation: 1, position: 5, sha256: 'e'.repeat(64)},
+      workbook: {...newer.workbook, profile: {...newer.workbook.profile, id: 'univer-oss-v2'}},
+    }
+    workbooks.open.mockResolvedValueOnce(snapshot).mockResolvedValueOnce(newer).mockResolvedValueOnce(incompatible)
     workbooks.submit
-      .mockResolvedValueOnce({...receipt, marker: accepted.marker})
-      .mockResolvedValueOnce({...receipt, etag: '"20.0.3"', marker: {...accepted.marker, position: 3, sha256: 'c'.repeat(64)}})
+      .mockResolvedValueOnce({...receipt, etag: accepted.etag, marker: accepted.marker})
+      .mockResolvedValueOnce({...receipt, etag: '"20.0.4"', marker: newer.marker})
+      .mockResolvedValueOnce({...receipt, etag: '"20.1.5"', marker: incompatible.marker})
 
-    const renderer = {dispose: vi.fn(), accept: vi.fn(), selectedRow: vi.fn()}
+    const renderer = {dispose: vi.fn(), accept: vi.fn(), sync: vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(false), selectedRow: vi.fn()}
     const mountEditor = vi.mocked(mountWorkbook).mockClear().mockReturnValue(renderer)
     const wrapper = mount(VaulterSpreadsheet, {props: {node: makeSheetNode(), workbookClient: workbooks}})
     await flushPromises()
@@ -128,12 +137,20 @@ describe('VaulterSpreadsheet', () => {
     await flushPromises()
 
     expect(mountEditor).toHaveBeenCalledTimes(1)
+    expect(workbooks.open).toHaveBeenCalledTimes(1)
     expect(renderer.dispose).not.toHaveBeenCalled()
-    expect(renderer.accept).toHaveBeenCalledWith(accepted.workbook)
+    expect(renderer.accept).toHaveBeenCalledWith(expect.objectContaining({format_version: 2}))
 
     changed([{...command, expected: {number: 7}, value: 8}])
     await flushPromises()
     expect(workbooks.submit).toHaveBeenLastCalledWith('20', expect.anything(), accepted.etag)
+    expect(workbooks.open).toHaveBeenCalledTimes(2)
+    expect(renderer.sync).toHaveBeenCalledWith(newer.workbook, true)
+    expect(mountEditor).toHaveBeenCalledTimes(1)
+    expect(renderer.dispose).not.toHaveBeenCalled()
+
+    changed([{...command, expected: {number: 8}, value: 9}])
+    await flushPromises()
     expect(mountEditor).toHaveBeenCalledTimes(2)
     expect(renderer.dispose).toHaveBeenCalledTimes(1)
     wrapper.unmount()

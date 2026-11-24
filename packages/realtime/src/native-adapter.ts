@@ -3,7 +3,7 @@ import {InsertRowMutation, SetRangeValuesMutation} from '@univerjs/sheets';
 import {SetCellEditVisibleOperation, type IEditorBridgeService, type IEditorBridgeServiceVisibleParam} from '@univerjs/sheets-ui';
 import type {CellContent, Command, WorkbookV2} from '@vaulter/sheets-runtime/browser';
 import {WorkbookRoomClient, type PendingIntent} from './client.ts';
-import {position, record, type WorkbookIntent, type WorkbookRoomState} from './protocol.ts';
+import {position, record, type WorkbookIntent, type WorkbookRoomDelta, type WorkbookRoomState} from './protocol.ts';
 
 interface WorkbookView {
     unitId: string;
@@ -106,7 +106,102 @@ export function connectNativeWorkbook(view: WorkbookView, options: Omit<Construc
     const structures = new Map<string, Insertion[] | null>();
     const captured = new WeakMap<object, {basis: readonly PendingIntent[]; intent: ReturnType<typeof typedMutation>}>();
 
-    function render(state: WorkbookRoomState, pending: readonly PendingIntent[]): void {
+    async function applyIncremental(prev: WorkbookRoomState, next: WorkbookRoomState, delta?: WorkbookRoomDelta): Promise<boolean> {
+        const flags = {fromCollab: true, onlyLocal: true};
+        const prevNative = prev.workbook.native as Record<string, unknown>;
+        const nextNative = next.workbook.native as Record<string, unknown>;
+        if (JSON.stringify(prevNative.sheetOrder ?? []) !== JSON.stringify(nextNative.sheetOrder ?? [])
+            || JSON.stringify(prevNative.resources ?? []) !== JSON.stringify(nextNative.resources ?? [])) {
+            return false;
+        }
+        const styles = (nextNative.styles ?? {}) as Record<string, unknown>;
+        const resolveCell = (cell: unknown, extraStyles?: Record<string, unknown>) => {
+            if (cell === null) return null;
+            if (!record(cell)) return null;
+            const resolved: Record<string, unknown> = {p: null, s: null, v: null, t: null, f: null, si: null, ...cell};
+            if (typeof cell.s === 'string') {
+                const styleObj = extraStyles?.[cell.s] ?? styles[cell.s];
+                if (styleObj !== undefined) resolved.s = styleObj;
+            }
+            return resolved;
+        };
+        if (delta && delta.updates.length > 0) {
+            for (const update of delta.updates) {
+                if (update.workbook || !update.delta) return false;
+                if (update.delta.sheet_order !== undefined || update.delta.resources !== undefined) return false;
+                for (const cmd of update.commands) {
+                    if (cmd.kind === 'insert_row_before') {
+                        await view.commands.executeCommand(InsertRowMutation.id, {
+                            unitId: view.unitId,
+                            subUnitId: cmd.sheet_id,
+                            range: {startRow: cmd.row - 1, endRow: cmd.row + cmd.count - 2, startColumn: 0, endColumn: 0},
+                        }, flags);
+                    }
+                }
+                if (update.delta.sheets) {
+                    for (const [sheetId, sheetDelta] of Object.entries(update.delta.sheets)) {
+                        if (sheetDelta.full_sheet || sheetDelta.row_data !== undefined || sheetDelta.column_data !== undefined || sheetDelta.merge_data !== undefined) {
+                            return false;
+                        }
+                        if (sheetDelta.cells) {
+                            const cellValue: Record<number, Record<number, object | null>> = {};
+                            for (const [rKey, rowPatch] of Object.entries(sheetDelta.cells)) {
+                                const r = Number(rKey);
+                                for (const [cKey, cell] of Object.entries(rowPatch)) {
+                                    (cellValue[r] ??= {})[Number(cKey)] = resolveCell(cell, update.delta.styles);
+                                }
+                            }
+                            if (Object.keys(cellValue).length > 0) {
+                                await view.commands.executeCommand(SetRangeValuesMutation.id, {
+                                    unitId: view.unitId, subUnitId: sheetId, cellValue, isOverrideStyle: true,
+                                }, flags);
+                            }
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+        const prevSheets = (prevNative.sheets ?? {}) as Record<string, Record<string, unknown>>;
+        const nextSheets = (nextNative.sheets ?? {}) as Record<string, Record<string, unknown>>;
+        for (const sheetId of (nextNative.sheetOrder ?? []) as string[]) {
+            const pSheet = prevSheets[sheetId];
+            const nSheet = nextSheets[sheetId];
+            if (!pSheet || !nSheet) return false;
+            if (JSON.stringify(pSheet.rowData ?? {}) !== JSON.stringify(nSheet.rowData ?? {})
+                || JSON.stringify(pSheet.columnData ?? {}) !== JSON.stringify(nSheet.columnData ?? {})
+                || JSON.stringify(pSheet.mergeData ?? []) !== JSON.stringify(nSheet.mergeData ?? [])) {
+                return false;
+            }
+            const pCells = (pSheet.cellData ?? {}) as Record<string, Record<string, unknown>>;
+            const nCells = (nSheet.cellData ?? {}) as Record<string, Record<string, unknown>>;
+            const cellValue: Record<number, Record<number, object | null>> = {};
+            for (const [rKey, rowObj] of Object.entries(nCells)) {
+                const r = Number(rKey);
+                for (const [cKey, cell] of Object.entries(rowObj ?? {})) {
+                    if (JSON.stringify(pCells[rKey]?.[cKey]) !== JSON.stringify(cell)) {
+                        (cellValue[r] ??= {})[Number(cKey)] = resolveCell(cell);
+                    }
+                }
+            }
+            for (const [rKey, rowObj] of Object.entries(pCells)) {
+                const r = Number(rKey);
+                for (const cKey of Object.keys(rowObj ?? {})) {
+                    if (!nCells[rKey] || !(cKey in nCells[rKey])) {
+                        (cellValue[r] ??= {})[Number(cKey)] = null;
+                    }
+                }
+            }
+            if (Object.keys(cellValue).length > 0) {
+                await view.commands.executeCommand(SetRangeValuesMutation.id, {
+                    unitId: view.unitId, subUnitId: sheetId, cellValue, isOverrideStyle: true,
+                }, flags);
+            }
+        }
+        return true;
+    }
+
+    function render(state: WorkbookRoomState, pending: readonly PendingIntent[], delta?: WorkbookRoomDelta): void {
         const items = [...pending];
         pendingView = items;
         queued = queued.then(async () => {
@@ -122,7 +217,10 @@ export function connectNativeWorkbook(view: WorkbookView, options: Omit<Construc
                 view.onDraftConflict?.();
                 if (cancelled !== true) throw new Error('Could not discard the conflicting workbook draft');
             }
-            await view.replace(state.workbook, {fromCollab: true});
+            const canApplyPointwise = Boolean(last && changed && effects !== null && !previewedInsertion);
+            if (!canApplyPointwise || !(await applyIncremental(last!, state, delta))) {
+                await view.replace(state.workbook, {fromCollab: true});
+            }
             if (activeLocation && effects && !previewedInsertion) {
                 const row = shiftDraftRow(activeLocation.sheetId, activeLocation.row, effects);
                 if (row !== activeLocation.row) {

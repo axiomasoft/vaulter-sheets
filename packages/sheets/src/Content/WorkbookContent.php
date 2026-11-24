@@ -9,11 +9,16 @@ use Vaulter\Documents\Contracts\DocumentContent;
 use Vaulter\Sheets\Runtime\CanonicalJson;
 use Vaulter\Sheets\Runtime\StrictJson;
 
-final readonly class WorkbookContent implements DocumentContent
+final class WorkbookContent implements DocumentContent
 {
-    private string $bytes;
+    private readonly string $bytes;
 
-    private string $hash;
+    private readonly string $hash;
+
+    private ?stdClass $decoded = null;
+
+    /** @var array<string, mixed>|null */
+    private ?array $decodedArray = null;
 
     public function __construct(stdClass $payload)
     {
@@ -28,20 +33,26 @@ final readonly class WorkbookContent implements DocumentContent
      */
     public function toArray(): array
     {
+        if ($this->decodedArray !== null) {
+            return $this->decodedArray;
+        }
         $out = [];
         foreach (get_object_vars($this->value()) as $key => $val) {
             $out[(string) $key] = self::arrayValue($val);
         }
 
-        return $out;
+        return $this->decodedArray = $out;
     }
 
     public function value(): stdClass
     {
-        /** @var stdClass $payload */
-        $payload = StrictJson::decode($this->bytes);
+        if ($this->decoded === null) {
+            /** @var stdClass $payload */
+            $payload = StrictJson::decode($this->bytes);
+            $this->decoded = $payload;
+        }
 
-        return $payload;
+        return $this->decoded;
     }
 
     public function canonicalBytes(): string

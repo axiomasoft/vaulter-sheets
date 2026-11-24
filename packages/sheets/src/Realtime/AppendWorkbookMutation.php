@@ -113,12 +113,20 @@ final readonly class AppendWorkbookMutation
             return $replay ?? throw $problem;
         }
         $snapshot = $native->value();
-        $checkpoint = CanonicalJson::encode((object) ['workbook' => $snapshot, 'update_id' => $id]);
-        $payload = CanonicalJson::encode((object) ['workbook' => $snapshot, 'commands' => $effective->commands, 'update_id' => $id]);
+        $seq = $base + 1;
+        $delta = self::delta($workbook, $snapshot, $effective->commands);
+        $checkpointIntervalRaw = config('vaulter-sheets.realtime.checkpoint_interval', 20);
+        $checkpointInterval = is_int($checkpointIntervalRaw) && $checkpointIntervalRaw > 0 ? $checkpointIntervalRaw : 20;
+        $checkpoint = ($seq % $checkpointInterval === 0)
+            ? CanonicalJson::encode((object) ['workbook' => $snapshot, 'update_id' => $id, 'seq' => $seq])
+            : CanonicalJson::encode((object) ['kind' => 'snapshot_ref', 'seq' => $seq, 'update_id' => $id, 'sha256' => $native->contentHash()]);
+        $payload = CanonicalJson::encode((object) [
+            'v' => 1, 'update_id' => $id, 'seq' => $seq, 'commands' => $effective->commands, 'delta' => $delta,
+        ]);
         $update = new UpdateEnvelope($command->generation, $id, $payload, hash('sha256', $payload));
         $insertions = array_values(array_filter($effective->commands, static fn (stdClass $item): bool => $item->kind === 'insert_row_before'));
 
-        return $this->database->transaction(function (Connection $db) use ($context, $node, $owner, $fence, $base, $command, $call, $id, $receiptId, $marker, $runtime, $native, $projection, $checkpoint, $update, $insertions): array {
+        $result = $this->database->transaction(function (Connection $db) use ($context, $node, $owner, $fence, $base, $command, $call, $id, $receiptId, $marker, $runtime, $native, $projection, $checkpoint, $update, $insertions): array {
             $document = $this->lockWritable($context, $node, $call);
             $this->assertGeneration($document, $command);
             $head = $this->journal->assertOwner($document, $owner, $fence);
@@ -159,6 +167,8 @@ final readonly class AppendWorkbookMutation
 
             return $evidence;
         });
+
+        return $result + ['update' => (object) ['seq' => $seq, 'update_id' => $id, 'commands' => $effective->commands, 'delta' => $delta]];
     }
 
     private function lockWritable(DriveContext $context, string $node, ?CollaborationCall $call): LockedDocumentState
@@ -328,5 +338,145 @@ final readonly class AppendWorkbookMutation
     private static function string(mixed $value): string
     {
         return is_string($value) || is_int($value) ? (string) $value : '';
+    }
+
+    /**
+     * @param list<stdClass> $commands
+     */
+    private static function delta(stdClass $before, stdClass $after, array $commands): stdClass
+    {
+        $delta = new stdClass;
+        if (CanonicalJson::encode($before->tables ?? []) !== CanonicalJson::encode($after->tables ?? [])) {
+            $delta->tables = $after->tables ?? [];
+        }
+        $beforeNative = ($before->native ?? null) instanceof stdClass ? $before->native : new stdClass;
+        $afterNative = ($after->native ?? null) instanceof stdClass ? $after->native : new stdClass;
+        if (CanonicalJson::encode($beforeNative->sheetOrder ?? []) !== CanonicalJson::encode($afterNative->sheetOrder ?? [])) {
+            $delta->sheet_order = $afterNative->sheetOrder ?? [];
+        }
+        if (CanonicalJson::encode($beforeNative->resources ?? []) !== CanonicalJson::encode($afterNative->resources ?? [])) {
+            $delta->resources = $afterNative->resources ?? [];
+        }
+        $beforeStyles = ($beforeNative->styles ?? null) instanceof stdClass ? get_object_vars($beforeNative->styles) : [];
+        $afterStyles = ($afterNative->styles ?? null) instanceof stdClass ? get_object_vars($afterNative->styles) : [];
+        $changedStyles = new stdClass;
+        foreach ($afterStyles as $key => $style) {
+            $k = (string) $key;
+            if (!array_key_exists($k, $beforeStyles) || CanonicalJson::encode($beforeStyles[$k]) !== CanonicalJson::encode($style)) {
+                $changedStyles->{$k} = $style;
+            }
+        }
+        if (get_object_vars($changedStyles) !== []) {
+            $delta->styles = $changedStyles;
+        }
+        $removedStyles = array_values(array_map('strval', array_diff(array_keys($beforeStyles), array_keys($afterStyles))));
+        if ($removedStyles !== []) {
+            $delta->removed_styles = $removedStyles;
+        }
+
+        $beforeSheets = ($beforeNative->sheets ?? null) instanceof stdClass ? get_object_vars($beforeNative->sheets) : [];
+        $afterSheets = ($afterNative->sheets ?? null) instanceof stdClass ? get_object_vars($afterNative->sheets) : [];
+        $sheetsDelta = new stdClass;
+        foreach ($afterSheets as $sheetId => $afterSheet) {
+            if (!$afterSheet instanceof stdClass) {
+                continue;
+            }
+            $sid = (string) $sheetId;
+            $beforeSheet = ($beforeSheets[$sid] ?? null) instanceof stdClass ? $beforeSheets[$sid] : null;
+            if ($beforeSheet === null) {
+                $sheetsDelta->{$sid} = (object) ['full_sheet' => $afterSheet];
+
+                continue;
+            }
+            $sDelta = new stdClass;
+            foreach (['name' => 'name', 'rowCount' => 'row_count', 'columnCount' => 'column_count', 'rowData' => 'row_data', 'columnData' => 'column_data', 'mergeData' => 'merge_data'] as $prop => $wireKey) {
+                $bVal = $beforeSheet->{$prop} ?? null;
+                $aVal = $afterSheet->{$prop} ?? null;
+                if (CanonicalJson::encode($bVal) !== CanonicalJson::encode($aVal)) {
+                    $sDelta->{$wireKey} = $aVal;
+                }
+            }
+            $beforeCells = self::shiftCells(($beforeSheet->cellData ?? null) instanceof stdClass ? $beforeSheet->cellData : new stdClass, $sid, $commands);
+            $afterCells = ($afterSheet->cellData ?? null) instanceof stdClass ? get_object_vars($afterSheet->cellData) : [];
+            $cellsPatch = new stdClass;
+            foreach ($afterCells as $rKey => $afterRow) {
+                if (!$afterRow instanceof stdClass) {
+                    continue;
+                }
+                $rk = (string) $rKey;
+                $beforeRow = $beforeCells[$rk] ?? [];
+                $rowPatch = new stdClass;
+                foreach (get_object_vars($afterRow) as $cKey => $afterCell) {
+                    $ck = (string) $cKey;
+                    if (!array_key_exists($ck, $beforeRow) || CanonicalJson::encode($beforeRow[$ck]) !== CanonicalJson::encode($afterCell)) {
+                        $rowPatch->{$ck} = $afterCell;
+                    }
+                }
+                foreach ($beforeRow as $ck => $_) {
+                    $ckStr = (string) $ck;
+                    if (!property_exists($afterRow, $ckStr)) {
+                        $rowPatch->{$ckStr} = null;
+                    }
+                }
+                if (get_object_vars($rowPatch) !== []) {
+                    $cellsPatch->{$rk} = $rowPatch;
+                }
+            }
+            foreach ($beforeCells as $rk => $beforeRow) {
+                if (!array_key_exists($rk, $afterCells) && $beforeRow !== []) {
+                    $rowPatch = new stdClass;
+                    foreach ($beforeRow as $ck => $_) {
+                        $rowPatch->{$ck} = null;
+                    }
+                    $cellsPatch->{$rk} = $rowPatch;
+                }
+            }
+            if (get_object_vars($cellsPatch) !== []) {
+                $sDelta->cells = $cellsPatch;
+            }
+            if (get_object_vars($sDelta) !== []) {
+                $sheetsDelta->{$sid} = $sDelta;
+            }
+        }
+        if (get_object_vars($sheetsDelta) !== []) {
+            $delta->sheets = $sheetsDelta;
+        }
+
+        return $delta;
+    }
+
+    /**
+     * @param  list<stdClass>                       $commands
+     * @return array<int|string, array<string, mixed>>
+     */
+    private static function shiftCells(stdClass $cellData, string $sheetId, array $commands): array
+    {
+        /** @var array<string, array<string, mixed>> $rows */
+        $rows = [];
+        foreach (get_object_vars($cellData) as $rKey => $rowObj) {
+            if ($rowObj instanceof stdClass) {
+                $cols = [];
+                foreach (get_object_vars($rowObj) as $cKey => $cell) {
+                    $cols[(string) $cKey] = $cell;
+                }
+                $rows[(string) $rKey] = $cols;
+            }
+        }
+        foreach ($commands as $cmd) {
+            if (($cmd->kind ?? null) !== 'insert_row_before' || ($cmd->sheet_id ?? null) !== $sheetId
+                || !is_int($cmd->row ?? null) || !is_int($cmd->count ?? null)) {
+                continue;
+            }
+            $start = $cmd->row - 1;
+            $count = $cmd->count;
+            $shifted = [];
+            foreach ($rows as $rk => $cols) {
+                $idx = (int) $rk;
+                $shifted[(string) ($idx >= $start ? $idx + $count : $idx)] = $cols;
+            }
+            $rows = $shifted;
+        }
+
+        return $rows;
     }
 }

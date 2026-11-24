@@ -20,7 +20,7 @@ use Vaulter\Sheets\Exchange\WorkbookExchange;
 use Vaulter\Sheets\Runtime\CanonicalJson;
 use Vaulter\Sheets\Runtime\StrictJson;
 
-final readonly class WorkbookCodec implements ManagedDocumentCodec
+final class WorkbookCodec implements ManagedDocumentCodec
 {
     public const string PROFILE = 'univer-oss-basic-1';
 
@@ -30,7 +30,14 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
         'sheets-formula', 'sheets-hyper-link', 'sheets-numfmt',
     ];
 
-    public function __construct(private BlobStore $blobs, private BlobPins $pins, private SchemaHelpers $schema) {}
+    /** @var array<string, stdClass> */
+    private array $snapshotCache = [];
+
+    public function __construct(
+        private readonly BlobStore $blobs,
+        private readonly BlobPins $pins,
+        private readonly SchemaHelpers $schema,
+    ) {}
 
     public static function profile(): stdClass
     {
@@ -126,7 +133,9 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
     {
         $inlineRaw = config('vaulter-sheets.inline_snapshot_bytes', 512 * 1024);
         $inlineLimit = is_int($inlineRaw) && $inlineRaw > 0 ? $inlineRaw : 512 * 1024;
-        if (self::blobId($content->toArray()) !== null || $content->sizeInBytes() <= $inlineLimit) {
+        $val = $this->requireContent($content)->value();
+        $alreadyBlob = ($val->storage ?? null) === 'media_blob' && is_string($val->blob_id ?? null) && $val->blob_id !== '';
+        if ($alreadyBlob || $content->sizeInBytes() <= $inlineLimit) {
             return $content;
         }
         $bytes = $this->requireContent($content)->canonicalBytes();
@@ -165,6 +174,10 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
         if ($id === null) {
             return $value;
         }
+        $cacheKey = $id.':'.$content->contentHash();
+        if (isset($this->snapshotCache[$cacheKey])) {
+            return $this->snapshotCache[$cacheKey];
+        }
         $stream = $this->blobs->read($id);
         if (!is_resource($stream)) {
             throw new WorkbookProblem('snapshot_unavailable', 503);
@@ -182,6 +195,10 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
         if (!$decoded instanceof stdClass) {
             throw new WorkbookProblem('snapshot_unavailable', 503);
         }
+        if (count($this->snapshotCache) >= 16) {
+            unset($this->snapshotCache[array_key_first($this->snapshotCache)]);
+        }
+        $this->snapshotCache[$cacheKey] = $decoded;
 
         return $decoded;
     }
@@ -259,32 +276,98 @@ final readonly class WorkbookCodec implements ManagedDocumentCodec
     private function shape(array $raw): stdClass
     {
         // Documents receives associative JSON. Recover the native map shapes at the boundary.
-        $workbook = StrictJson::decode(json_encode((object) $raw, JSON_PRESERVE_ZERO_FRACTION | JSON_THROW_ON_ERROR));
+        $workbook = self::normalizeValue($raw, forceObject: true);
         if (!$workbook instanceof stdClass) {
             throw InvalidDocumentContentException::malformedNode('workbook', 'root');
         }
         if (isset($workbook->native) && $workbook->native instanceof stdClass) {
             $native = $workbook->native;
-            $native->styles = (object) ($native->styles ?? []);
-            $native->sheets = (object) ($native->sheets ?? []);
+            $native->styles = self::toStringMap($native->styles ?? []);
+            $native->sheets = self::toStringMap($native->sheets ?? []);
             foreach (get_object_vars($native->sheets) as $sheet) {
                 if (!$sheet instanceof stdClass) {
                     throw InvalidDocumentContentException::malformedNode('workbook', 'sheets');
                 }
                 foreach (['rowData', 'columnData', 'cellData'] as $map) {
                     if (isset($sheet->{$map})) {
-                        $sheet->{$map} = (object) $sheet->{$map};
+                        $sheet->{$map} = self::toStringMap($sheet->{$map});
                     }
                 }
                 if (isset($sheet->cellData) && $sheet->cellData instanceof stdClass) {
                     foreach (get_object_vars($sheet->cellData) as $index => $row) {
-                        $sheet->cellData->{$index} = (object) $row;
+                        $sheet->cellData->{(string) $index} = self::toStringMap($row);
                     }
                 }
             }
         }
 
         return $workbook;
+    }
+
+    private static function toStringMap(mixed $value): stdClass
+    {
+        if ($value instanceof stdClass) {
+            return $value;
+        }
+        $obj = new stdClass;
+        if (is_array($value)) {
+            foreach ($value as $k => $v) {
+                $obj->{(string) $k} = $v;
+            }
+        }
+
+        return $obj;
+    }
+
+    private static function normalizeValue(mixed $value, bool $forceObject = false): mixed
+    {
+        if ($value === null || is_bool($value) || is_string($value)) {
+            return $value;
+        }
+        if (is_int($value)) {
+            if (abs($value) > 9_007_199_254_740_991) {
+                $float = (float) $value;
+                if (!is_finite($float) || CanonicalJson::encode($float) !== (string) $value) {
+                    throw InvalidDocumentContentException::malformedNode('workbook', 'integer');
+                }
+
+                return $float;
+            }
+
+            return $value;
+        }
+        if (is_float($value)) {
+            if (!is_finite($value)) {
+                throw InvalidDocumentContentException::malformedNode('workbook', 'float');
+            }
+
+            return $value;
+        }
+        if ($value instanceof stdClass) {
+            $obj = new stdClass;
+            foreach (get_object_vars($value) as $k => $v) {
+                $obj->{(string) $k} = self::normalizeValue($v);
+            }
+
+            return $obj;
+        }
+        if (is_array($value)) {
+            if (!$forceObject && ($value === [] || array_is_list($value))) {
+                $out = [];
+                foreach ($value as $v) {
+                    $out[] = self::normalizeValue($v);
+                }
+
+                return $out;
+            }
+            $obj = new stdClass;
+            foreach ($value as $k => $v) {
+                $obj->{(string) $k} = self::normalizeValue($v);
+            }
+
+            return $obj;
+        }
+        throw InvalidDocumentContentException::malformedNode('workbook', 'type');
     }
 
     private function validateBindings(stdClass $workbook): void

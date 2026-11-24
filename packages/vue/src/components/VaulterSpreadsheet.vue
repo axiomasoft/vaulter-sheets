@@ -40,9 +40,14 @@ async function mount() {
 }
 
 watch([head, element, isReadonly], ([opened, target, readonly], [previous, oldTarget, wasReadonly]) => {
-  if (opened && opened !== previous && opened === localAcknowledgement.value && target === oldTarget && readonly === wasReadonly && renderer.value) {
-    renderer.value.accept(opened.workbook)
-    return
+  if (opened && target === oldTarget && renderer.value) {
+    if (opened !== previous && opened === localAcknowledgement.value && readonly === wasReadonly) {
+      renderer.value.accept(opened.workbook)
+      return
+    }
+    if (renderer.value.sync?.(opened.workbook, !readonly && !pending.value)) {
+      return
+    }
   }
   void mount()
 }, {flush: 'post'})

@@ -1,13 +1,16 @@
 import type {Command} from '@vaulter/sheets-runtime/browser';
-import {WEBSOCKET_SUBPROTOCOL, record, type ClientMessage, type ServerMessage, type WorkbookIntent, type WorkbookReceipt, type WorkbookRoomSession, type WorkbookRoomState} from './protocol.ts';
+import {
+    WEBSOCKET_SUBPROTOCOL, applyRoomDelta, record, type ClientMessage, type ServerMessage,
+    type WorkbookIntent, type WorkbookReceipt, type WorkbookRoomDelta, type WorkbookRoomSession, type WorkbookRoomState,
+} from './protocol.ts';
 
-export type {WorkbookIntent, WorkbookReceipt, WorkbookRoomSession, WorkbookRoomState} from './protocol.ts';
+export type {WorkbookIntent, WorkbookReceipt, WorkbookRoomDelta, WorkbookRoomSession, WorkbookRoomState} from './protocol.ts';
 
 export interface PendingIntent {intent: WorkbookIntent; if_match: string | null}
 
 interface Options {
     session: () => Promise<WorkbookRoomSession>;
-    onState: (state: WorkbookRoomState, pending: readonly PendingIntent[]) => void;
+    onState: (state: WorkbookRoomState, pending: readonly PendingIntent[], delta?: WorkbookRoomDelta) => void;
     onReceipt?: (receipt: WorkbookReceipt) => void;
     onConflict?: (intent: WorkbookIntent, code: string) => void;
     onConnection?: (state: 'connected' | 'reconnecting' | 'closed') => void;
@@ -93,9 +96,21 @@ export class WorkbookRoomClient {
         try { value = JSON.parse(data); } catch { this.#socket?.close(1007); return; }
         if (!record(value)) return;
         const message = value as unknown as ServerMessage;
+        let lastDelta: WorkbookRoomDelta | undefined;
         if (message.type === 'state') {
-            if (message.state.generation !== this.#session?.generation) { this.#socket?.close(4409); return; }
-            if (this.#state && this.#state.generation !== message.state.generation) {
+            let nextState: WorkbookRoomState;
+            if (message.delta) {
+                if (!this.#state || this.#state.generation !== message.delta.generation || this.#state.seq !== message.delta.from_seq) {
+                    this.#socket?.close();
+                    return;
+                }
+                nextState = applyRoomDelta(this.#state, message.delta);
+                lastDelta = message.delta;
+            } else {
+                nextState = message.state;
+            }
+            if (nextState.generation !== this.#session?.generation) { this.#socket?.close(4409); return; }
+            if (this.#state && this.#state.generation !== nextState.generation) {
                 for (const {intent} of this.#pending.splice(0)) this.options.onConflict?.(intent, 'generation_changed');
                 this.#acknowledged.clear();
             }
@@ -103,10 +118,10 @@ export class WorkbookRoomClient {
                 for (const {intent} of this.#pending.splice(0)) this.options.onConflict?.(intent, 'room_read_only');
                 this.#acknowledged.clear();
             }
-            this.#state = message.state;
+            this.#state = nextState;
             this.#pending = this.#pending.filter(({intent}) => {
                 const seq = this.#acknowledged.get(intent.command_id);
-                if (seq === undefined || seq > message.state.seq) return true;
+                if (seq === undefined || seq > nextState.seq) return true;
                 this.#acknowledged.delete(intent.command_id);
                 return false;
             });
@@ -128,7 +143,7 @@ export class WorkbookRoomClient {
         } else {
             return;
         }
-        this.render();
+        this.render(lastDelta);
         this.flush();
     }
 
@@ -151,7 +166,7 @@ export class WorkbookRoomClient {
         if (this.#socket?.readyState === WebSocket.OPEN) this.#socket.send(JSON.stringify(message));
     }
 
-    private render(): void {
-        if (this.#state) this.options.onState(this.#state, this.#pending);
+    private render(delta?: WorkbookRoomDelta): void {
+        if (this.#state) this.options.onState(this.#state, this.#pending, delta);
     }
 }

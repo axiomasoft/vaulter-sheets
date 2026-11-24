@@ -19,15 +19,12 @@ export default defineConfig({
       entry: fileURLToPath(new URL('./src/index.ts', import.meta.url)),
       name: 'VaulterSheetsVue',
       fileName: 'vaulter-sheets-vue',
+      formats: ['es'],
     },
     rollupOptions: {
-      external: ['vue', '@vaulter/vue'],
+      external: ['vue', '@vaulter/vue', /^@univerjs\//],
       output: {
         exports: 'named',
-        globals: {
-          'vue': 'Vue',
-          '@vaulter/vue': 'VaulterVue',
-        },
       },
     },
   },

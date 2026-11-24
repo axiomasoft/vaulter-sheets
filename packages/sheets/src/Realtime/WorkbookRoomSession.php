@@ -187,11 +187,30 @@ final readonly class WorkbookRoomSession
             }
             $content = $this->codec->decodeStored($document->content, $document->schemaVersion);
             $marker = new WorkbookMarker($document->generation, $document->stateVersion, $content->contentHash());
+            if ($action === 'read' && !$includeState && $after !== null && $after < $log->headSeq && ($log->headSeq - $after) <= 64) {
+                $tail = $this->deltaTail($document, $after, $log->headSeq);
+                if ($tail !== null) {
+                    return [
+                        'generation' => $log->generation, 'head_seq' => $log->headSeq, 'checkpoint_seq' => $after,
+                        'checkpoint' => null, 'tail' => $tail, 'etag' => $marker->etag($document->nodeId),
+                        'marker' => $marker, 'insertions' => $this->insertions($document, $after, $log->headSeq),
+                    ];
+                }
+            }
+            $checkpointBytes = $log->checkpoint ?? throw new WorkbookProblem('room_unavailable', 503);
+            $checkpointSeq = $log->checkpointSeq;
+            $tail = $log->tail;
+            $decodedCheckpoint = json_decode($checkpointBytes, false);
+            if ($decodedCheckpoint instanceof \stdClass && ($decodedCheckpoint->kind ?? null) === 'snapshot_ref') {
+                $checkpointBytes = CanonicalJson::encode((object) ['workbook' => $this->codec->snapshot($content), 'update_id' => null]);
+                $checkpointSeq = $log->headSeq;
+                $tail = [];
+            }
 
             return $lease + [
-                'generation' => $log->generation, 'head_seq' => $log->headSeq, 'checkpoint_seq' => $log->checkpointSeq,
-                'checkpoint' => base64_encode($log->checkpoint ?? throw new WorkbookProblem('room_unavailable', 503)),
-                'tail' => $log->tail, 'etag' => $marker->etag($document->nodeId), 'marker' => $marker,
+                'generation' => $log->generation, 'head_seq' => $log->headSeq, 'checkpoint_seq' => $checkpointSeq,
+                'checkpoint' => base64_encode($checkpointBytes),
+                'tail' => $tail, 'etag' => $marker->etag($document->nodeId), 'marker' => $marker,
                 'insertions' => $after === null ? [] : $this->insertions($document, $after, $log->headSeq),
             ];
         });
@@ -222,5 +241,32 @@ final readonly class WorkbookRoomSession
         }
 
         return $insertions;
+    }
+
+    /** @return list<array{seq: int, update_id: string, payload: string, sha256: string}>|null */
+    private function deltaTail(LockedDocumentState $document, int $after, int $head): ?array
+    {
+        $rows = $this->database->connection()->table($this->schema->table('collaboration_updates'))
+            ->where('document_id', Identity::key($document->documentId))
+            ->where('generation', $document->generation)
+            ->where('seq', '>', $after)
+            ->where('seq', '<=', $head)
+            ->orderBy('seq')
+            ->get(['seq', 'update_id', 'payload', 'sha256']);
+        if ($rows->count() !== $head - $after) {
+            return null;
+        }
+        $tail = [];
+        foreach ($rows as $row) {
+            $payload = is_resource($row->payload ?? null) ? stream_get_contents($row->payload) : ($row->payload ?? '');
+            $tail[] = [
+                'seq' => is_int($row->seq) ? $row->seq : (is_numeric($row->seq) ? (int) $row->seq : 0),
+                'update_id' => Identity::stringify($row->update_id),
+                'payload' => is_string($payload) ? $payload : '',
+                'sha256' => Identity::stringify($row->sha256),
+            ];
+        }
+
+        return $tail;
     }
 }

@@ -1,5 +1,73 @@
 import { ref, shallowRef } from 'vue'
-import { WorkbookApiError, type Command, type OpenedWorkbook, type Receipt, type WorkbookIntent, type WorkbooksClient } from '../api/workbooks'
+import { WorkbookApiError, type Command, type OpenedWorkbook, type Receipt, type Workbook, type WorkbookIntent, type WorkbooksClient } from '../api/workbooks'
+
+interface CheckCell {
+  sheet_id: string
+  row: number
+  column: number
+  formula: string | null
+  value: number | string | boolean | null
+}
+
+function setNativeCell(
+  sheets: Record<string, Record<string, unknown>>,
+  sheetId: string,
+  row0: number,
+  col0: number,
+  nextCell: Record<string, unknown> | null,
+): void {
+  const sheet = sheets[sheetId]
+  if (!sheet) return
+  const cellData = (sheet.cellData ??= {}) as Record<string, Record<string, Record<string, unknown>>>
+  const rowKey = String(row0)
+  const colKey = String(col0)
+  const existing = cellData[rowKey]?.[colKey]
+  if (nextCell === null) {
+    if (cellData[rowKey]) {
+      delete cellData[rowKey][colKey]
+      if (Object.keys(cellData[rowKey]).length === 0) delete cellData[rowKey]
+    }
+    return
+  }
+  const rowObj = (cellData[rowKey] ??= {})
+  const merged: Record<string, unknown> = existing && typeof existing.s === 'string' ? {s: existing.s, ...nextCell} : {...nextCell}
+  rowObj[colKey] = merged
+}
+
+function applyCommittedCommands(base: Workbook, commands: Command[], checks?: {cells?: CheckCell[]}): Workbook {
+  const next = structuredClone(base)
+  const sheets = (next.native.sheets ?? {}) as Record<string, Record<string, unknown>>
+  const checkMap = new Map<string, CheckCell>()
+  for (const cell of checks?.cells ?? []) {
+    checkMap.set(`${cell.sheet_id}\0${cell.row}\0${cell.column}`, cell)
+  }
+  for (const cmd of commands) {
+    if (cmd.kind === 'set_number') {
+      setNativeCell(sheets, cmd.sheet_id, cmd.row - 1, cmd.column - 1, {v: cmd.value, t: 2})
+    } else if (cmd.kind === 'set_text') {
+      setNativeCell(sheets, cmd.sheet_id, cmd.row - 1, cmd.column - 1, {v: cmd.value, t: 1})
+    } else if (cmd.kind === 'set_formula') {
+      const checked = checkMap.get(`${cmd.sheet_id}\0${cmd.row}\0${cmd.column}`)
+      const cell: Record<string, unknown> = {f: cmd.formula}
+      if (checked && checked.value !== null && checked.value !== undefined) {
+        cell.v = checked.value
+        if (typeof checked.value === 'number') cell.t = 2
+        else if (typeof checked.value === 'boolean') cell.t = 3
+        else if (typeof checked.value === 'string') cell.t = 1
+      }
+      setNativeCell(sheets, cmd.sheet_id, cmd.row - 1, cmd.column - 1, cell)
+    } else if (cmd.kind === 'set_values') {
+      for (let r = 0; r < cmd.values.length; r++) {
+        for (let c = 0; c < cmd.values[r].length; c++) {
+          const val = cmd.values[r][c]
+          const nextCell = val === null ? null : 'number' in val ? {v: val.number, t: 2} : {v: val.text, t: 1}
+          setNativeCell(sheets, cmd.sheet_id, cmd.row - 1 + r, cmd.column - 1 + c, nextCell)
+        }
+      }
+    }
+  }
+  return next
+}
 
 export function useWorkbook(node: string, client: WorkbooksClient) {
   const head = shallowRef<OpenedWorkbook>()
@@ -44,14 +112,38 @@ export function useWorkbook(node: string, client: WorkbooksClient) {
         }
         throw new WorkbookApiError(outcome.error?.status ?? 422, outcome.error?.code ?? 'invalid_command')
       }
-      const opened = await client.open(node)
       const {base} = submission
-      const nextPosition = opened.marker.position === base.marker.position + 1
-      const sameSnapshot = opened.marker.position === base.marker.position && opened.marker.sha256 === base.marker.sha256
+      const sameGeneration = outcome.marker.generation === base.marker.generation
+      const nextPosition = outcome.marker.position === base.marker.position + 1
+      const sameSnapshot = outcome.marker.position === base.marker.position && outcome.marker.sha256 === base.marker.sha256
+      const cellOnly = submission.intent.commands.every(
+        command => command.kind === 'set_number' || command.kind === 'set_text' || command.kind === 'set_formula' || command.kind === 'set_values',
+      )
+      if (sameGeneration && head.value === base && (sameSnapshot || (nextPosition && cellOnly))) {
+        const opened: OpenedWorkbook = sameSnapshot
+          ? {...base, etag: outcome.etag, marker: outcome.marker}
+          : {
+              ...base,
+              etag: outcome.etag,
+              marker: outcome.marker,
+              workbook: applyCommittedCommands(
+                base.workbook,
+                submission.intent.commands,
+                (outcome as Receipt & {checks?: {cells?: CheckCell[]}}).checks,
+              ),
+            }
+        localAcknowledgement.value = submission.locallyApplied ? opened : undefined
+        head.value = opened
+        pending.value = undefined
+        return outcome
+      }
+      const opened = await client.open(node)
+      const openedNextPosition = opened.marker.position === base.marker.position + 1
+      const openedSameSnapshot = opened.marker.position === base.marker.position && opened.marker.sha256 === base.marker.sha256
       localAcknowledgement.value =
         submission.locallyApplied && head.value === base &&
         opened.etag === outcome.etag && opened.marker.sha256 === outcome.marker.sha256 &&
-        opened.marker.generation === base.marker.generation && (nextPosition || sameSnapshot)
+        opened.marker.generation === base.marker.generation && (openedNextPosition || openedSameSnapshot)
           ? opened : undefined
       head.value = opened
       pending.value = undefined
