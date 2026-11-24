@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Vaulter\Sheets\Actions;
 
-use Illuminate\Contracts\Database\Query\Expression as ExpressionContract;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Str;
@@ -26,6 +25,8 @@ use Vaulter\Sheets\Data\WorkbookMarker;
 use Vaulter\Sheets\Data\WorkbookProblem;
 use Vaulter\Sheets\Runtime\CanonicalJson;
 use Vaulter\Sheets\Runtime\StrictJson;
+use Vaulter\Sheets\Support\StrongEtag;
+use Vaulter\Sheets\Support\WorkbookClock;
 use Vaulter\Sheets\Types\SpreadsheetDocumentType;
 
 final readonly class CommitWorkbookCommand
@@ -68,12 +69,12 @@ final readonly class CommitWorkbookCommand
                 if (($previous->state ?? null) !== 'running') {
                     return [$prevId, $this->outcome($previous, $db)];
                 }
-                if ($prevLease !== null && $this->future($db, $prevLease)) {
+                if ($prevLease !== null && WorkbookClock::future($db, $prevLease)) {
                     return [$prevId, $this->outcome($previous, $db)];
                 }
                 $this->records($db)->where('id', $prevId)->update([
                     'worker_token' => $token,
-                    'lease_until' => $this->futureTimestamp($db, $leaseSeconds),
+                    'lease_until' => WorkbookClock::futureTimestamp($db, $leaseSeconds),
                 ]);
 
                 return [$prevId, null];
@@ -89,8 +90,8 @@ final readonly class CommitWorkbookCommand
                     'if_match' => $command->ifMatch, 'commands' => $command->commands,
                 ]),
                 'worker_token' => $token,
-                'lease_until' => $this->futureTimestamp($db, $leaseSeconds),
-                'replay_until' => $this->futureTimestamp($db, $replaySeconds),
+                'lease_until' => WorkbookClock::futureTimestamp($db, $leaseSeconds),
+                'replay_until' => WorkbookClock::futureTimestamp($db, $replaySeconds),
             ]);
 
             return [$id, null];
@@ -193,7 +194,7 @@ final readonly class CommitWorkbookCommand
                 throw new WorkbookProblem('resource_unavailable', 404);
             }
             $rowLease = is_string($row->lease_until ?? null) ? $row->lease_until : null;
-            if (($row->state ?? null) !== 'running' || ($row->worker_token ?? null) !== $token || !$this->future($db, $rowLease)) {
+            if (($row->state ?? null) !== 'running' || ($row->worker_token ?? null) !== $token || !WorkbookClock::future($db, $rowLease)) {
                 return $this->outcome($row, $db);
             }
             if ($state->generation !== $base->generation || $state->position !== $base->position
@@ -220,17 +221,17 @@ final readonly class CommitWorkbookCommand
                 'state' => 'rejected', 'command_id' => $commandId,
                 'error' => $errorPayload,
             ];
-            $now = $this->nowExpr($db);
+            $now = WorkbookClock::nowExpr($db);
             $updates = [
                 'state' => $outcome['state'], 'worker_token' => null, 'lease_until' => null,
                 'finished_at' => $now,
-                'replay_until' => $this->futureTimestamp($db, $replaySeconds),
+                'replay_until' => WorkbookClock::futureTimestamp($db, $replaySeconds),
             ];
             if ($errorPayload === null) {
                 $updates += [
                     'receipt_id' => $receipt, 'committed_position' => $next->position,
                     'evidence' => json_encode($outcome, JSON_THROW_ON_ERROR),
-                    'evidence_until' => $this->futureTimestamp($db, $evidenceSeconds),
+                    'evidence_until' => WorkbookClock::futureTimestamp($db, $evidenceSeconds),
                 ];
             } else {
                 $intent = StrictJson::decode(self::str($row->intent ?? ''));
@@ -278,12 +279,11 @@ final readonly class CommitWorkbookCommand
         if ($command->policy === 'revalidate_by_id' || $command->ifMatch === $marker->etag($node)) {
             return;
         }
-        if ($command->policy !== 'rebase_cells'
-            || preg_match('/^"'.preg_quote($node, '/').'\.'.preg_quote((string) $marker->generation, '/').'\.(0|[1-9][0-9]*)"$/D', $command->ifMatch ?? '', $tag) !== 1) {
+        if ($command->policy !== 'rebase_cells') {
             throw new WorkbookProblem('version_conflict', 409);
         }
-        $position = (int) $tag[1];
-        if ($position >= $marker->position) {
+        $position = StrongEtag::parsePosition($command->ifMatch, $node, $marker->generation);
+        if ($position === null || $position >= $marker->position) {
             throw new WorkbookProblem('version_conflict', 409);
         }
         $sheets = [];
@@ -342,7 +342,7 @@ final readonly class CommitWorkbookCommand
     private function outcome(stdClass $row, Connection $db): array
     {
         $replayUntil = is_string($row->replay_until ?? null) ? $row->replay_until : null;
-        if (($row->state ?? null) === 'expired' || (($row->state ?? null) !== 'running' && !$this->future($db, $replayUntil))) {
+        if (($row->state ?? null) === 'expired' || (($row->state ?? null) !== 'running' && !WorkbookClock::future($db, $replayUntil))) {
             throw new WorkbookProblem('idempotency_window_expired', 410);
         }
         $commandId = self::str($row->command_id ?? null);
@@ -374,7 +374,7 @@ final readonly class CommitWorkbookCommand
         /** @var array<string, mixed> $receipt */
         $receipt = is_array($decoded) ? $decoded : [];
         $evidenceUntil = is_string($row->evidence_until ?? null) ? $row->evidence_until : null;
-        if (!$this->future($db, $evidenceUntil)) {
+        if (!WorkbookClock::future($db, $evidenceUntil)) {
             unset($receipt['checks']);
         }
 
@@ -384,37 +384,6 @@ final readonly class CommitWorkbookCommand
     private function records(Connection $db): Builder
     {
         return $db->table($this->schema->table('sheets_commands'));
-    }
-
-    private function nowExpr(Connection $db): ExpressionContract
-    {
-        return $db->raw($db->getDriverName() === 'pgsql' ? 'clock_timestamp()' : "strftime('%Y-%m-%d %H:%M:%f', 'now')");
-    }
-
-    private function futureTimestamp(Connection $db, int $seconds): string
-    {
-        if ($db->getDriverName() === 'pgsql') {
-            $row = $db->selectOne('SELECT (clock_timestamp() + make_interval(secs => ?))::text AS ts', [$seconds]);
-        } else {
-            $modifier = ($seconds >= 0 ? '+' : '').$seconds.' seconds';
-            $row = $db->selectOne("SELECT strftime('%Y-%m-%d %H:%M:%f', 'now', ?) AS ts", [$modifier]);
-        }
-
-        return $row instanceof stdClass ? self::str($row->ts ?? '') : gmdate('Y-m-d H:i:s', time() + $seconds);
-    }
-
-    private function future(Connection $db, ?string $time): bool
-    {
-        if ($time === null || $time === '') {
-            return false;
-        }
-        if ($db->getDriverName() === 'pgsql') {
-            $row = $db->selectOne('SELECT CASE WHEN CAST(? AS timestamptz) > clock_timestamp() THEN 1 ELSE 0 END AS future', [$time]);
-        } else {
-            $row = $db->selectOne("SELECT CASE WHEN ? > strftime('%Y-%m-%d %H:%M:%f', 'now') THEN 1 ELSE 0 END AS future", [$time]);
-        }
-
-        return $row instanceof stdClass && self::intVal($row->future ?? 0) === 1;
     }
 
     private function intConfig(string $key, int $default): int

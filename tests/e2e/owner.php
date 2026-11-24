@@ -118,10 +118,24 @@ $app['config']->set('auth.guards.sanctum', ['driver' => 'session', 'provider' =>
 Auth::setUser($fixtureActor);
 Auth::guard('sanctum')->setUser($fixtureActor);
 Route::get('/api/test/ready', static fn () => response()->json(['ready' => true]));
-Route::post('/api/test/workbooks', static function () use ($realtime) {
+Route::post('/api/test/workbooks', static function (Request $request) use ($realtime) {
     $handle = DriveTestHelpers::drive();
     $fixture = json_decode(file_get_contents(dirname(__DIR__, 2).'/packages/runtime/tests/fixtures/apply-request.json'), true)['workbook'];
     $fixture['profile'] = WorkbookCodec::profile();
+    $rowCount = $request->integer('row_count');
+    $columnCount = $request->integer('column_count');
+    if ($rowCount > 0 && isset($fixture['native']['sheets']['detail'])) {
+        $fixture['native']['sheets']['detail']['rowCount'] = max(10, min(500, $rowCount));
+    }
+    if ($columnCount > 0 && isset($fixture['native']['sheets']['detail'])) {
+        $fixture['native']['sheets']['detail']['columnCount'] = max(10, min(500, $columnCount));
+    }
+    if ($request->boolean('large')) {
+        $fixture['native']['sheets']['detail']['cellData']['8']['0'] = [
+            't' => 1,
+            'v' => str_repeat('large-cell ', 50_000),
+        ];
+    }
     if ($realtime) {
         $fixture['tables'] = [[
             'table_id' => 'items', 'sheet_id' => 'detail', 'header_row' => 1,
@@ -130,10 +144,22 @@ Route::post('/api/test/workbooks', static function () use ($realtime) {
         ]];
     }
     $actor = DriveTestHelpers::actor($handle, 1);
-    $name = $realtime ? 'Browser workbook '.Str::uuid() : 'Browser workbook';
+    $name = 'Browser workbook '.Str::uuid();
     $node = app(DocumentsManager::class)->in($handle->actingAs($actor))->create($name, 'vaulter/spreadsheet', $fixture);
 
     return response()->json($node);
+});
+
+Route::get('/api/test/workbooks/{node}/storage', static function (string $node) {
+    $handle = DriveTestHelpers::drive();
+    $actor = DriveTestHelpers::actor($handle, 1);
+    $state = app(DocumentsManager::class)->in($handle->actingAs($actor))->content($node);
+    $raw = $state->content->value();
+
+    return response()->json([
+        'storage' => is_string($raw->storage ?? null) ? $raw->storage : 'inline',
+        'size_bytes' => $state->content->sizeInBytes(),
+    ]);
 });
 Route::post('/api/test/exchange-files', static function (Request $request) use ($fixtureActor) {
     $handle = DriveTestHelpers::drive();

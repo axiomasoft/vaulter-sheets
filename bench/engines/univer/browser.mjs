@@ -58,6 +58,21 @@ try {
         };
     });
 
+    const undoReport = await page.evaluate(async () => {
+        const api = window.probe.univerAPI;
+        if (typeof api.undo !== 'function') return { available: false };
+        const detail = api.getActiveWorkbook().getSheetByName('Detail');
+        const before = detail.getRange('C3').getRawValue();
+        await api.undo();
+        const after = detail.getRange('C3').getRawValue();
+        await api.redo();
+        const formula = api.getFormula();
+        const applied = formula.onCalculationResultApplied(20_000);
+        formula.executeCalculation();
+        await applied;
+        return { available: true, before, after };
+    });
+
     report.clipboard = await page.evaluate(async () => {
         const book = window.probe.univerAPI.getActiveWorkbook();
         const detail = book.getSheetByName('Detail');
@@ -66,16 +81,20 @@ try {
         return { source: copied, pastedByValue: detail.getRange('E3').getRawValue(), keyboard: false };
     });
     try {
-        await page.evaluate(() => {
-            const detail = window.probe.univerAPI.getActiveWorkbook().getSheetByName('Detail');
-            detail.getRange('C3').activate();
-        });
-        await page.keyboard.press('Control+C');
-        await page.evaluate(() => {
-            window.probe.univerAPI.getActiveWorkbook().getSheetByName('Detail').getRange('F3').activate();
-        });
-        await page.keyboard.press('Control+V');
-        await page.waitForTimeout(300);
+        await page.getByRole('tab', { name: 'Detail' }).click();
+        await page.waitForFunction(() => window.probe.univerAPI.getActiveWorkbook().getActiveSheet()?.getSheetName() === 'Detail', null, { timeout: 3_000 });
+        await page.locator('canvas[id^="univer-sheet-main-canvas"]').click({ position: { x: 266, y: 80 } });
+        await page.waitForFunction(() => window.probe.univerAPI.getActiveWorkbook().getActiveSheet().getSelection()?.getActiveRange()?.getA1Notation() === 'C3', null, { timeout: 3_000 });
+        await page.waitForTimeout(50);
+        await page.keyboard.press('Control+c');
+        await page.waitForTimeout(50);
+        await page.keyboard.press('ArrowRight');
+        await page.keyboard.press('ArrowRight');
+        await page.keyboard.press('ArrowRight');
+        await page.waitForFunction(() => window.probe.univerAPI.getActiveWorkbook().getActiveSheet().getSelection()?.getActiveRange()?.getA1Notation() === 'F3', null, { timeout: 3_000 });
+        await page.waitForTimeout(50);
+        await page.keyboard.press('Control+v');
+        await page.waitForFunction(() => window.probe.univerAPI.getActiveWorkbook().getSheetByName('Detail').getRange('F3').getRawValue() === 7, null, { timeout: 3_000 });
         const pasted = await page.evaluate(() => window.probe.univerAPI.getActiveWorkbook().getSheetByName('Detail').getRange('F3').getRawValue());
         report.clipboard.keyboardPaste = pasted ?? null;
         report.clipboard.keyboard = true;
@@ -83,13 +102,7 @@ try {
         report.clipboard.keyboardError = error instanceof Error ? error.message : String(error);
     }
 
-    report.undo = await page.evaluate(async () => {
-        const api = window.probe.univerAPI;
-        if (typeof api.undo !== 'function') return { available: false };
-        const before = api.getActiveWorkbook().getSheetByName('Detail').getRange('C3').getRawValue();
-        await api.undo();
-        return { available: true, before, after: api.getActiveWorkbook().getSheetByName('Detail').getRange('C3').getRawValue() };
-    });
+    report.undo = undoReport;
 
     report.largePaste = await page.evaluate(() => {
         const detail = window.probe.univerAPI.getActiveWorkbook().getSheetByName('Detail');

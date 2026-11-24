@@ -6,6 +6,7 @@ import { SPREADSHEET_VIEWER_KEY, VaulterSpreadsheet, type ExchangeJob, type Open
 import {
   cellCommands,
   clipboardValues,
+  htmlClipboardValues,
   numfmtMutationToCommands,
   resolveTableSelection,
   setFormatCommandsFromCellValues,
@@ -372,5 +373,13 @@ describe('VaulterSpreadsheet', () => {
     expect(wrapper.get('[data-exchange-losses]').text()).toContain('sparkline')
     expect(wrapper.emitted('exchangeComplete')?.[0]).toEqual([job])
     wrapper.unmount()
+  })
+
+  it('parses html table clipboard payloads', () => {
+    expect(htmlClipboardValues('<table><tr><td>12</td><td>Oranges</td></tr><tr><td>15</td><td></td></tr></table>')).toEqual([
+      [{ number: 12 }, { text: 'Oranges' }],
+      [{ number: 15 }, null],
+    ])
+    expect(htmlClipboardValues('<p>plain</p>')).toBeNull()
   })
 })

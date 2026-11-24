@@ -58,18 +58,38 @@ export function cellCommands(sheet_id: string, startRow: number, startColumn: nu
   return [{kind: 'set_values', sheet_id, row, column, expected: previous, values: next as Literal[][]}]
 }
 
+function parseClipboardLiteral(value: string): Literal {
+  if (value === '') return null
+  const number = Number(value)
+  if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value) && Number.isFinite(number)) return {number}
+  return {text: value}
+}
+
 export function clipboardValues(text: string): Literal[][] {
   const matrix = text.replace(/(?:\r\n|\r|\n)$/, '').split(/\r\n|\r|\n/).map(line => line.split('\t'))
   const width = matrix[0].length
   if (matrix.length * width > 10_000 || matrix.some(row => row.length !== width)) {
     throw new Error('Clipboard data must be a rectangle of at most 10,000 cells.')
   }
-  return matrix.map(row => row.map(value => {
-    if (value === '') return null
-    const number = Number(value)
-    if (/^[+-]?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?$/i.test(value) && Number.isFinite(number)) return {number}
-    return {text: value}
-  }))
+  return matrix.map(row => row.map(parseClipboardLiteral))
+}
+
+export function htmlClipboardValues(html: string): Literal[][] | null {
+  if (!/<table\b/i.test(html)) return null
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const table = doc.querySelector('table')
+  if (!table) return null
+  const rows = Array.from(table.querySelectorAll('tr')).map(tr =>
+    Array.from(tr.querySelectorAll('th, td')).map(cell =>
+      (cell.textContent ?? '').replace(/\u00a0/g, ' ').trim(),
+    ),
+  ).filter(row => row.length > 0)
+  if (rows.length === 0) return null
+  const width = rows[0].length
+  if (rows.length * width > 10_000 || rows.some(row => row.length !== width)) {
+    throw new Error('Clipboard data must be a rectangle of at most 10,000 cells.')
+  }
+  return rows.map(row => row.map(parseClipboardLiteral))
 }
 
 export function normalizeHexColor(raw: unknown): string | null {

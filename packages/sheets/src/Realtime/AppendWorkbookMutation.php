@@ -151,13 +151,13 @@ final readonly class AppendWorkbookMutation
                 'changed_ranges' => $runtime->changed_ranges ?? [], 'checks' => $runtime->checks ?? new stdClass,
             ];
             // Use the DB clock for the receipt windows, including after a lock wait.
-            $now = $this->now($db);
+            $now = \Vaulter\Sheets\Support\WorkbookClock::nowLiteral($db);
             $this->commands($db)->insert($scope + [
                 'id' => $id, 'generation' => $command->generation, 'fingerprint' => $command->fingerprint(),
                 'base_position' => $marker->position, 'committed_position' => $position, 'state' => 'committed',
                 'receipt_id' => $receiptId, 'finished_at' => $db->raw($now),
-                'replay_until' => $this->deadline($db, 'replay_seconds'),
-                'evidence_until' => $this->deadline($db, 'evidence_seconds'),
+                'replay_until' => \Vaulter\Sheets\Support\WorkbookClock::deadlineTimestamp($db, 'replay_seconds'),
+                'evidence_until' => \Vaulter\Sheets\Support\WorkbookClock::deadlineTimestamp($db, 'evidence_seconds'),
                 'evidence' => json_encode($evidence, JSON_THROW_ON_ERROR),
             ]);
             $db->table($this->schema->table('sheets_realtime_links'))->insert([
@@ -198,9 +198,11 @@ final readonly class AppendWorkbookMutation
         if ($command->policy === 'revalidate_by_id' || $command->ifMatch === $marker->etag($document->nodeId)) {
             return $command;
         }
-        $tag = '/^"'.preg_quote($document->nodeId, '/').'\.'.preg_quote((string) $marker->generation, '/').'\.(0|[1-9][0-9]*)"$/D';
-        if ($command->policy !== 'rebase_cells' || preg_match($tag, $command->ifMatch ?? '', $matches) !== 1
-            || ($cursor = (int) $matches[1]) >= $marker->position) {
+        if ($command->policy !== 'rebase_cells') {
+            throw new WorkbookProblem('version_conflict', 409);
+        }
+        $cursor = \Vaulter\Sheets\Support\StrongEtag::parsePosition($command->ifMatch, $document->nodeId, $marker->generation);
+        if ($cursor === null || $cursor >= $marker->position) {
             throw new WorkbookProblem('version_conflict', 409);
         }
         $items = array_map(static fn (stdClass $item): stdClass => clone $item, $command->commands);
@@ -265,7 +267,7 @@ final readonly class AppendWorkbookMutation
             'id' => $id, 'generation' => $command->generation, 'fingerprint' => $command->fingerprint(),
             'base_position' => $marker->position, 'state' => 'rejected', 'error_code' => $problem->problem,
             'intent' => json_encode(['rejection' => ['code' => $problem->problem, 'status' => $problem->status, 'detail' => $problem->detail]], JSON_THROW_ON_ERROR),
-            'finished_at' => $db->raw($this->now($db)), 'replay_until' => $this->deadline($db, 'replay_seconds'),
+            'finished_at' => $db->raw(\Vaulter\Sheets\Support\WorkbookClock::nowLiteral($db)), 'replay_until' => \Vaulter\Sheets\Support\WorkbookClock::deadlineTimestamp($db, 'replay_seconds'),
         ]);
     }
 
@@ -281,7 +283,7 @@ final readonly class AppendWorkbookMutation
         if (!hash_equals(self::string($row->fingerprint ?? null), $command->fingerprint())) {
             throw new WorkbookProblem('idempotency_conflict', 409);
         }
-        $now = $this->now($db);
+        $now = \Vaulter\Sheets\Support\WorkbookClock::nowLiteral($db);
         if (($row->state ?? null) === 'expired' || !$this->commands($db)->where($scope)->where('replay_until', '>', $db->raw($now))->exists()) {
             throw new WorkbookProblem('idempotency_window_expired', 410);
         }
@@ -316,24 +318,7 @@ final readonly class AppendWorkbookMutation
         return $db->table($this->schema->table('sheets_commands'));
     }
 
-    /** @return literal-string */
-    private function now(Connection $db): string
-    {
-        return $db->getDriverName() === 'pgsql' ? 'clock_timestamp()' : "strftime('%Y-%m-%d %H:%M:%f', 'now')";
-    }
 
-    private function deadline(Connection $db, string $key): string
-    {
-        $value = config('vaulter-sheets.'.$key);
-        $seconds = is_int($value) && $value > 0 ? $value : 86_400;
-
-        $row = $db->getDriverName() === 'pgsql'
-            ? $db->selectOne('SELECT (clock_timestamp() + make_interval(secs => ?))::text AS deadline', [$seconds])
-            : $db->selectOne("SELECT strftime('%Y-%m-%d %H:%M:%f', 'now', ?) AS deadline", ['+'.$seconds.' seconds']);
-
-        return $row instanceof stdClass && is_string($row->deadline ?? null)
-            ? $row->deadline : throw new WorkbookProblem('room_unavailable', 503);
-    }
 
     private static function string(mixed $value): string
     {

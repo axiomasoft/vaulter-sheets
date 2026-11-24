@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Vaulter\Sheets\Exchange;
 
-use Illuminate\Contracts\Database\Query\Expression as ExpressionContract;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Str;
@@ -33,6 +32,7 @@ use Vaulter\Sheets\Contracts\WorkbookExchangeRuntime;
 use Vaulter\Sheets\Data\WorkbookMarker;
 use Vaulter\Sheets\Data\WorkbookProblem;
 use Vaulter\Sheets\Jobs\RunWorkbookExchange;
+use Vaulter\Sheets\Support\WorkbookClock;
 use Vaulter\Sheets\Runtime\CanonicalJson;
 use Vaulter\Sheets\Runtime\StrictJson;
 use Vaulter\Sheets\Runtime\WireException;
@@ -206,7 +206,7 @@ final readonly class WorkbookExchange
                 'worker_token' => null,
                 'lease_until' => null,
                 'finished_at' => null,
-                'keep_until' => $this->futureTimestamp($db, $keepSeconds),
+                'keep_until' => WorkbookClock::futureTimestamp($db, $keepSeconds),
             ], ['*'], array_keys($scope));
             $inserted = $insertedRows[0] ?? null;
             if (!$inserted instanceof stdClass) {
@@ -263,7 +263,7 @@ final readonly class WorkbookExchange
         if (!hash_equals(self::str($existing->fingerprint), $fingerprint)) {
             throw new WorkbookProblem('idempotency_conflict', 409);
         }
-        if (!$this->future($db, self::str($existing->keep_until))) {
+        if (!WorkbookClock::future($db, self::str($existing->keep_until))) {
             throw new WorkbookProblem('idempotency_window_expired', 410);
         }
 
@@ -289,7 +289,7 @@ final readonly class WorkbookExchange
                 return null;
             }
             $leaseUntil = is_string($row->lease_until ?? null) ? $row->lease_until : null;
-            if ($state === 'running' && $this->future($db, $leaseUntil)) {
+            if ($state === 'running' && WorkbookClock::future($db, $leaseUntil)) {
                 return null;
             }
             $affected = $this->records($db)
@@ -298,7 +298,7 @@ final readonly class WorkbookExchange
                 ->update([
                     'state' => 'running',
                     'worker_token' => $token,
-                    'lease_until' => $this->futureTimestamp($db, $leaseSeconds),
+                    'lease_until' => WorkbookClock::futureTimestamp($db, $leaseSeconds),
                 ]);
             if ($affected !== 1) {
                 return null;
@@ -675,7 +675,7 @@ final readonly class WorkbookExchange
             if (!$currentJob instanceof stdClass
                 || $currentJob->state !== 'running'
                 || $currentJob->worker_token !== $token
-                || !$this->future($db, is_string($currentJob->lease_until ?? null) ? $currentJob->lease_until : null)) {
+                || !WorkbookClock::future($db, is_string($currentJob->lease_until ?? null) ? $currentJob->lease_until : null)) {
                 throw new WorkbookProblem('lease_lost', 503);
             }
 
@@ -716,9 +716,9 @@ final readonly class WorkbookExchange
             }
             $marker = new WorkbookMarker($next->generation, $next->position, $next->content->contentHash());
             $commandId = 'exchange.'.$jobId;
-            $now = $this->nowExpr($db);
-            $evidenceUntil = $this->futureTimestamp($db, $evidenceSeconds);
-            $replayUntil = $this->futureTimestamp($db, $replaySeconds);
+            $now = WorkbookClock::nowExpr($db);
+            $evidenceUntil = WorkbookClock::futureTimestamp($db, $evidenceSeconds);
+            $replayUntil = WorkbookClock::futureTimestamp($db, $replaySeconds);
 
             $evidence = [
                 'state' => 'committed',
@@ -813,14 +813,14 @@ final readonly class WorkbookExchange
             if (!$currentJob instanceof stdClass
                 || $currentJob->state !== 'running'
                 || $currentJob->worker_token !== $token
-                || !$this->future($db, is_string($currentJob->lease_until ?? null) ? $currentJob->lease_until : null)) {
+                || !WorkbookClock::future($db, is_string($currentJob->lease_until ?? null) ? $currentJob->lease_until : null)) {
                 throw new WorkbookProblem('lease_lost', 503);
             }
 
             // Lock order per BlobPins contract: owner row lock first, then Media pin.
             $this->pins->pin($outputBlobId, self::OUTPUT_PIN_OWNER, $jobId);
 
-            $now = $this->nowExpr($db);
+            $now = WorkbookClock::nowExpr($db);
             $updated = $this->records($db)
                 ->where('id', $jobId)
                 ->where('state', 'running')
@@ -844,7 +844,7 @@ final readonly class WorkbookExchange
     {
         $report = $problem->detail['report'] ?? null;
         $this->database->transaction(function (Connection $db) use ($jobId, $token, $problem, $report): void {
-            $now = $this->nowExpr($db);
+            $now = WorkbookClock::nowExpr($db);
             $this->records($db)
                 ->where('id', $jobId)
                 ->where('state', 'running')
@@ -1043,37 +1043,6 @@ final readonly class WorkbookExchange
     private function records(Connection $db): Builder
     {
         return $db->table($this->schema->table('sheets_exchange_jobs'));
-    }
-
-    private function nowExpr(Connection $db): ExpressionContract
-    {
-        return $db->raw($db->getDriverName() === 'pgsql' ? 'clock_timestamp()' : "strftime('%Y-%m-%d %H:%M:%f', 'now')");
-    }
-
-    private function futureTimestamp(Connection $db, int $seconds): string
-    {
-        if ($db->getDriverName() === 'pgsql') {
-            $row = $db->selectOne('SELECT (clock_timestamp() + make_interval(secs => ?))::text AS ts', [$seconds]);
-        } else {
-            $modifier = ($seconds >= 0 ? '+' : '').$seconds.' seconds';
-            $row = $db->selectOne("SELECT strftime('%Y-%m-%d %H:%M:%f', 'now', ?) AS ts", [$modifier]);
-        }
-
-        return $row instanceof stdClass ? self::str($row->ts ?? '') : gmdate('Y-m-d H:i:s', time() + $seconds);
-    }
-
-    private function future(Connection $db, ?string $time): bool
-    {
-        if ($time === null || $time === '') {
-            return false;
-        }
-        if ($db->getDriverName() === 'pgsql') {
-            $row = $db->selectOne('SELECT CASE WHEN CAST(? AS timestamptz) > clock_timestamp() THEN 1 ELSE 0 END AS future', [$time]);
-        } else {
-            $row = $db->selectOne("SELECT CASE WHEN ? > strftime('%Y-%m-%d %H:%M:%f', 'now') THEN 1 ELSE 0 END AS future", [$time]);
-        }
-
-        return $row instanceof stdClass && self::intVal($row->future ?? 0) === 1;
     }
 
     private function intConfig(string $key, int $default): int

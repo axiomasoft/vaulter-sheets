@@ -1,0 +1,77 @@
+services:
+  postgres:
+    image: postgres:18.7
+    environment:
+      POSTGRES_DB: vaulter_sheets_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vaulter_sheets_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  runtime:
+    build:
+      context: ../..
+      dockerfile: packages/runtime/Dockerfile
+    environment:
+      PORT: "3100"
+      SHEETS_RUNTIME_MAX_WORKERS: "2"
+      SHEETS_RUNTIME_MAX_QUEUE: "8"
+      SHEETS_RUNTIME_TIMEOUT_MS: "20000"
+      SHEETS_RUNTIME_TOKEN_FILE: "/tmp/token"
+    command: ["sh", "-c", "umask 077 && printf '%s\\n' \"$${SHEETS_RUNTIME_TOKEN:-compose-dev-token}\" > /tmp/token && exec node dist/server.js"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3100/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  realtime:
+    build:
+      context: ../..
+      dockerfile: packages/realtime/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "3101"
+      SHEETS_REALTIME_OWNER_URL: http://owner:8000
+      SHEETS_REALTIME_OWNER_TOKEN_FILE: "/tmp/token"
+    command: ["sh", "-c", "umask 077 && printf '%s\\n' \"$${SHEETS_REALTIME_TOKEN:-compose-dev-token}\" > /tmp/token && exec node dist/server.js"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3101/readyz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  owner:
+    image: php:8.4-cli
+    working_dir: /app/tests/consumer/laravel
+    volumes:
+      - ../..:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      runtime:
+        condition: service_healthy
+    environment:
+      APP_ENV: testing
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_DATABASE: vaulter_sheets_test
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      SHEETS_RUNTIME_URL: http://runtime:3100
+      SHEETS_REALTIME_URL: http://realtime:3101
+    ports:
+      - "127.0.0.1:8000:8000"
+    command: php -S 0.0.0.0:8000 owner.php

@@ -635,6 +635,12 @@ jobs:
       - name: Reference
         run: bash scripts/ci/reference.sh
 
+      - name: Workbook browser
+        run: bash scripts/ci/workbook-browser.sh
+
+      - name: Office sheets
+        run: bash scripts/ci/office-sheets.sh
+
   images:
     name: Runtime and realtime images
     runs-on: ubuntu-24.04

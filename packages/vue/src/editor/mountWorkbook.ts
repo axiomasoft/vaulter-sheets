@@ -4,6 +4,7 @@ import '@univerjs/docs-ui/lib/index.css'
 import '@univerjs/sheets-ui/lib/index.css'
 import '@univerjs/sheets-formula-ui/lib/index.css'
 import '@univerjs/sheets-numfmt-ui/lib/index.css'
+import { htmlClipboardValues } from './cellCommands'
 import {
   CanceledError,
   CellValueType,
@@ -508,8 +509,9 @@ export function mountWorkbook(
     const paste = (event: ClipboardEvent) => {
       const target = event.target
       if (target instanceof HTMLElement && (target.isContentEditable || ['INPUT', 'TEXTAREA'].includes(target.tagName))) return
-      const text = event.clipboardData?.getData('text/plain')
-      if (!text) return
+      const plain = event.clipboardData?.getData('text/plain') ?? ''
+      const html = event.clipboardData?.getData('text/html') ?? ''
+      if (!plain && !/<table\b/i.test(html)) return
       event.preventDefault()
       event.stopImmediatePropagation()
       if (!editable()) return
@@ -519,7 +521,10 @@ export function mountWorkbook(
       const row = selection.getRow()
       const column = selection.getColumn()
       try {
-        const values = clipboardValues(text)
+        const values = plain && (!/<table\b/i.test(html) || plain.includes('\t'))
+          ? clipboardValues(plain)
+          : (htmlClipboardValues(html) ?? (plain ? clipboardValues(plain) : null))
+        if (!values) return
         const cells = values.map(items => items.map(value => ({
           v: value === null ? null : 'number' in value ? value.number : 'boolean' in value ? (value.boolean ? 1 : 0) : value.text,
           t: value === null ? null : 'number' in value ? CellValueType.NUMBER : 'boolean' in value ? CellValueType.BOOLEAN : CellValueType.STRING,

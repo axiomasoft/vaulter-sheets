@@ -1,0 +1,19 @@
+{
+    "$schema": "https://axiomasoft.dev/schemas/packman/packman.schema.json",
+    "schema_version": 1,
+    "name": "axiomasoft/vaulter-sheets",
+    "profile": "laravel-package",
+    "php": ">=8.4 <8.6",
+    "phpstan_level": "max",
+    "provider_max_lines": 80,
+    "packages": [
+        {
+            "name": "axiomasoft/vaulter-sheets",
+            "path": "packages/sheets",
+            "namespace": "Vaulter\\Sheets\\",
+            "profile": "laravel-package",
+            "layer": "L3",
+            "type": "capability"
+        }
+    ]
+}
