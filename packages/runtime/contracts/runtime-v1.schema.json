@@ -80,9 +80,58 @@
       "oneOf": [
         {"type": "null"},
         {"type": "object", "additionalProperties": false, "required": ["number"], "properties": {"number": {"type": "number"}}},
-        {"type": "object", "additionalProperties": false, "required": ["text"], "properties": {"text": {"type": "string"}}}
+        {"type": "object", "additionalProperties": false, "required": ["text"], "properties": {"text": {"type": "string"}}},
+        {"type": "object", "additionalProperties": false, "required": ["boolean"], "properties": {"boolean": {"type": "boolean"}}}
       ]
     },
+    "hexColor": {"type": "string", "pattern": "^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"},
+    "borderSide": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object", "additionalProperties": false, "required": ["style"],
+          "properties": {
+            "style": {"enum": ["none", "thin", "medium", "thick", "dashed", "dotted", "double"]},
+            "color": {"$ref": "#/$defs/hexColor"}
+          }
+        }
+      ]
+    },
+    "cellFormat": {
+      "type": "object", "additionalProperties": false, "minProperties": 1,
+      "properties": {
+        "font": {
+          "type": "object", "additionalProperties": false, "minProperties": 1,
+          "properties": {
+            "bold": {"type": "boolean"},
+            "italic": {"type": "boolean"},
+            "size": {"type": "number", "minimum": 1, "maximum": 409},
+            "color": {"oneOf": [{"$ref": "#/$defs/hexColor"}, {"type": "null"}]}
+          }
+        },
+        "fill": {"oneOf": [{"$ref": "#/$defs/hexColor"}, {"type": "null"}]},
+        "borders": {
+          "type": "object", "additionalProperties": false, "minProperties": 1,
+          "properties": {
+            "all": {"$ref": "#/$defs/borderSide"},
+            "top": {"$ref": "#/$defs/borderSide"},
+            "right": {"$ref": "#/$defs/borderSide"},
+            "bottom": {"$ref": "#/$defs/borderSide"},
+            "left": {"$ref": "#/$defs/borderSide"}
+          }
+        },
+        "alignment": {
+          "type": "object", "additionalProperties": false, "minProperties": 1,
+          "properties": {
+            "horizontal": {"oneOf": [{"enum": ["left", "center", "right"]}, {"type": "null"}]},
+            "vertical": {"oneOf": [{"enum": ["top", "middle", "bottom"]}, {"type": "null"}]},
+            "wrap": {"type": "boolean"}
+          }
+        },
+        "numFmt": {"oneOf": [{"type": "string", "minLength": 1, "maxLength": 255}, {"type": "null"}]}
+      }
+    },
+    "ifScalar": {"type": ["number", "string", "boolean"]},
     "cellAddress": {
       "sheet_id": {"$ref": "#/$defs/id"}, "row": {"$ref": "#/$defs/oneBased"}, "column": {"$ref": "#/$defs/oneBased"}
     },
@@ -124,23 +173,155 @@
             "row_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/id"}},
             "destination_column_id": {"$ref": "#/$defs/id"},
             "expression": {
-              "type": "object", "additionalProperties": false, "required": ["op", "left_column_id", "right_column_id"],
-              "properties": {"op": {"const": "subtract"}, "left_column_id": {"$ref": "#/$defs/id"}, "right_column_id": {"$ref": "#/$defs/id"}}
+              "oneOf": [
+                {
+                  "type": "object", "additionalProperties": false, "required": ["op", "left_column_id", "right_column_id"],
+                  "properties": {"op": {"enum": ["subtract", "add", "multiply", "divide"]}, "left_column_id": {"$ref": "#/$defs/id"}, "right_column_id": {"$ref": "#/$defs/id"}}
+                },
+                {
+                  "type": "object", "additionalProperties": false, "required": ["op", "column_ids"],
+                  "properties": {"op": {"enum": ["sum", "average"]}, "column_ids": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/id"}}}
+                },
+                {
+                  "type": "object", "additionalProperties": false, "required": ["op", "condition"],
+                  "properties": {
+                    "op": {"const": "if"},
+                    "condition": {
+                      "type": "object", "additionalProperties": false, "required": ["left_column_id", "comparator"],
+                      "properties": {
+                        "left_column_id": {"$ref": "#/$defs/id"},
+                        "comparator": {"enum": ["=", "<>", ">", ">=", "<", "<="]},
+                        "right_column_id": {"$ref": "#/$defs/id"},
+                        "right_value": {"$ref": "#/$defs/ifScalar"}
+                      },
+                      "oneOf": [{"required": ["right_column_id"]}, {"required": ["right_value"]}]
+                    },
+                    "then_column_id": {"$ref": "#/$defs/id"},
+                    "then_value": {"$ref": "#/$defs/ifScalar"},
+                    "else_column_id": {"$ref": "#/$defs/id"},
+                    "else_value": {"$ref": "#/$defs/ifScalar"}
+                  },
+                  "allOf": [
+                    {"oneOf": [{"required": ["then_column_id"]}, {"required": ["then_value"]}]},
+                    {"oneOf": [{"required": ["else_column_id"]}, {"required": ["else_value"]}]}
+                  ]
+                },
+                {
+                  "type": "object", "additionalProperties": false, "required": ["op", "template", "params"],
+                  "properties": {
+                    "op": {"const": "template"},
+                    "template": {"type": "string", "minLength": 2, "maxLength": 255, "pattern": "^="},
+                    "params": {"type": "object", "additionalProperties": {"$ref": "#/$defs/id"}}
+                  }
+                }
+              ]
             },
             "expected_destination": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/content"}},
             "expected_inputs": {
               "type": "array",
               "minItems": 1,
               "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["left", "right"],
-                "properties": {
-                  "left": {"$ref": "#/$defs/operandExpectation"},
-                  "right": {"$ref": "#/$defs/operandExpectation"}
-                }
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["left", "right"],
+                    "properties": {
+                      "left": {"$ref": "#/$defs/operandExpectation"},
+                      "right": {"$ref": "#/$defs/operandExpectation"}
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": {"$ref": "#/$defs/operandExpectation"}
+                  }
+                ]
               }
             }
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "row", "column", "expected", "value"],
+          "properties": {"kind": {"const": "set_boolean"}, "sheet_id": {"$ref": "#/$defs/id"}, "row": {"$ref": "#/$defs/oneBased"}, "column": {"$ref": "#/$defs/oneBased"}, "expected": {"$ref": "#/$defs/content"}, "value": {"type": "boolean"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "row", "count"],
+          "properties": {"kind": {"const": "delete_row"}, "sheet_id": {"$ref": "#/$defs/id"}, "row": {"$ref": "#/$defs/oneBased"}, "count": {"$ref": "#/$defs/oneBased"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "column", "count"],
+          "properties": {"kind": {"const": "insert_column_before"}, "sheet_id": {"$ref": "#/$defs/id"}, "column": {"$ref": "#/$defs/oneBased"}, "count": {"$ref": "#/$defs/oneBased"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "column", "count"],
+          "properties": {"kind": {"const": "delete_column"}, "sheet_id": {"$ref": "#/$defs/id"}, "column": {"$ref": "#/$defs/oneBased"}, "count": {"$ref": "#/$defs/oneBased"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "name"],
+          "properties": {
+            "kind": {"const": "add_sheet"},
+            "sheet_id": {"$ref": "#/$defs/id"},
+            "name": {"type": "string", "minLength": 1, "maxLength": 255},
+            "index": {"type": "integer", "minimum": 0},
+            "row_count": {"$ref": "#/$defs/oneBased"},
+            "column_count": {"$ref": "#/$defs/oneBased"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "name"],
+          "properties": {
+            "kind": {"const": "rename_sheet"},
+            "sheet_id": {"$ref": "#/$defs/id"},
+            "name": {"type": "string", "minLength": 1, "maxLength": 255},
+            "expected_name": {"type": "string", "minLength": 1, "maxLength": 255}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id"],
+          "properties": {"kind": {"const": "delete_sheet"}, "sheet_id": {"$ref": "#/$defs/id"}}
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "row_count", "column_count"],
+          "properties": {
+            "kind": {"const": "set_freeze"},
+            "sheet_id": {"$ref": "#/$defs/id"},
+            "row_count": {"type": "integer", "minimum": 0},
+            "column_count": {"type": "integer", "minimum": 0}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "start_row", "start_column", "end_row", "end_column"],
+          "properties": {
+            "kind": {"const": "merge_cells"},
+            "sheet_id": {"$ref": "#/$defs/id"},
+            "start_row": {"$ref": "#/$defs/oneBased"},
+            "start_column": {"$ref": "#/$defs/oneBased"},
+            "end_row": {"$ref": "#/$defs/oneBased"},
+            "end_column": {"$ref": "#/$defs/oneBased"},
+            "strategy": {"enum": ["default", "across", "vertically"]}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "start_row", "start_column", "end_row", "end_column"],
+          "properties": {
+            "kind": {"const": "unmerge_cells"},
+            "sheet_id": {"$ref": "#/$defs/id"},
+            "start_row": {"$ref": "#/$defs/oneBased"},
+            "start_column": {"$ref": "#/$defs/oneBased"},
+            "end_row": {"$ref": "#/$defs/oneBased"},
+            "end_column": {"$ref": "#/$defs/oneBased"}
+          }
+        },
+        {
+          "type": "object", "additionalProperties": false, "required": ["kind", "sheet_id", "start_row", "start_column", "end_row", "end_column", "format"],
+          "properties": {
+            "kind": {"const": "set_format"},
+            "sheet_id": {"$ref": "#/$defs/id"},
+            "start_row": {"$ref": "#/$defs/oneBased"},
+            "start_column": {"$ref": "#/$defs/oneBased"},
+            "end_row": {"$ref": "#/$defs/oneBased"},
+            "end_column": {"$ref": "#/$defs/oneBased"},
+            "format": {"$ref": "#/$defs/cellFormat"}
           }
         }
       ]
@@ -164,7 +345,7 @@
     },
     "range": {
       "type": "object", "additionalProperties": false, "required": ["sheet_id", "range"],
-      "properties": {"sheet_id": {"$ref": "#/$defs/id"}, "range": {"type": "string", "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$|^[1-9][0-9]*:[1-9][0-9]*$"}}
+      "properties": {"sheet_id": {"$ref": "#/$defs/id"}, "range": {"type": "string", "pattern": "^[A-Z]{1,3}[1-9][0-9]*(:[A-Z]{1,3}[1-9][0-9]*)?$|^[1-9][0-9]*:[1-9][0-9]*$|^[A-Z]{1,3}:[A-Z]{1,3}$"}}
     },
     "readback": {
       "type": "object", "additionalProperties": false, "required": ["sheet_id", "a1", "row", "column", "formula", "value"],

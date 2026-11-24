@@ -68,14 +68,18 @@ final class WorkbookFormulaDependencies
                 }
             }
             $expr = ($command->expression ?? null) instanceof stdClass ? $command->expression : new stdClass;
-            $leftId = is_string($expr->left_column_id ?? null) ? $expr->left_column_id : '';
-            $rightId = is_string($expr->right_column_id ?? null) ? $expr->right_column_id : '';
+            $op = is_string($expr->op ?? null) ? $expr->op : '';
+            $isBinary = in_array($op, ['subtract', 'add', 'multiply', 'divide'], true);
             $destId = is_string($command->destination_column_id ?? null) ? $command->destination_column_id : '';
-            $left = $columns[$leftId] ?? null;
-            $right = $columns[$rightId] ?? null;
             $dest = $columns[$destId] ?? null;
-            if ($left === null || $right === null || $dest === null) {
+            if ($dest === null) {
                 throw new WorkbookProblem('unknown_target', 422);
+            }
+            $refCols = self::referencedColumns($expr);
+            foreach ($refCols as $colId) {
+                if (!isset($columns[$colId])) {
+                    throw new WorkbookProblem('unknown_target', 422);
+                }
             }
             $sheet = $sheets->{$sheetId} ?? null;
             $cellData = $sheet instanceof stdClass && ($sheet->cellData ?? null) instanceof stdClass ? $sheet->cellData : new stdClass;
@@ -86,25 +90,105 @@ final class WorkbookFormulaDependencies
                 }
                 $rowObj = $cellData->{(string) ($rows[$id] - 1)} ?? null;
                 $row = $rowObj instanceof stdClass ? $rowObj : new stdClass;
-                $leftCell = $row->{(string) ($left - 1)} ?? null;
-                $rightCell = $row->{(string) ($right - 1)} ?? null;
-                $leftContent = self::content($leftCell instanceof stdClass ? $leftCell : null);
-                $rightContent = self::content($rightCell instanceof stdClass ? $rightCell : null);
-                if (is_array($expectedInputs)) {
-                    $expectedRow = $expectedInputs[$index] ?? null;
-                    $expLeft = $expectedRow instanceof stdClass && ($expectedRow->left ?? null) instanceof stdClass ? ($expectedRow->left->content ?? null) : null;
-                    $expRight = $expectedRow instanceof stdClass && ($expectedRow->right ?? null) instanceof stdClass ? ($expectedRow->right->content ?? null) : null;
-                    if (!$expectedRow instanceof stdClass
-                        || !self::matchesContent($leftContent, $expLeft)
-                        || !self::matchesContent($rightContent, $expRight)) {
-                        throw new WorkbookProblem('version_conflict', 409, ['reason' => 'input_precondition_failed', 'row_id' => $id]);
+                if ($isBinary) {
+                    $leftId = is_string($expr->left_column_id ?? null) ? $expr->left_column_id : '';
+                    $rightId = is_string($expr->right_column_id ?? null) ? $expr->right_column_id : '';
+                    $leftContent = self::content(($row->{(string) ($columns[$leftId] - 1)} ?? null) instanceof stdClass ? $row->{(string) ($columns[$leftId] - 1)} : null);
+                    $rightContent = self::content(($row->{(string) ($columns[$rightId] - 1)} ?? null) instanceof stdClass ? $row->{(string) ($columns[$rightId] - 1)} : null);
+                    if (is_array($expectedInputs)) {
+                        $expectedRow = $expectedInputs[$index] ?? null;
+                        $expLeft = $expectedRow instanceof stdClass && ($expectedRow->left ?? null) instanceof stdClass ? ($expectedRow->left->content ?? null) : null;
+                        $expRight = $expectedRow instanceof stdClass && ($expectedRow->right ?? null) instanceof stdClass ? ($expectedRow->right->content ?? null) : null;
+                        if (!$expectedRow instanceof stdClass
+                            || !self::matchesContent($leftContent, $expLeft)
+                            || !self::matchesContent($rightContent, $expRight)) {
+                            throw new WorkbookProblem('version_conflict', 409, ['reason' => 'input_precondition_failed', 'row_id' => $id]);
+                        }
                     }
+                    $content[] = [$id, $leftContent, $rightContent];
+                } else {
+                    $rowInputs = [];
+                    foreach ($refCols as $colId) {
+                        $cellObj = $row->{(string) ($columns[$colId] - 1)} ?? null;
+                        $rowInputs[$colId] = self::content($cellObj instanceof stdClass ? $cellObj : null);
+                    }
+                    if (is_array($expectedInputs)) {
+                        $expectedRow = $expectedInputs[$index] ?? null;
+                        if (!$expectedRow instanceof stdClass) {
+                            throw new WorkbookProblem('version_conflict', 409, ['reason' => 'input_precondition_failed', 'row_id' => $id]);
+                        }
+                        foreach (get_object_vars($expectedRow) as $colId => $exp) {
+                            if (!isset($columns[$colId])) {
+                                throw new WorkbookProblem('unknown_target', 422);
+                            }
+                            $actualCell = $row->{(string) ($columns[$colId] - 1)} ?? null;
+                            $actualContent = self::content($actualCell instanceof stdClass ? $actualCell : null);
+                            $expContent = $exp instanceof stdClass ? ($exp->content ?? null) : null;
+                            if (!self::matchesContent($actualContent, $expContent)) {
+                                throw new WorkbookProblem('version_conflict', 409, ['reason' => 'input_precondition_failed', 'row_id' => $id]);
+                            }
+                        }
+                    }
+                    $content[] = [$id, $rowInputs];
                 }
-                $content[] = [$id, $leftContent, $rightContent];
             }
         }
 
         return CanonicalJson::sha256($content);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private static function referencedColumns(stdClass $expr): array
+    {
+        $op = is_string($expr->op ?? null) ? $expr->op : '';
+        if (in_array($op, ['subtract', 'add', 'multiply', 'divide'], true)) {
+            return [
+                is_string($expr->left_column_id ?? null) ? $expr->left_column_id : '',
+                is_string($expr->right_column_id ?? null) ? $expr->right_column_id : '',
+            ];
+        }
+        if (in_array($op, ['sum', 'average'], true)) {
+            $cols = [];
+            foreach (is_array($expr->column_ids ?? null) ? $expr->column_ids : [] as $colId) {
+                if (is_string($colId)) {
+                    $cols[] = $colId;
+                }
+            }
+
+            return array_values(array_unique($cols));
+        }
+        if ($op === 'if') {
+            $cols = [];
+            $cond = ($expr->condition ?? null) instanceof stdClass ? $expr->condition : new stdClass;
+            if (is_string($cond->left_column_id ?? null)) {
+                $cols[] = $cond->left_column_id;
+            }
+            if (is_string($cond->right_column_id ?? null)) {
+                $cols[] = $cond->right_column_id;
+            }
+            if (is_string($expr->then_column_id ?? null)) {
+                $cols[] = $expr->then_column_id;
+            }
+            if (is_string($expr->else_column_id ?? null)) {
+                $cols[] = $expr->else_column_id;
+            }
+
+            return array_values(array_unique($cols));
+        }
+        if ($op === 'template' && ($expr->params ?? null) instanceof stdClass) {
+            $cols = [];
+            foreach (get_object_vars($expr->params) as $colId) {
+                if (is_string($colId)) {
+                    $cols[] = $colId;
+                }
+            }
+
+            return array_values(array_unique($cols));
+        }
+
+        return [];
     }
 
     private static function matchesContent(mixed $actual, mixed $expected): bool

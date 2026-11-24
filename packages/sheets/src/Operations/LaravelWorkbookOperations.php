@@ -66,7 +66,12 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
             'marker' => $marker, 'etag' => $marker->etag($node), 'profile' => WorkbookCodec::profile(),
             'workbook' => $this->codec->snapshot($state->content),
             'commands' => config('vaulter-sheets.commands') && $this->access->canEdit($context, $node) && $state->editable && $state->collabProtocol === null
-                ? ['set_number', 'set_text', 'set_formula', 'set_values', 'insert_row_before', 'fill_formula'] : [],
+                ? [
+                    'set_number', 'set_text', 'set_boolean', 'set_formula', 'set_values',
+                    'insert_row_before', 'delete_row', 'insert_column_before', 'delete_column',
+                    'add_sheet', 'rename_sheet', 'delete_sheet',
+                    'set_format', 'merge_cells', 'unmerge_cells', 'set_freeze', 'fill_formula',
+                ] : [],
             'exchange' => $this->exchange->capabilitiesForState($context, $node, $state),
         ];
     }
@@ -157,8 +162,17 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
     /**
      * @return array<string, mixed>
      */
-    public function prepareFormula(DriveContext $context, string $node, string $table, string $destination, string $left, string $right, string $scope): array
-    {
+    public function prepareFormula(
+        DriveContext $context,
+        string $node,
+        string $table,
+        string $destination,
+        string $left,
+        string $right,
+        string $scope,
+        string $op = 'subtract',
+        ?stdClass $expression = null,
+    ): array {
         $catalog = $this->loadCatalog($context, $node);
         $binding = $this->table($catalog, $table);
         /** @var array<string, int> $columns */
@@ -168,8 +182,18 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
                 $columns[$colObj->column_id] = $colObj->column;
             }
         }
-        if (!isset($columns[$destination], $columns[$left], $columns[$right]) || !in_array($scope, ['fixed_members', 'current_rows'], true)) {
+        if (!isset($columns[$destination]) || !in_array($scope, ['fixed_members', 'current_rows'], true)) {
             throw new WorkbookProblem('unknown_target', 422);
+        }
+        if ($expression === null) {
+            if (!isset($columns[$left], $columns[$right])) {
+                throw new WorkbookProblem('unknown_target', 422);
+            }
+            $expression = match ($op) {
+                'subtract', 'add', 'multiply', 'divide' => (object) ['op' => $op, 'left_column_id' => $left, 'right_column_id' => $right],
+                'sum', 'average' => (object) ['op' => $op, 'column_ids' => array_values(array_unique([$left, $right]))],
+                default => throw new WorkbookProblem('invalid_command', 422),
+            };
         }
         $sheetId = is_string($binding->sheet_id ?? null) ? $binding->sheet_id : '';
         $native = ($catalog['workbook']->native ?? null) instanceof stdClass ? $catalog['workbook']->native : new stdClass;
@@ -201,7 +225,7 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
         return ['marker' => $catalog['marker'], 'command' => (object) [
             'kind' => 'fill_formula', 'sheet_id' => $sheetId, 'table_id' => $table, 'scope' => $scope,
             'row_ids' => $rowIds, 'destination_column_id' => $destination,
-            'expression' => (object) ['op' => 'subtract', 'left_column_id' => $left, 'right_column_id' => $right],
+            'expression' => $expression,
             'expected_destination' => $expected,
         ]];
     }

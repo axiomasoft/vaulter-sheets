@@ -71,7 +71,8 @@ export function shiftDraftRow(sheet: string, row: number, insertions: readonly I
 }
 
 async function preview(view: WorkbookView, command: Command): Promise<void> {
-    if (command.kind === 'fill_formula') return;
+    if (command.kind !== 'set_number' && command.kind !== 'set_text' && command.kind !== 'set_boolean'
+        && command.kind !== 'set_formula' && command.kind !== 'set_values' && command.kind !== 'insert_row_before') return;
     const flags = {fromCollab: true, onlyLocal: true};
     const scope = {unitId: view.unitId, subUnitId: command.sheet_id};
     const row = command.row - 1;
@@ -85,10 +86,14 @@ async function preview(view: WorkbookView, command: Command): Promise<void> {
     let cellValue: Record<number, Record<number, object | null>>;
     if (command.kind === 'set_values') {
         cellValue = Object.fromEntries(command.values.map((line, y) => [row + y, Object.fromEntries(line.map((value, x) => [column + x,
-            value === null ? {v: null, f: null} : 'number' in value ? {v: value.number, t: CellValueType.NUMBER, f: null} : {v: value.text, t: CellValueType.STRING, f: null},
+            value === null ? {v: null, f: null}
+                : 'number' in value ? {v: value.number, t: CellValueType.NUMBER, f: null}
+                : 'boolean' in value ? {v: value.boolean ? 1 : 0, t: CellValueType.BOOLEAN, f: null}
+                : {v: value.text, t: CellValueType.STRING, f: null},
         ]))]));
     } else {
         const value = command.kind === 'set_formula' ? {f: command.formula, v: null}
+            : command.kind === 'set_boolean' ? {v: command.value ? 1 : 0, t: CellValueType.BOOLEAN, f: null}
             : {v: command.value, t: command.kind === 'set_number' ? CellValueType.NUMBER : CellValueType.STRING, f: null};
         cellValue = {[row]: {[column]: value}};
     }

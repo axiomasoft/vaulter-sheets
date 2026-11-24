@@ -29,7 +29,27 @@ paths:
                       marker: {$ref: '#/components/schemas/marker'}
                       etag: {type: string}
                       profile: {$ref: './runtime-v1.schema.json#/$defs/profile'}
-                      commands: {type: array, items: {type: string}}
+                      commands:
+                        type: array
+                        items:
+                          enum:
+                            - set_number
+                            - set_text
+                            - set_boolean
+                            - set_formula
+                            - set_values
+                            - insert_row_before
+                            - delete_row
+                            - insert_column_before
+                            - delete_column
+                            - add_sheet
+                            - rename_sheet
+                            - delete_sheet
+                            - set_format
+                            - merge_cells
+                            - unmerge_cells
+                            - set_freeze
+                            - fill_formula
                       exchange: {$ref: '#/components/schemas/exchangeCapabilities'}
         '404': {$ref: '#/components/responses/unavailable'}
   /workbooks/{node}/commands:
@@ -40,7 +60,7 @@ paths:
       parameters:
         - in: header
           name: If-Match
-          description: Required for exact_base and rebase_cells. Omit for revalidate_by_id.
+          description: Required for exact_base (structural/sheet commands: insert_row_before, delete_row, insert_column_before, delete_column, add_sheet, rename_sheet, delete_sheet) and rebase_cells (set_number, set_text, set_boolean, set_formula, set_values, set_format, merge_cells, unmerge_cells, set_freeze). Omit for revalidate_by_id (fill_formula).
           schema: {type: string}
       requestBody:
         required: true

@@ -96,6 +96,69 @@ it('rejects a row insertion over the cell budget as a terminal command', functio
     $this->getJson($url)->assertHeader('ETag', $head->headers->get('ETag'));
 });
 
+it('commits v1.1 commands, preserves ruRU locale & hyperlinks, updates table bindings, and enforces exact_base', function (): void {
+    $blank = WorkbookCodec::blank('ruRU')->value();
+    $sheetId = $blank->native->sheetOrder[0];
+    $blank->native->resources[] = (object) ['name' => 'SHEET_HYPER_LINK_PLUGIN', 'data' => '{}'];
+    $blank->native->sheets->{$sheetId}->cellData = (object) [
+        '0' => (object) ['0' => (object) ['v' => 'Flag', 't' => 1], '1' => (object) ['v' => 'A', 't' => 1], '2' => (object) ['v' => 'B', 't' => 1]],
+        '1' => (object) ['0' => (object) ['v' => 0, 't' => 3], '1' => (object) ['v' => 10, 't' => 2], '2' => (object) ['v' => 25, 't' => 2]],
+        '2' => (object) ['0' => (object) ['v' => 1, 't' => 3], '1' => (object) ['v' => 5, 't' => 2], '2' => (object) ['v' => 15, 't' => 2]],
+    ];
+    $blank->tables = [(object) [
+        'table_id' => 't1', 'sheet_id' => $sheetId, 'header_row' => 1,
+        'columns' => [(object) ['column_id' => 'flag', 'column' => 1], (object) ['column_id' => 'a', 'column' => 2], (object) ['column_id' => 'b', 'column' => 3]],
+        'rows' => [(object) ['row_id' => 'r1', 'row' => 2], (object) ['row_id' => 'r2', 'row' => 3]],
+    ]];
+    $url = createWorkbookTestUrl($this, json_decode(json_encode($blank, JSON_THROW_ON_ERROR), true));
+    $head = $this->getJson($url)->assertOk();
+    expect($head->json('data.commands'))->toContain('set_boolean', 'set_format', 'merge_cells', 'set_freeze', 'add_sheet', 'delete_row', 'insert_column_before');
+
+    // Structural command with rebase_cells must be rejected (422 invalid_command).
+    $this->postJson($url.'/commands', workbookTestPlan($head->json('data.marker.generation'), 'bad-policy', [
+        'kind' => 'delete_row', 'sheet_id' => $sheetId, 'row' => 3, 'count' => 1,
+    ], 'rebase_cells'), ['If-Match' => $head->headers->get('ETag')])->assertStatus(422);
+
+    $gen = $head->json('data.marker.generation');
+    $etag = $head->headers->get('ETag');
+    $committed = $this->postJson($url.'/commands', [
+        'command_id' => 'v11-batch-2',
+        'expected_generation' => $gen,
+        'policy' => 'exact_base',
+        'commands' => [
+            ['kind' => 'set_boolean', 'sheet_id' => $sheetId, 'row' => 2, 'column' => 1, 'expected' => ['boolean' => false], 'value' => true],
+            ['kind' => 'set_format', 'sheet_id' => $sheetId, 'start_row' => 1, 'start_column' => 1, 'end_row' => 2, 'end_column' => 2, 'format' => ['font' => ['bold' => true], 'fill' => '#FFEEAA']],
+            ['kind' => 'merge_cells', 'sheet_id' => $sheetId, 'start_row' => 4, 'start_column' => 1, 'end_row' => 5, 'end_column' => 2],
+            ['kind' => 'set_freeze', 'sheet_id' => $sheetId, 'row_count' => 1, 'column_count' => 1],
+            ['kind' => 'delete_row', 'sheet_id' => $sheetId, 'row' => 3, 'count' => 1],
+            ['kind' => 'add_sheet', 'sheet_id' => 's2', 'name' => 'Summary'],
+            ['kind' => 'rename_sheet', 'sheet_id' => 's2', 'name' => 'Summary2'],
+            ['kind' => 'delete_sheet', 'sheet_id' => 's2'],
+        ],
+    ], ['If-Match' => $etag])->assertOk();
+
+    $reopened = $this->getJson($url)->assertOk()->assertHeader('ETag', $committed->headers->get('ETag'));
+    expect($reopened->json('data.workbook.native.locale'))->toBe('ruRU')
+        ->and($reopened->json('data.workbook.tables.0.rows'))->toBe([['row' => 2, 'row_id' => 'r1']])
+        ->and($reopened->json('data.workbook.native.sheetOrder'))->toBe([$sheetId]);
+
+    $this->postJson($url.'/commands', [
+        'command_id' => 'fill-add',
+        'expected_generation' => $reopened->json('data.marker.generation'),
+        'policy' => 'revalidate_by_id',
+        'commands' => [[
+            'kind' => 'fill_formula',
+            'sheet_id' => $sheetId,
+            'table_id' => 't1',
+            'scope' => 'fixed_members',
+            'row_ids' => ['r1'],
+            'destination_column_id' => 'b',
+            'expression' => ['op' => 'add', 'left_column_id' => 'a', 'right_column_id' => 'b'],
+            'expected_destination' => [['number' => 25]],
+        ]],
+    ])->assertOk();
+});
+
 it('withholds cells after revocation during workbook range calculation', function (): void {
     $system = $this->driveHandle->asSystem('workbook reader test setup');
     $reader = (new TestUser)->forceFill(['id' => 2]);

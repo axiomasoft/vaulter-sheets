@@ -12,9 +12,6 @@ export function cellContent(cell?: Pick<ICellData, 'f' | 'v' | 't'> | null): Cel
 
 export function cellCommands(sheet_id: string, startRow: number, startColumn: number, previous: CellContent[][], next: CellContent[][]): Command[] {
   if (JSON.stringify(previous) === JSON.stringify(next)) return []
-  if (next.some(row => row.some(value => value && 'boolean' in value))) {
-    throw new Error('Boolean input is outside the editing profile.')
-  }
   const row = startRow + 1
   const column = startColumn + 1
   const value = next[0][0]
@@ -22,6 +19,7 @@ export function cellCommands(sheet_id: string, startRow: number, startColumn: nu
     const target = {sheet_id, row, column, expected: previous[0][0]}
     if ('number' in value) return [{...target, kind: 'set_number', value: value.number}]
     if ('text' in value) return [{...target, kind: 'set_text', value: value.text}]
+    if ('boolean' in value) return [{...target, kind: 'set_boolean', value: value.boolean}]
     if ('formula' in value) return [{...target, kind: 'set_formula', formula: value.formula}]
   }
   if (next.some(items => items.some(item => item && 'formula' in item))) {

@@ -130,7 +130,10 @@ final readonly class CommitWorkbookCommand
             }
             $structural = [];
             foreach ($command->commands as $item) {
-                if (($item->kind ?? null) === 'insert_row_before' && is_string($item->sheet_id ?? null)) {
+                if (in_array($item->kind ?? null, [
+                    'insert_row_before', 'delete_row', 'insert_column_before', 'delete_column',
+                    'add_sheet', 'rename_sheet', 'delete_sheet',
+                ], true) && is_string($item->sheet_id ?? null)) {
                     $structural[] = $item->sheet_id;
                 }
             }

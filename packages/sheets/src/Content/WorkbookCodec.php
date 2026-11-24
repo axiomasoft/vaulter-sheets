@@ -50,8 +50,19 @@ final class WorkbookCodec implements ManagedDocumentCodec
         ];
     }
 
-    public static function blank(): WorkbookContent
+    /** @var list<string> */
+    private const SUPPORTED_LOCALES = [
+        'enUS', 'frFR', 'zhCN', 'ruRU', 'zhTW', 'zhHK', 'viVN', 'faIR', 'jaJP',
+        'koKR', 'esES', 'caES', 'skSK', 'ptBR', 'deDE', 'itIT', 'idID', 'plPL', 'arSA',
+    ];
+
+    public static function blank(?string $locale = null): WorkbookContent
     {
+        $configured = function_exists('config') ? config('vaulter-sheets.locale', 'enUS') : 'enUS';
+        $resolvedLocale = $locale ?? (is_string($configured) && $configured !== '' ? $configured : 'enUS');
+        if (!in_array($resolvedLocale, self::SUPPORTED_LOCALES, true)) {
+            throw new \InvalidArgumentException("Unsupported workbook locale: {$resolvedLocale}");
+        }
         $id = (string) Str::uuid();
         $sheet = (string) Str::uuid();
 
@@ -59,7 +70,7 @@ final class WorkbookCodec implements ManagedDocumentCodec
             'format_version' => 2,
             'profile' => self::profile(),
             'native' => (object) [
-                'id' => $id, 'name' => 'Workbook', 'appVersion' => '1.5.2', 'locale' => 'enUS',
+                'id' => $id, 'name' => 'Workbook', 'appVersion' => '1.5.2', 'locale' => $resolvedLocale,
                 'styles' => new stdClass, 'resources' => [], 'sheetOrder' => [$sheet],
                 'sheets' => (object) [$sheet => (object) [
                     'id' => $sheet, 'name' => 'Sheet1', 'rowCount' => 1000, 'columnCount' => 26,

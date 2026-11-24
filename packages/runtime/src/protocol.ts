@@ -31,16 +31,50 @@ export interface TableBinding {
 
 export interface WorkbookV2 {format_version: 2; profile: ProfileRef; native: JsonObject; tables: TableBinding[]}
 
-export type Literal = {number: number} | {text: string} | null;
+export type Literal = {number: number} | {text: string} | {boolean: boolean} | null;
 
 export interface OperandExpectation {content: CellContent; value?: number}
+
+export type BorderStyleName = 'none' | 'thin' | 'medium' | 'thick' | 'dashed' | 'dotted' | 'double';
+export type BorderSideSpec = null | {style: BorderStyleName; color?: string};
+export interface FormatSpec {
+    font?: {bold?: boolean; italic?: boolean; size?: number; color?: string | null};
+    fill?: string | null;
+    borders?: {all?: BorderSideSpec; top?: BorderSideSpec; right?: BorderSideSpec; bottom?: BorderSideSpec; left?: BorderSideSpec};
+    alignment?: {horizontal?: 'left' | 'center' | 'right' | null; vertical?: 'top' | 'middle' | 'bottom' | null; wrap?: boolean};
+    numFmt?: string | null;
+}
+
+export type IfScalar = number | string | boolean;
+export type IfComparator = '=' | '<>' | '>' | '>=' | '<' | '<=';
+export type FormulaExpression =
+    | {op: 'subtract' | 'add' | 'multiply' | 'divide'; left_column_id: string; right_column_id: string}
+    | {op: 'sum' | 'average'; column_ids: string[]}
+    | {
+        op: 'if';
+        condition: {left_column_id: string; comparator: IfComparator} & ({right_column_id: string} | {right_value: IfScalar});
+    } & ({then_column_id: string} | {then_value: IfScalar}) & ({else_column_id: string} | {else_value: IfScalar})
+    | {op: 'template'; template: string; params: {[key: string]: string}};
+
+export type RowInputsExpectation = {left: OperandExpectation; right: OperandExpectation} | {[columnId: string]: OperandExpectation};
 
 export type Command =
     | {kind: 'set_number'; sheet_id: string; row: number; column: number; expected: CellContent; value: number}
     | {kind: 'set_text'; sheet_id: string; row: number; column: number; expected: CellContent; value: string}
+    | {kind: 'set_boolean'; sheet_id: string; row: number; column: number; expected: CellContent; value: boolean}
     | {kind: 'set_formula'; sheet_id: string; row: number; column: number; expected: CellContent; formula: string}
     | {kind: 'set_values'; sheet_id: string; row: number; column: number; expected: CellContent[][]; values: Literal[][]}
     | {kind: 'insert_row_before'; sheet_id: string; row: number; count: number; new_row_ids?: {[tableId: string]: string[]}}
+    | {kind: 'delete_row'; sheet_id: string; row: number; count: number}
+    | {kind: 'insert_column_before'; sheet_id: string; column: number; count: number}
+    | {kind: 'delete_column'; sheet_id: string; column: number; count: number}
+    | {kind: 'add_sheet'; sheet_id: string; name: string; index?: number; row_count?: number; column_count?: number}
+    | {kind: 'rename_sheet'; sheet_id: string; name: string; expected_name?: string}
+    | {kind: 'delete_sheet'; sheet_id: string}
+    | {kind: 'set_freeze'; sheet_id: string; row_count: number; column_count: number}
+    | {kind: 'merge_cells'; sheet_id: string; start_row: number; start_column: number; end_row: number; end_column: number; strategy?: 'default' | 'across' | 'vertically'}
+    | {kind: 'unmerge_cells'; sheet_id: string; start_row: number; start_column: number; end_row: number; end_column: number}
+    | {kind: 'set_format'; sheet_id: string; start_row: number; start_column: number; end_row: number; end_column: number; format: FormatSpec}
     | {
         kind: 'fill_formula';
         sheet_id: string;
@@ -48,9 +82,9 @@ export type Command =
         scope: 'fixed_members' | 'current_rows';
         row_ids: string[];
         destination_column_id: string;
-        expression: {op: 'subtract'; left_column_id: string; right_column_id: string};
+        expression: FormulaExpression;
         expected_destination: CellContent[];
-        expected_inputs?: {left: OperandExpectation; right: OperandExpectation}[];
+        expected_inputs?: RowInputsExpectation[];
     };
 
 export interface RangeSelector {sheet_id: string; range: string}

@@ -24,13 +24,13 @@ final readonly class WorkbookCommandCandidate
     /** @return array{DocumentContent, WorkbookContent, stdClass} */
     public function apply(DriveContext $context, DocumentContent $base, stdClass $workbook, WorkbookMarker $marker, WorkbookCommand $command, string $id): array
     {
-        [$commands, $bindings] = $this->allocateRowIds($workbook, $command, $id);
+        [$commands, $bindings, $expectedSheetOrder] = $this->prepareCandidateInputs($workbook, $command, $id);
         $response = $this->runtime->exchange((object) [
             'version' => 1, 'request_id' => (string) Str::uuid(), 'operation' => 'apply',
             'base' => (object) get_object_vars($marker), 'profile_id' => WorkbookCodec::PROFILE,
             'workbook' => $workbook, 'commands' => $commands,
         ]);
-        $candidate = $this->verifyCandidate($response, $workbook, $marker, $bindings);
+        $candidate = $this->verifyCandidate($response, $workbook, $marker, $bindings, $expectedSheetOrder);
         $changed = is_array($response->changed_ranges ?? null) && $response->changed_ranges !== [];
 
         return [$changed ? $this->codec->prepare($candidate, $context) : $base, $changed ? $candidate : new WorkbookContent($workbook), $response];
@@ -38,8 +38,9 @@ final readonly class WorkbookCommandCandidate
 
     /**
      * @param list<stdClass> $bindings
+     * @param list<string>   $expectedSheetOrder
      */
-    private function verifyCandidate(stdClass $response, stdClass $base, WorkbookMarker $marker, array $bindings): WorkbookContent
+    private function verifyCandidate(stdClass $response, stdClass $base, WorkbookMarker $marker, array $bindings, array $expectedSheetOrder): WorkbookContent
     {
         $candidate = $response->workbook ?? null;
         $baseNative = ($base->native ?? null) instanceof stdClass ? $base->native : new stdClass;
@@ -52,7 +53,7 @@ final readonly class WorkbookCommandCandidate
             || ($calculation->state ?? null) !== 'ready'
             || CanonicalJson::encode($candidate->profile ?? null) !== CanonicalJson::encode($base->profile ?? null)
             || ($candidate->native->id ?? null) !== ($baseNative->id ?? null)
-            || ($candidate->native->sheetOrder ?? null) !== ($baseNative->sheetOrder ?? null)
+            || ($candidate->native->sheetOrder ?? null) !== $expectedSheetOrder
             || CanonicalJson::encode($candidate->tables ?? null) !== CanonicalJson::encode($bindings)) {
             throw new WorkbookProblem('runtime_failed', 503);
         }
@@ -81,9 +82,9 @@ final readonly class WorkbookCommandCandidate
     }
 
     /**
-     * @return array{0: list<stdClass>, 1: list<stdClass>}
+     * @return array{0: list<stdClass>, 1: list<stdClass>, 2: list<string>}
      */
-    private function allocateRowIds(stdClass $workbook, WorkbookCommand $command, string $id): array
+    private function prepareCandidateInputs(stdClass $workbook, WorkbookCommand $command, string $id): array
     {
         $commands = [];
         $tablesRaw = StrictJson::decode(CanonicalJson::encode($workbook->tables ?? []));
@@ -96,12 +97,24 @@ final readonly class WorkbookCommandCandidate
                 }
             }
         }
+        /** @var list<string> $sheetOrder */
+        $sheetOrder = [];
+        $rawOrder = ($workbook->native ?? null) instanceof stdClass ? ($workbook->native->sheetOrder ?? []) : [];
+        if (is_array($rawOrder)) {
+            foreach ($rawOrder as $sid) {
+                if (is_string($sid)) {
+                    $sheetOrder[] = $sid;
+                }
+            }
+        }
+
         foreach ($command->commands as $index => $source) {
             $item = clone $source;
-            $rowNum = $item->row ?? null;
-            $count = $item->count ?? null;
-            if (($item->kind ?? null) === 'insert_row_before' && is_int($rowNum) && is_int($count)
-                && $count > 0 && $count <= 10_000) {
+            $kind = $item->kind ?? null;
+            if ($kind === 'insert_row_before' && is_int($item->row ?? null) && is_int($item->count ?? null)
+                && $item->count > 0 && $item->count <= 10_000) {
+                $rowNum = $item->row;
+                $count = $item->count;
                 $assigned = new stdClass;
                 foreach ($tables as $table) {
                     if (($table->sheet_id ?? null) !== ($item->sheet_id ?? null)) {
@@ -139,6 +152,74 @@ final readonly class WorkbookCommandCandidate
                     $table->rows = $tableRows;
                 }
                 $item->new_row_ids = $assigned;
+            } elseif ($kind === 'delete_row' && is_int($item->row ?? null) && is_int($item->count ?? null)) {
+                $delStart = $item->row;
+                $count = $item->count;
+                $delEnd = $delStart + $count - 1;
+                foreach ($tables as $table) {
+                    if (($table->sheet_id ?? null) !== ($item->sheet_id ?? null)) {
+                        continue;
+                    }
+                    if (is_int($table->header_row ?? null) && $table->header_row > $delEnd) {
+                        $table->header_row -= $count;
+                    }
+                    $nextRows = [];
+                    foreach (is_array($table->rows ?? null) ? $table->rows : [] as $binding) {
+                        if (!$binding instanceof stdClass || !is_int($binding->row ?? null)) {
+                            continue;
+                        }
+                        if ($binding->row < $delStart) {
+                            $nextRows[] = $binding;
+                        } elseif ($binding->row > $delEnd) {
+                            $binding->row -= $count;
+                            $nextRows[] = $binding;
+                        }
+                    }
+                    $table->rows = $nextRows;
+                }
+            } elseif ($kind === 'insert_column_before' && is_int($item->column ?? null) && is_int($item->count ?? null)) {
+                $colNum = $item->column;
+                $count = $item->count;
+                foreach ($tables as $table) {
+                    if (($table->sheet_id ?? null) !== ($item->sheet_id ?? null)) {
+                        continue;
+                    }
+                    foreach (is_array($table->columns ?? null) ? $table->columns : [] as $binding) {
+                        if ($binding instanceof stdClass && is_int($binding->column ?? null) && $binding->column >= $colNum) {
+                            $binding->column += $count;
+                        }
+                    }
+                }
+            } elseif ($kind === 'delete_column' && is_int($item->column ?? null) && is_int($item->count ?? null)) {
+                $delStart = $item->column;
+                $count = $item->count;
+                $delEnd = $delStart + $count - 1;
+                foreach ($tables as $table) {
+                    if (($table->sheet_id ?? null) !== ($item->sheet_id ?? null)) {
+                        continue;
+                    }
+                    $nextCols = [];
+                    foreach (is_array($table->columns ?? null) ? $table->columns : [] as $binding) {
+                        if (!$binding instanceof stdClass || !is_int($binding->column ?? null)) {
+                            continue;
+                        }
+                        if ($binding->column < $delStart) {
+                            $nextCols[] = $binding;
+                        } elseif ($binding->column > $delEnd) {
+                            $binding->column -= $count;
+                            $nextCols[] = $binding;
+                        }
+                    }
+                    $table->columns = $nextCols;
+                }
+            } elseif ($kind === 'add_sheet' && is_string($item->sheet_id ?? null)) {
+                $targetIdx = is_int($item->index ?? null) ? $item->index : count($sheetOrder);
+                if ($targetIdx >= 0 && $targetIdx <= count($sheetOrder) && !in_array($item->sheet_id, $sheetOrder, true)) {
+                    array_splice($sheetOrder, $targetIdx, 0, [$item->sheet_id]);
+                }
+            } elseif ($kind === 'delete_sheet' && is_string($item->sheet_id ?? null)) {
+                $sheetOrder = array_values(array_filter($sheetOrder, static fn (string $sid): bool => $sid !== $item->sheet_id));
+                $tables = array_values(array_filter($tables, static fn (stdClass $t): bool => ($t->sheet_id ?? null) !== $item->sheet_id));
             }
             $commands[] = $item;
         }
@@ -156,7 +237,7 @@ final readonly class WorkbookCommandCandidate
             $table->rows = $rows;
         }
 
-        return [$commands, $tables];
+        return [$commands, $tables, $sheetOrder];
     }
 
     /**

@@ -94,6 +94,47 @@ export class TableBindings {
         }
     }
 
+    /**
+     * Effect of deleting `count` sheet rows starting at one-based `row`.
+     * Deleted data rows leave active members; remaining rows below shift up.
+     */
+    deleteRows(sheetId: string, row: number, count: number): void {
+        const delEnd = row + count - 1;
+        for (const table of this.#tables.filter(candidate => candidate.sheet_id === sheetId)) {
+            if (table.header_row >= row && table.header_row <= delEnd) {
+                throw new WireError('unknown_target', `cannot delete header row of ${table.table_id}`, {table_id: table.table_id});
+            }
+            if (table.header_row > delEnd) table.header_row -= count;
+            table.rows = table.rows
+                .filter(binding => binding.row < row || binding.row > delEnd)
+                .map(binding => (binding.row > delEnd ? {...binding, row: binding.row - count} : binding));
+        }
+    }
+
+    /** Effect of inserting `count` sheet columns before one-based `column`. */
+    insertColumns(sheetId: string, column: number, count: number): void {
+        for (const table of this.#tables.filter(candidate => candidate.sheet_id === sheetId)) {
+            for (const binding of table.columns) if (binding.column >= column) binding.column += count;
+        }
+    }
+
+    /** Effect of deleting `count` sheet columns starting at one-based `column`. */
+    deleteColumns(sheetId: string, column: number, count: number): void {
+        const delEnd = column + count - 1;
+        for (const table of this.#tables.filter(candidate => candidate.sheet_id === sheetId)) {
+            table.columns = table.columns
+                .filter(binding => binding.column < column || binding.column > delEnd)
+                .map(binding => (binding.column > delEnd ? {...binding, column: binding.column - count} : binding));
+        }
+    }
+
+    /** Removes all table bindings on a deleted sheet. */
+    deleteSheet(sheetId: string): void {
+        for (let i = this.#tables.length - 1; i >= 0; i--) {
+            if (this.#tables[i].sheet_id === sheetId) this.#tables.splice(i, 1);
+        }
+    }
+
     toJSON(): TableBinding[] {
         return [...this.#tables]
             .sort((a, b) => (a.table_id < b.table_id ? -1 : a.table_id > b.table_id ? 1 : 0))

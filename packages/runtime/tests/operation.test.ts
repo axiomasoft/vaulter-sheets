@@ -216,3 +216,130 @@ test('save() sorts native.resources by name then id', () => {
         session.dispose();
     }
 });
+
+test('executes set_boolean, structural row/column/sheet ops, format, merge/unmerge, and freeze in FORCED mode', async () => {
+    const input = request('apply');
+    const wb = input.workbook as JsonObject;
+    (wb.native as JsonObject).locale = 'ruRU';
+    const sheets = (wb.native as JsonObject).sheets as JsonObject;
+    (sheets.detail as JsonObject).cellData = {
+        '0': {'0': {t: 1, v: 'Flag'}, '1': {t: 1, v: 'X'}, '2': {t: 1, v: 'Y'}},
+        '1': {'0': {t: 3, v: 0}, '1': {t: 2, v: 10}, '2': {t: 2, v: 20}},
+        '2': {'0': {t: 3, v: 1}, '1': {t: 2, v: 30}, '2': {t: 2, v: 40}},
+    };
+    wb.tables = [{
+        table_id: 't1', sheet_id: 'detail', header_row: 1,
+        columns: [{column_id: 'flag', column: 1}, {column_id: 'x', column: 2}, {column_id: 'y', column: 3}],
+        rows: [{row_id: 'r1', row: 2}, {row_id: 'r2', row: 3}],
+    }];
+    (input.base as JsonObject).sha256 = sha256Canonical(wb);
+    input.commands = [
+        {kind: 'set_boolean', sheet_id: 'detail', row: 2, column: 1, expected: {boolean: false}, value: true},
+        {kind: 'set_formula', sheet_id: 'detail', row: 2, column: 4, expected: null, formula: '=AND(A2,B2=10)'},
+        {kind: 'insert_column_before', sheet_id: 'detail', column: 2, count: 1},
+        {kind: 'delete_column', sheet_id: 'detail', column: 2, count: 1},
+        {kind: 'delete_row', sheet_id: 'detail', row: 3, count: 1},
+        {kind: 'set_format', sheet_id: 'detail', start_row: 1, start_column: 1, end_row: 2, end_column: 2, format: {
+            font: {bold: true, italic: true, size: 12, color: '#112233'},
+            fill: '#EEEEEE',
+            borders: {all: {style: 'thin', color: '#000000'}},
+            alignment: {horizontal: 'right', vertical: 'middle', wrap: true},
+            numFmt: '#,##0.00',
+        }},
+        {kind: 'merge_cells', sheet_id: 'detail', start_row: 4, start_column: 1, end_row: 5, end_column: 2},
+        {kind: 'unmerge_cells', sheet_id: 'detail', start_row: 4, start_column: 1, end_row: 5, end_column: 2},
+        {kind: 'set_freeze', sheet_id: 'detail', row_count: 1, column_count: 1},
+        {kind: 'add_sheet', sheet_id: 'extra', name: 'Extra', index: 1, row_count: 20, column_count: 8},
+        {kind: 'rename_sheet', sheet_id: 'extra', name: 'ExtraRenamed', expected_name: 'Extra'},
+        {kind: 'delete_sheet', sheet_id: 'extra'},
+    ];
+    const res = await processFrame(Buffer.from(JSON.stringify(input) + '\n'));
+    assert.equal(res.ok, true, JSON.stringify(res));
+    if (res.ok && res.operation === 'apply') {
+        assert.equal(res.workbook.native.locale, 'ruRU');
+        const boolCheck = res.checks.cells.find(c => c.sheet_id === 'detail' && c.a1 === 'A2');
+        const formulaCheck = res.checks.cells.find(c => c.sheet_id === 'detail' && c.a1 === 'D2');
+        assert.equal(boolCheck?.value, true);
+        assert.equal(formulaCheck?.value, true);
+        assert.deepEqual(res.workbook.tables[0].rows, [{row_id: 'r1', row: 2}]);
+        const detailOut = (res.workbook.native.sheets as JsonObject).detail as JsonObject;
+        assert.deepEqual(detailOut.freeze, {startRow: 1, startColumn: 1, ySplit: 1, xSplit: 1});
+        assert.deepEqual(detailOut.mergeData, []);
+    }
+});
+
+test('fill_formula supports add, multiply, divide, sum, average, if and safe template while rejecting unsafe templates', async () => {
+    const baseReq = request('scope-changed');
+    const wb = baseReq.workbook as JsonObject;
+    const expenses = ((wb.native as JsonObject).sheets as JsonObject).expenses as JsonObject;
+    expenses.cellData = {
+        '0': {'0': {t: 1, v: 'Item'}, '1': {t: 2, v: 1}, '2': {t: 2, v: 2}, '3': {t: 2, v: 3}},
+        '1': {'0': {t: 1, v: 'Tel'}, '1': {t: 2, v: 10}, '2': {t: 2, v: 20}},
+        '2': {'0': {t: 1, v: 'Trv'}, '1': {t: 2, v: 5}, '2': {t: 2, v: 15}},
+    };
+    wb.tables = [{
+        table_id: 'costs', sheet_id: 'expenses', header_row: 1,
+        columns: [
+            {column_id: 'plan', column: 2},
+            {column_id: 'actual', column: 3},
+            {column_id: 'delta', column: 4},
+        ],
+        rows: [{row_id: 'r1', row: 2}, {row_id: 'r2', row: 3}],
+    }];
+    (baseReq.base as JsonObject).sha256 = sha256Canonical(wb);
+
+    for (const [expression, expectedValues] of [
+        [{op: 'add', left_column_id: 'actual', right_column_id: 'plan'}, [30, 20]],
+        [{op: 'multiply', left_column_id: 'actual', right_column_id: 'plan'}, [200, 75]],
+        [{op: 'divide', left_column_id: 'actual', right_column_id: 'plan'}, [2, 3]],
+        [{op: 'sum', column_ids: ['plan', 'actual']}, [30, 20]],
+        [{op: 'average', column_ids: ['plan', 'actual']}, [15, 10]],
+        [{op: 'if', condition: {left_column_id: 'actual', comparator: '>', right_value: 18}, then_column_id: 'actual', else_value: 0}, [20, 0]],
+        [{op: 'template', template: '=({a}+{b})*2', params: {a: 'plan', b: 'actual'}}, [60, 40]],
+    ] as const) {
+        const req = JSON.parse(JSON.stringify(baseReq));
+        req.commands = [{
+            kind: 'fill_formula', sheet_id: 'expenses', table_id: 'costs', scope: 'fixed_members',
+            row_ids: ['r1', 'r2'], destination_column_id: 'delta', expression, expected_destination: [null, null],
+        }];
+        const res = await processFrame(Buffer.from(JSON.stringify(req) + '\n'));
+        assert.equal(res.ok, true, JSON.stringify(res));
+        if (res.ok && res.operation === 'apply') {
+            assert.deepEqual(res.checks.cells.map(c => c.value), expectedValues);
+        }
+    }
+
+    for (const badTemplate of ['=A2+1', '=WEBSERVICE("https://x")', '={missing}+1']) {
+        const badReq = JSON.parse(JSON.stringify(baseReq));
+        badReq.commands = [{
+            kind: 'fill_formula', sheet_id: 'expenses', table_id: 'costs', scope: 'fixed_members',
+            row_ids: ['r1'], destination_column_id: 'delta',
+            expression: {op: 'template', template: badTemplate, params: {a: 'plan'}},
+            expected_destination: [null],
+        }];
+        assert.throws(() => decodeRequest(badReq), {code: 'invalid_message'});
+    }
+});
+
+test('shifts value-based CF ranges on structural ops, allows untouched-sheet CF, and preserves SHEET_HYPER_LINK_PLUGIN', async () => {
+    const input = request('apply');
+    const wb = input.workbook as JsonObject;
+    (wb.native as JsonObject).resources = [
+        {name: 'SHEET_CONDITIONAL_FORMATTING_PLUGIN', data: JSON.stringify({
+            detail: [{rule: {type: 'highlightCell', subType: 'number', operator: 'greaterThan', value: 5}, ranges: [{startRow: 1, startColumn: 0, endRow: 3, endColumn: 1, rangeType: 0}], cfId: 'cf1', stopIfTrue: false}],
+        })},
+        {name: 'SHEET_HYPER_LINK_PLUGIN', data: '{}'},
+    ];
+    (input.base as JsonObject).sha256 = sha256Canonical(wb);
+    input.commands = [{kind: 'insert_row_before', sheet_id: 'detail', row: 2, count: 1}];
+    const res = await processFrame(Buffer.from(JSON.stringify(input) + '\n'));
+    assert.equal(res.ok, true, JSON.stringify(res));
+    if (res.ok && res.operation === 'apply') {
+        const resList = res.workbook.native.resources as JsonObject[];
+        const cf = resList.find(r => r.name === 'SHEET_CONDITIONAL_FORMATTING_PLUGIN');
+        const parsed = JSON.parse(String(cf?.data));
+        assert.equal(parsed.detail[0].ranges[0].startRow, 2);
+        assert.equal(parsed.detail[0].ranges[0].endRow, 4);
+        assert.ok(resList.some(r => r.name === 'SHEET_HYPER_LINK_PLUGIN'));
+    }
+});

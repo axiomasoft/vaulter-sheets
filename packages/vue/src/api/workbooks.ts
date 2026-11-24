@@ -5,6 +5,7 @@ interface CellTarget { sheet_id: string; row: number; column: number }
 export type Command =
   | (CellTarget & {kind: 'set_number'; expected: CellContent; value: number})
   | (CellTarget & {kind: 'set_text'; expected: CellContent; value: string})
+  | (CellTarget & {kind: 'set_boolean'; expected: CellContent; value: boolean})
   | (CellTarget & {kind: 'set_formula'; expected: CellContent; formula: string})
   | (CellTarget & {kind: 'set_values'; expected: CellContent[][]; values: Literal[][]})
   | {kind: 'insert_row_before'; sheet_id: string; row: number; count: number}

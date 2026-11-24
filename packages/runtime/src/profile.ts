@@ -63,6 +63,7 @@ export const PROFILE_RESOURCES: readonly string[] = [
     'SHEET_DATA_VALIDATION_PLUGIN',
     'SHEET_DEFINED_NAME_PLUGIN',
     'SHEET_FILTER_PLUGIN',
+    'SHEET_HYPER_LINK_PLUGIN',
     'SHEET_RANGE_PROTECTION_PLUGIN',
     'SHEET_RANGE_THEME_MODEL_PLUGIN',
     'SHEET_WORKSHEET_PROTECTION_PLUGIN',
@@ -75,9 +76,20 @@ export const CONDITIONAL_FORMATTING_RESOURCE = 'SHEET_CONDITIONAL_FORMATTING_PLU
 export const SUPPORTED_COMMANDS = [
     'set_number',
     'set_text',
+    'set_boolean',
     'set_formula',
     'set_values',
     'insert_row_before',
+    'delete_row',
+    'insert_column_before',
+    'delete_column',
+    'add_sheet',
+    'rename_sheet',
+    'delete_sheet',
+    'set_format',
+    'merge_cells',
+    'unmerge_cells',
+    'set_freeze',
     'fill_formula',
 ] as const;
 
@@ -87,7 +99,12 @@ export type SupportedCommand = (typeof SUPPORTED_COMMANDS)[number];
 const PERSISTING_COMMANDS: ReadonlySet<string> = new Set(SUPPORTED_COMMANDS);
 
 /** Commands that move coordinates. Conditional formatting ranges do not follow them on 1.5.2. */
-const STRUCTURAL_COMMANDS: ReadonlySet<string> = new Set(['insert_row_before']);
+const STRUCTURAL_COMMANDS: ReadonlySet<string> = new Set([
+    'insert_row_before',
+    'delete_row',
+    'insert_column_before',
+    'delete_column',
+]);
 
 export const DEFAULT_LIMITS = {
     max_commands: 64,
