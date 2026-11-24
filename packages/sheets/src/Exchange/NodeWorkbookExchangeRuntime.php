@@ -36,7 +36,7 @@ final class NodeWorkbookExchangeRuntime implements WorkbookExchangeRuntime
         $timeout = is_int($timeoutRaw) || is_float($timeoutRaw) ? (float) $timeoutRaw : 25.0;
 
         $process = new Process($command, env: ['SHEETS_EXCHANGE_FORMATS' => implode(',', $formats)]);
-        $process->setInput(ExchangeWire::request($request));
+        $process->setInput(ExchangeWire::streamRequest($request));
         $process->setTimeout($timeout);
         $stdout = '';
         $process->disableOutput();

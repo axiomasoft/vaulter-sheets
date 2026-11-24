@@ -288,26 +288,22 @@ test('round-trips XLSX list formulas separately from inline options', async () =
     assert.deepEqual(readFormulas((await importXlsx(exported.bytes, {})).workbook), readFormulas(workbook));
 });
 
-test('reports worksheet hyperlinks and refuses strict publication with the loss report', async () => {
+test('round-trips worksheet hyperlinks and preserves SHEET_HYPER_LINK_PLUGIN without losses', async () => {
     const rels = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
     const input = makeMinimalXlsx({
         'xl/worksheets/_rels/sheet1.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
             `<Relationship Id="rId1" Type="${rels}/hyperlink" Target="https://example.com/" TargetMode="External"/></Relationships>`,
     }, '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"' +
-        ` xmlns:r="${rels}"><sheetData/><hyperlinks><hyperlink ref="A1" r:id="rId1"/></hyperlinks></worksheet>`);
-    const {report} = await importXlsx(input, {});
-    assert.ok(report.losses.some(loss => loss.target === 'Sheet1!A1' && loss.property === 'hyperlink' && loss.status === 'lost'));
-    await assert.rejects(() => importXlsx(input, {strict_profile: true}), {
-        code: 'unsupported_content',
-        detail: {
-            reason: 'strict_profile_loss', loss_count: 1,
-            report: {
-                format: 'xlsx', operation: 'import', source_sha256: report.source_sha256, date_system: '1900',
-                sheets: report.sheets, defined_names: report.defined_names, losses: report.losses,
-                diagnostics: report.diagnostics, unknown_parts: [], editable_published: false,
-            },
-        },
-    });
+        ` xmlns:r="${rels}"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Example</t></is></c></row></sheetData><hyperlinks><hyperlink ref="A1" r:id="rId1" tooltip="Visit"/></hyperlinks></worksheet>`);
+    const {workbook, report} = await importXlsx(input, {strict_profile: true});
+    assert.equal(report.losses.some(loss => loss.property === 'hyperlink'), false);
+    const resources = workbook.native.resources as JsonObject[];
+    assert.ok(resources.some(r => r.name === 'SHEET_HYPER_LINK_PLUGIN'));
+    const exported = await exportXlsx(workbook, {});
+    const reimported = await importXlsx(exported.bytes, {strict_profile: true});
+    const cells = (reimported.workbook.native.sheets as Record<string, JsonObject>).sheet_1.cellData as Record<string, Record<string, JsonObject>>;
+    const customRanges = ((cells['0']['0'].p as JsonObject).body as JsonObject).customRanges as JsonObject[];
+    assert.equal((customRanges[0].properties as JsonObject).url, 'https://example.com/');
 });
 
 test('keeps elapsed and time-only values separate from calendar dates in the 1904 system', async () => {
@@ -668,4 +664,82 @@ test('exchange worker and HTTP handler enforce format gates and SHA-256 verifica
     } finally {
         enabledHandler.close();
     }
+});
+
+test('round-trips theme1.xml colors, rich-text runs, filterColumns, extended CF, Print_Area, sheetProtection, and tables', async () => {
+    const ns = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
+    const rels = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+    const themeXml =
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Custom">' +
+        '<a:themeElements><a:clrScheme name="Custom">' +
+        '<a:dk1><a:srgbClr val="111111"/></a:dk1><a:lt1><a:srgbClr val="FAFAFA"/></a:lt1>' +
+        '<a:dk2><a:srgbClr val="222222"/></a:dk2><a:lt2><a:srgbClr val="EEEEEE"/></a:lt2>' +
+        '<a:accent1><a:srgbClr val="FF3366"/></a:accent1>' +
+        '</a:clrScheme></a:themeElements></a:theme>';
+    const stylesXml =
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="${ns}">` +
+        '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><color theme="4"/></font></fonts>' +
+        '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>' +
+        '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
+        '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" applyFont="1"/></cellXfs>' +
+        '<dxfs count="1"><dxf><font><b/><color rgb="FF00AA00"/></font></dxf></dxfs></styleSheet>';
+    const sstXml =
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><sst xmlns="${ns}" count="1" uniqueCount="1">` +
+        '<si><r><rPr><b/></rPr><t>Bold</t></r><r><rPr><i/></rPr><t>Italic</t></r></si></sst>';
+    const tableXml =
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><table xmlns="${ns}" id="1" name="SalesTable" displayName="SalesTable" ref="A1:B2">` +
+        '<tableColumns count="2"><tableColumn id="1" name="Item"/><tableColumn id="2" name="Amount"/></tableColumns></table>';
+    const sheetXml =
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="${ns}" xmlns:r="${rels}">` +
+        '<sheetData>' +
+        '<row r="1"><c r="A1" t="s" s="1"><v>0</v></c><c r="B1"><v>10</v></c></row>' +
+        '<row r="2"><c r="A2"><v>20</v></c><c r="B2"><v>30</v></c></row>' +
+        '</sheetData>' +
+        '<sheetProtection sheet="1" sort="0"/>' +
+        '<autoFilter ref="A1:B2"><filterColumn colId="1"><filters><filter val="10"/></filters></filterColumn></autoFilter>' +
+        '<conditionalFormatting sqref="B1:B2">' +
+        '<cfRule type="colorScale" priority="1"><colorScale><cfvo type="min"/><cfvo type="max"/><color rgb="FFFF0000"/><color rgb="FF00FF00"/></colorScale></cfRule>' +
+        '<cfRule type="dataBar" priority="2"><dataBar><cfvo type="min"/><cfvo type="max"/><color rgb="FF336699"/></dataBar></cfRule>' +
+        '<cfRule type="top10" dxfId="0" priority="3" rank="1"/><cfRule type="aboveAverage" dxfId="0" priority="4"/><cfRule type="uniqueValues" dxfId="0" priority="5"/>' +
+        '</conditionalFormatting>' +
+        '<tableParts count="1"><tablePart r:id="rId1"/></tableParts></worksheet>';
+    const sheetRels =
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        `<Relationship Id="rId1" Type="${rels}/table" Target="../tables/table1.xml"/></Relationships>`;
+    const wbXml =
+        `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${ns}" xmlns:r="${rels}">` +
+        '<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>' +
+        '<definedNames><definedName name="_xlnm.Print_Area" localSheetId="0">Sheet1!$A$1:$B$2</definedName></definedNames></workbook>';
+    const input = makeMinimalXlsx({
+        'xl/workbook.xml': wbXml,
+        'xl/theme/theme1.xml': themeXml,
+        'xl/styles.xml': stylesXml,
+        'xl/sharedStrings.xml': sstXml,
+        'xl/tables/table1.xml': tableXml,
+        'xl/worksheets/_rels/sheet1.xml.rels': sheetRels,
+    }, sheetXml);
+
+    const {workbook, report} = await importXlsx(input, {strict_profile: true});
+    assert.equal(report.losses.length, 0);
+    assert.equal(workbook.tables.length, 1);
+    assert.equal(workbook.tables[0].columns[0].column_id, 'Item');
+    const styles = workbook.native.styles as Record<string, JsonObject>;
+    const cellA1 = ((workbook.native.sheets as Record<string, JsonObject>).sheet_1.cellData as Record<string, Record<string, JsonObject>>)['0']['0'];
+    assert.equal((styles[String(cellA1.s)].cl as JsonObject).rgb, '#ff3366');
+    assert.equal((((cellA1.p as JsonObject).body as JsonObject).textRuns as JsonObject[]).length, 2);
+
+    const exported = await exportXlsx(workbook, {});
+    assert.equal(exported.report.losses.length, 0);
+    const reimported = await importXlsx(exported.bytes, {strict_profile: true});
+    assert.equal(reimported.workbook.tables.length, 1);
+});
+
+test('streams > 5 MiB XLSX payload via VX01 without base64 frame limit failure', async () => {
+    const bigPayload = Buffer.alloc(5 * 1024 * 1024 + 512 * 1024, 0x41);
+    const {encodeExchangeStreamFrame, decodeExchangeStreamFrame} = await import('../src/exchange/worker.ts');
+    const frame = encodeExchangeStreamFrame({version: 1, request_id: 'big_1', operation: 'import', format: 'xlsx', profile_id: 'univer-oss-basic-1'}, bigPayload);
+    assert.ok(frame.length > 5 * 1024 * 1024);
+    const decoded = decodeExchangeStreamFrame(frame);
+    assert.equal(decoded.payload.length, bigPayload.length);
 });

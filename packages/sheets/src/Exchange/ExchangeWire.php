@@ -22,22 +22,67 @@ final class ExchangeWire
         return $line;
     }
 
+    public static function streamRequest(stdClass $request): string
+    {
+        $meta = clone $request;
+        $payload = '';
+        if (isset($meta->input_b64) && is_string($meta->input_b64) && $meta->input_b64 !== '') {
+            $decoded = base64_decode($meta->input_b64, true);
+            if ($decoded === false) {
+                throw new WorkbookProblem('invalid_message', 400);
+            }
+            $payload = $decoded;
+            $meta->input_b64 = '';
+        }
+        $metaJson = CanonicalJson::encode($meta);
+        $frame = 'VX01'.pack('N', strlen($metaJson)).$metaJson.$payload;
+        if (strlen($frame) > self::limit()) {
+            throw new WorkbookProblem('limit_exceeded', 413);
+        }
+
+        return $frame;
+    }
+
     public static function limit(): int
     {
-        $limit = config('vaulter-sheets.max_message_bytes', 8 * 1024 * 1024);
+        $limit = config('vaulter-sheets.max_message_bytes', 64 * 1024 * 1024);
 
-        return is_int($limit) && $limit > 0 ? $limit : 8 * 1024 * 1024;
+        return is_int($limit) && $limit > 0 ? $limit : 64 * 1024 * 1024;
     }
 
     public static function response(string $line, stdClass $request): stdClass
     {
-        if (strlen($line) > self::limit() || preg_match('/^[^\r\n]+\n$/D', $line) !== 1) {
+        if (strlen($line) > self::limit()) {
             throw new WorkbookProblem('runtime_failed', 503);
         }
-        try {
-            $response = StrictJson::decode(substr($line, 0, -1));
-        } catch (WireException) {
-            throw new WorkbookProblem('runtime_failed', 503);
+        if (str_starts_with($line, 'VX01')) {
+            if (strlen($line) < 8) {
+                throw new WorkbookProblem('runtime_failed', 503);
+            }
+            $unpacked = unpack('Nlen', substr($line, 4, 4));
+            $metaLen = is_array($unpacked) && isset($unpacked['len']) && is_int($unpacked['len']) ? $unpacked['len'] : 0;
+            if ($metaLen < 2 || 8 + $metaLen > strlen($line)) {
+                throw new WorkbookProblem('runtime_failed', 503);
+            }
+            $metaJson = substr($line, 8, $metaLen);
+            $payload = substr($line, 8 + $metaLen);
+            try {
+                $response = StrictJson::decode($metaJson);
+            } catch (WireException) {
+                throw new WorkbookProblem('runtime_failed', 503);
+            }
+            if ($response instanceof stdClass && $payload !== '') {
+                $response->output_b64 = base64_encode($payload);
+            }
+        } else {
+            if (preg_match('/^[^\r\n]+\n$/D', $line) !== 1) {
+                throw new WorkbookProblem('runtime_failed', 503);
+            }
+            try {
+                $response = StrictJson::decode(substr($line, 0, -1));
+            } catch (WireException) {
+                throw new WorkbookProblem('runtime_failed', 503);
+            }
         }
         $reqId = is_string($request->request_id ?? null) ? $request->request_id : '';
         if (!$response instanceof stdClass || ($response->version ?? null) !== 1

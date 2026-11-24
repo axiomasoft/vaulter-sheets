@@ -15,7 +15,39 @@ import {
 } from './types.ts';
 import {exportXlsx, importXlsx} from './xlsx.ts';
 
-export const MAX_EXCHANGE_BINARY_BYTES = 5 * 1024 * 1024;
+export function getMaxExchangeBinaryBytes(): number {
+    const raw = Number(process.env.SHEETS_EXCHANGE_MAX_BYTES ?? 32 * 1024 * 1024);
+    if (!Number.isFinite(raw) || raw < 1024 * 1024) return 32 * 1024 * 1024;
+    return Math.min(Math.trunc(raw), 128 * 1024 * 1024);
+}
+
+export const MAX_EXCHANGE_BINARY_BYTES = getMaxExchangeBinaryBytes();
+export const EXCHANGE_STREAM_MAGIC = Buffer.from('VX01', 'ascii');
+export const EXCHANGE_STREAM_CONTENT_TYPE = 'application/vnd.vaulter.exchange-stream';
+
+export function encodeExchangeStreamFrame(meta: unknown, payload: Buffer = Buffer.alloc(0)): Buffer {
+    const metaBuf = Buffer.from(JSON.stringify(meta), 'utf8');
+    const header = Buffer.alloc(8);
+    EXCHANGE_STREAM_MAGIC.copy(header, 0);
+    header.writeUInt32BE(metaBuf.length, 4);
+    return Buffer.concat([header, metaBuf, payload]);
+}
+
+export function decodeExchangeStreamFrame(frame: Buffer, maxTotalBytes: number = getMaxExchangeBinaryBytes() + 8 * 1024 * 1024): {meta: Json; payload: Buffer} {
+    if (frame.length < 8 || !frame.subarray(0, 4).equals(EXCHANGE_STREAM_MAGIC)) {
+        throw new ExchangeError('invalid_message', 'invalid VX01 exchange stream header');
+    }
+    if (frame.length > maxTotalBytes) {
+        throw new ExchangeError('limit_exceeded', `exchange stream exceeds ${maxTotalBytes} bytes`);
+    }
+    const metaLen = frame.readUInt32BE(4);
+    if (metaLen < 2 || 8 + metaLen > frame.length) {
+        throw new ExchangeError('invalid_message', 'invalid VX01 metadata length');
+    }
+    const meta = parseStrict(frame.subarray(8, 8 + metaLen).toString('utf8'));
+    const payload = frame.subarray(8 + metaLen);
+    return {meta, payload};
+}
 
 export function parseEnabledExchangeFormats(raw: string | undefined): ExchangeFormat[] {
     if (!raw) return [];
@@ -80,8 +112,9 @@ function decodeBase64Strict(b64: string): Buffer {
         throw new ExchangeError('invalid_message', 'input_b64 is not valid base64');
     }
     const out = Buffer.from(b64, 'base64');
-    if (out.length > MAX_EXCHANGE_BINARY_BYTES) {
-        throw new ExchangeError('limit_exceeded', `decoded exchange input exceeds ${MAX_EXCHANGE_BINARY_BYTES} bytes`);
+    const maxBinBytes = getMaxExchangeBinaryBytes();
+    if (out.length > maxBinBytes) {
+        throw new ExchangeError('limit_exceeded', `decoded exchange input exceeds ${maxBinBytes} bytes`);
     }
     return out;
 }
@@ -143,11 +176,13 @@ export async function runExchange(message: Json, enabledFormats: readonly Exchan
     const exported = request.format === 'csv'
         ? await exportCsv(workbook, request.options)
         : await exportXlsx(workbook, request.options);
-    if (exported.bytes.length > MAX_EXCHANGE_BINARY_BYTES) {
-        throw new ExchangeError('limit_exceeded', `exported ${request.format} exceeds ${MAX_EXCHANGE_BINARY_BYTES} bytes`);
+    const maxBinBytes = getMaxExchangeBinaryBytes();
+    if (exported.bytes.length > maxBinBytes) {
+        throw new ExchangeError('limit_exceeded', `exported ${request.format} exceeds ${maxBinBytes} bytes`);
     }
     const outputB64 = exported.bytes.toString('base64');
-    if (Buffer.byteLength(outputB64) > MAX_MESSAGE_BYTES - 65_536) {
+    const maxWireBytes = Math.max(MAX_MESSAGE_BYTES, maxBinBytes * 2 + 2 * 1024 * 1024);
+    if (Buffer.byteLength(outputB64) > maxWireBytes - 65_536) {
         throw new ExchangeError('limit_exceeded', 'encoded exchange response exceeds wire message budget');
     }
     return {
@@ -165,7 +200,20 @@ export async function runExchange(message: Json, enabledFormats: readonly Exchan
 export async function processExchangeFrame(bytes: Uint8Array, enabledFormats: readonly ExchangeFormat[]): Promise<ExchangeResponse> {
     let requestId: string | null = null;
     try {
-        if (bytes.length > MAX_MESSAGE_BYTES + 1) {
+        const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        if (buf.length >= 4 && buf.subarray(0, 4).equals(EXCHANGE_STREAM_MAGIC)) {
+            const {meta, payload} = decodeExchangeStreamFrame(buf);
+            if (meta && typeof meta === 'object' && !Array.isArray(meta) && typeof meta.request_id === 'string') {
+                requestId = meta.request_id;
+            }
+            const metaObj = (meta && typeof meta === 'object' && !Array.isArray(meta)) ? {...meta} as JsonObject : {};
+            if (metaObj.input_b64 === undefined || metaObj.input_b64 === '') {
+                metaObj.input_b64 = payload.toString('base64');
+            }
+            return await runExchange(metaObj, enabledFormats);
+        }
+        const maxJsonBytes = Math.max(MAX_MESSAGE_BYTES, getMaxExchangeBinaryBytes() * 2 + 1024 * 1024);
+        if (bytes.length > maxJsonBytes + 1) {
             throw new ExchangeError('limit_exceeded', 'exchange message exceeds byte limit');
         }
         if (bytes.at(-1) !== 10) {
@@ -297,7 +345,8 @@ export class ExchangePool {
 
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
     const bytes = JSON.stringify(body) + '\n';
-    if (Buffer.byteLength(bytes) > MAX_MESSAGE_BYTES + 1) {
+    const maxWireBytes = Math.max(MAX_MESSAGE_BYTES, getMaxExchangeBinaryBytes() * 2 + 2 * 1024 * 1024);
+    if (Buffer.byteLength(bytes) > maxWireBytes + 1) {
         response.writeHead(413, {'Content-Type': 'application/json', 'Cache-Control': 'no-store'});
         response.end('{"error":"limit_exceeded"}\n');
         return;
@@ -307,11 +356,12 @@ function sendJson(response: ServerResponse, status: number, body: unknown): void
 }
 
 async function readBounded(request: IncomingMessage): Promise<Buffer> {
+    const maxReadBytes = Math.max(MAX_MESSAGE_BYTES, getMaxExchangeBinaryBytes() + 8 * 1024 * 1024);
     const chunks: Buffer[] = [];
     let length = 0;
     for await (const chunk of request.iterator({destroyOnReturn: false}) as AsyncIterable<Buffer>) {
         length += chunk.length;
-        if (length > MAX_MESSAGE_BYTES + 1) {
+        if (length > maxReadBytes + 1) {
             request.resume();
             throw new ExchangeTransportError(413);
         }
@@ -324,6 +374,39 @@ export type ExchangeHttpHandler = ((request: IncomingMessage, response: ServerRe
     close: () => void;
 };
 
+function parseMultipartExchange(body: Buffer, contentType: string): Buffer {
+    const match = /boundary=([^;\s]+)/i.exec(contentType);
+    if (!match) throw new ExchangeError('invalid_message', 'missing multipart boundary');
+    const boundary = match[1].replace(/^"|"$/g, '');
+    const delim = Buffer.from(`--${boundary}`);
+    let pos = body.indexOf(delim);
+    let metaJson: string | null = null;
+    let filePayload: Buffer = Buffer.alloc(0);
+    while (pos !== -1) {
+        const partStart = pos + delim.length;
+        if (body.subarray(partStart, partStart + 2).equals(Buffer.from('--'))) break;
+        const headerStart = body[partStart] === 13 && body[partStart + 1] === 10 ? partStart + 2 : partStart;
+        const headerEnd = body.indexOf(Buffer.from('\r\n\r\n'), headerStart);
+        if (headerEnd === -1) break;
+        const headers = body.subarray(headerStart, headerEnd).toString('utf8');
+        const nextDelim = body.indexOf(delim, headerEnd + 4);
+        if (nextDelim === -1) break;
+        let partBody = body.subarray(headerEnd + 4, nextDelim);
+        if (partBody.length >= 2 && partBody[partBody.length - 2] === 13 && partBody[partBody.length - 1] === 10) {
+            partBody = partBody.subarray(0, partBody.length - 2);
+        }
+        const nameMatch = /name="([^"]+)"/i.exec(headers);
+        if (nameMatch?.[1] === 'meta') {
+            metaJson = partBody.toString('utf8');
+        } else if (nameMatch?.[1] === 'file') {
+            filePayload = partBody;
+        }
+        pos = nextDelim;
+    }
+    if (!metaJson) throw new ExchangeError('invalid_message', 'missing multipart meta part');
+    return encodeExchangeStreamFrame(parseStrict(metaJson), filePayload);
+}
+
 export function createExchangeHttpHandler(enabledFormats: readonly ExchangeFormat[]): ExchangeHttpHandler {
     const pool = enabledFormats.length > 0 ? new ExchangePool() : null;
     const handler = async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
@@ -334,7 +417,13 @@ export function createExchangeHttpHandler(enabledFormats: readonly ExchangeForma
         }
         try {
             const start = performance.now();
-            const frame = await readBounded(request);
+            const headers = request.headers ?? {};
+            const contentType = String(headers['content-type'] ?? '').toLowerCase();
+            const accept = String(headers.accept ?? '').toLowerCase();
+            const rawBody = await readBounded(request);
+            const frame = contentType.includes('multipart/form-data')
+                ? parseMultipartExchange(rawBody, contentType)
+                : rawBody;
             const result = await pool.run(frame, enabledFormats);
             process.stderr.write(JSON.stringify({
                 request_id: result.request_id,
@@ -343,11 +432,23 @@ export function createExchangeHttpHandler(enabledFormats: readonly ExchangeForma
                 bytes: frame.length,
                 result: result.ok ? `${result.operation}:${result.format}` : result.error.code,
             }) + '\n');
+            if (contentType.includes(EXCHANGE_STREAM_CONTENT_TYPE) || accept.includes(EXCHANGE_STREAM_CONTENT_TYPE)) {
+                let payload = Buffer.alloc(0);
+                let outMeta: ExchangeResponse = result;
+                if (result.ok && typeof result.output_b64 === 'string' && result.output_b64 !== '') {
+                    payload = Buffer.from(result.output_b64, 'base64');
+                    outMeta = {...result, output_b64: ''};
+                }
+                const outBuf = encodeExchangeStreamFrame(outMeta, payload);
+                response.writeHead(200, {'Content-Type': EXCHANGE_STREAM_CONTENT_TYPE, 'Cache-Control': 'no-store'});
+                response.end(outBuf);
+                return;
+            }
             sendJson(response, 200, result);
         } catch (error) {
-            const status = error instanceof ExchangeTransportError ? error.status : 503;
+            const status = error instanceof ExchangeTransportError ? error.status : error instanceof ExchangeError ? 400 : 503;
             sendJson(response, status, {
-                error: status === 413 ? 'limit_exceeded' : status === 504 ? 'calculation_timeout' : 'runtime_unavailable',
+                error: status === 413 ? 'limit_exceeded' : status === 504 ? 'calculation_timeout' : error instanceof ExchangeError ? error.code : 'runtime_unavailable',
             });
         }
     };

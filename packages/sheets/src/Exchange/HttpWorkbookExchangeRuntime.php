@@ -31,10 +31,13 @@ final class HttpWorkbookExchangeRuntime implements WorkbookExchangeRuntime
 
         try {
             $response = Http::withToken($token)
-                ->withHeaders(['Accept-Encoding' => 'gzip'])
+                ->withHeaders([
+                    'Accept' => 'application/vnd.vaulter.exchange-stream',
+                    'Accept-Encoding' => 'gzip',
+                ])
                 ->withOptions(['allow_redirects' => false, 'stream' => true])
                 ->timeout($timeout)
-                ->withBody(ExchangeWire::request($request), 'application/json')
+                ->withBody(ExchangeWire::streamRequest($request), 'application/vnd.vaulter.exchange-stream')
                 ->post($url.'/v1/exchange');
             $stream = $response->toPsrResponse()->getBody();
             try {

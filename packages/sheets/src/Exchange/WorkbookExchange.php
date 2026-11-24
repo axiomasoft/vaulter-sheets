@@ -494,7 +494,7 @@ final readonly class WorkbookExchange
             throw new WorkbookProblem('permission_denied', 403);
         }
 
-        $maxBytes = $this->intConfig('vaulter-sheets.exchange.max_import_bytes', 5 * 1024 * 1024);
+        $maxBytes = $this->intConfig('vaulter-sheets.exchange.max_import_bytes', 32 * 1024 * 1024);
         $sourceBytes = '';
         try {
             while (!feof($fileStream->stream)) {
@@ -622,7 +622,7 @@ final readonly class WorkbookExchange
     ): void {
         $jobId = self::str($job->id ?? null);
         $format = self::str($job->format ?? null);
-        $maxImportBytes = $this->intConfig('vaulter-sheets.exchange.max_import_bytes', 5 * 1024 * 1024);
+        $maxImportBytes = $this->intConfig('vaulter-sheets.exchange.max_import_bytes', 32 * 1024 * 1024);
         $sourceBytes = $this->readBlobBytes(self::str($job->source_blob_id ?? null), $maxImportBytes);
 
         if ($format === 'xlsx') {
@@ -787,7 +787,7 @@ final readonly class WorkbookExchange
     ): void {
         $jobId = self::str($job->id ?? null);
         $format = self::str($job->format ?? null);
-        $maxExportBytes = $this->intConfig('vaulter-sheets.exchange.max_export_bytes', 5 * 1024 * 1024);
+        $maxExportBytes = $this->intConfig('vaulter-sheets.exchange.max_export_bytes', 32 * 1024 * 1024);
         $sourceBytes = $this->readBlobBytes(self::str($job->source_blob_id ?? null), $this->codec->maxSizeBytes());
 
         $response = $this->runtime->exchange((object) [

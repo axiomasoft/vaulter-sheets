@@ -5,6 +5,7 @@
  */
 import {assertOneBased, columnLetters, rangeCells, toA1, type CellCoord} from './coordinates.ts';
 import {UniverWorkbookSession} from './engine/univer.ts';
+import {verifyWorkbookWithIronCalc} from './engine/ironcalc.ts';
 import {DEFAULT_LIMITS, WIRE_PROFILE, PROFILE_RESOURCES, CONDITIONAL_FORMATTING_RESOURCE, SUPPORTED_COMMANDS} from './profile.ts';
 import {TableBindings} from './table-bindings.ts';
 import {
@@ -477,8 +478,11 @@ export function decodeRequest(value: Json): Request {
             if (given[key] !== undefined) limits[key] = counter(given[key], `limits.${key}`, 1);
         }
     }
+    if (raw.ironcalc_verify !== undefined && typeof raw.ironcalc_verify !== 'boolean') {
+        throw new WireError('invalid_message', 'ironcalc_verify must be a boolean');
+    }
     if (raw.operation === 'apply') {
-        only(raw, ['version', 'request_id', 'operation', 'base', 'profile_id', 'workbook', 'commands', 'limits'], 'message');
+        only(raw, ['version', 'request_id', 'operation', 'base', 'profile_id', 'workbook', 'commands', 'limits', 'ironcalc_verify'], 'message');
         const commands = array(raw.commands, 'commands');
         if (commands.length === 0) throw new WireError('invalid_message', 'apply needs at least one command');
         const max = Math.min(limits.max_commands ?? DEFAULT_LIMITS.max_commands, DEFAULT_LIMITS.max_commands);
@@ -486,7 +490,7 @@ export function decodeRequest(value: Json): Request {
         return {...common, operation: 'apply', commands: commands.map(command), limits};
     }
     if (raw.operation === 'read' || raw.operation === 'recalculate') {
-        only(raw, ['version', 'request_id', 'operation', 'base', 'profile_id', 'workbook', 'selector', 'limits'], 'message');
+        only(raw, ['version', 'request_id', 'operation', 'base', 'profile_id', 'workbook', 'selector', 'limits', 'ironcalc_verify'], 'message');
         const selector = object(raw.selector, 'selector');
         only(selector, ['ranges'], 'selector');
         const ranges = array(selector.ranges, 'selector.ranges').map((item, index) => {
@@ -878,6 +882,8 @@ function shiftCfResources(
  * widen the allow-list and observe the second, post-save line of defence.
  */
 export async function runOperation(message: Json, profile: ProfileRef = WIRE_PROFILE, resources: readonly string[] = PROFILE_RESOURCES): Promise<Response> {
+    const ironcalcVerify = process.env.SHEETS_ENGINE_IRONCALC_VERIFY === '1'
+        || (message !== null && typeof message === 'object' && !Array.isArray(message) && message.ironcalc_verify === true);
     const request = decodeRequest(message);
     const limits: Limits = {
         max_commands: Math.min(request.limits?.max_commands ?? DEFAULT_LIMITS.max_commands, DEFAULT_LIMITS.max_commands),
@@ -946,11 +952,16 @@ export async function runOperation(message: Json, profile: ProfileRef = WIRE_PRO
         const cells = request.operation === 'apply'
             ? checked.map(item => session.readback(item.sheet_id, item.coord))
             : readRanges(session, request.selector.ranges, limits.max_cells_per_command).flatMap(range => range.cells);
+        const ironcalcVerification = ironcalcVerify ? await verifyWorkbookWithIronCalc(candidate) : undefined;
         return {
             version: 1, request_id: request.request_id, ok: true, operation: request.operation,
             base_sha256: baseSha, workbook: candidate, candidate_sha256: candidateSha, changed_ranges: changed,
             calculation: {state: 'ready', source_sha256: candidateSha},
-            checks: {resources_preserved: preserved, cells},
+            checks: {
+                resources_preserved: preserved,
+                cells,
+                ...(ironcalcVerification ? {ironcalc_verification: ironcalcVerification} : {}),
+            },
         };
     } finally {
         session.dispose();

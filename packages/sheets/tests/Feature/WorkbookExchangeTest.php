@@ -691,3 +691,27 @@ it('enforces ACL isolation and re-checks download ability on export status and d
     $this->getJson($url.'/exchanges/'.$readerJob)->assertNotFound()->assertJsonPath('code', 'resource_unavailable');
     $this->getJson($url.'/exchanges/'.$readerJob.'/download')->assertNotFound()->assertJsonPath('code', 'resource_unavailable');
 });
+
+it('packs and unpacks > 5 MiB VX01 exchange frames and enforces ZipArchiveGuard::inspectStream', function (): void {
+    $payload = str_repeat('A', 5 * 1024 * 1024 + 1024);
+    $frame = \Vaulter\Sheets\Exchange\ExchangeWire::streamRequest((object) [
+        'version' => 1,
+        'request_id' => 'big_php_1',
+        'operation' => 'import',
+        'format' => 'xlsx',
+        'profile_id' => \Vaulter\Sheets\Content\WorkbookCodec::PROFILE,
+        'input_b64' => base64_encode($payload),
+        'input_sha256' => hash('sha256', $payload),
+        'options' => (object) [],
+    ]);
+    expect(str_starts_with($frame, 'VX01'))->toBeTrue();
+    expect(strlen($frame))->toBeGreaterThan(5 * 1024 * 1024);
+
+    $stream = fopen('php://temp', 'r+b');
+    expect($stream)->not->toBeFalse();
+    fwrite($stream, str_repeat('B', 2048));
+    rewind($stream);
+    expect(fn () => \Vaulter\Sheets\Exchange\ZipArchiveGuard::inspectStream($stream, 1024))
+        ->toThrow(\Vaulter\Sheets\Data\WorkbookProblem::class);
+    fclose($stream);
+});

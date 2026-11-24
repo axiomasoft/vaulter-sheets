@@ -5,7 +5,7 @@ import {SaxesParser, type SaxesTagNS} from 'saxes';
 import {columnLetters} from '../coordinates.ts';
 import {UniverWorkbookSession} from '../engine/univer.ts';
 import {WIRE_PROFILE} from '../profile.ts';
-import {sha256Canonical, type JsonObject, type WorkbookV2} from '../protocol.ts';
+import {sha256Canonical, type JsonObject, type TableBinding, type WorkbookV2} from '../protocol.ts';
 import {
     ExchangeError,
     type ExchangeDiagnostic,
@@ -78,7 +78,24 @@ const KNOWN_OOXML_PREFIXES = [
     'xl/theme/',
     'xl/calcChain.xml',
     'xl/worksheets/',
+    'xl/tables/',
 ];
+
+interface RichTextRun {
+    text: string;
+    bold?: boolean;
+    italic?: boolean;
+    underline?: boolean;
+    strike?: boolean;
+    color?: string;
+    fontFamily?: string;
+    fontSize?: number;
+}
+
+interface SharedStringEntry {
+    text: string;
+    runs?: RichTextRun[];
+}
 
 interface ParsedCoord {
     row: number;
@@ -166,27 +183,137 @@ function isCalendarNumFmt(numFmtId: number, pattern?: string): boolean {
     });
 }
 
-function normalizeColor(attrs: Record<string, {value: string}>): string | undefined {
+const DEFAULT_THEME_PALETTE: Record<string, string> = {
+    '0': '#ffffff',
+    '1': '#000000',
+    '2': '#e7e6e6',
+    '3': '#44546a',
+    '4': '#4472c4',
+    '5': '#ed7d31',
+    '6': '#a5a5a5',
+    '7': '#ffc000',
+    '8': '#5b9bd5',
+    '9': '#70ad47',
+    '10': '#0563c1',
+    '11': '#954f72',
+};
+
+const THEME_SLOT_INDEX: Record<string, string> = {
+    lt1: '0',
+    dk1: '1',
+    lt2: '2',
+    dk2: '3',
+    accent1: '4',
+    accent2: '5',
+    accent3: '6',
+    accent4: '7',
+    accent5: '8',
+    accent6: '9',
+    hlink: '10',
+    folHlink: '11',
+};
+
+function parseThemePalette(xmlText: string | undefined): Record<string, string> {
+    const palette: Record<string, string> = {...DEFAULT_THEME_PALETTE};
+    if (!xmlText) return palette;
+    let inClrScheme = false;
+    let currentSlot: string | undefined;
+
+    const parser = new SaxesParser({xmlns: true, position: false});
+    parser.on('doctype', () => {
+        throw new ExchangeError('unsafe_archive', 'DOCTYPE is forbidden in theme1.xml');
+    });
+    parser.on('opentag', tag => {
+        if (tag.local === 'clrScheme') {
+            inClrScheme = true;
+        } else if (inClrScheme && THEME_SLOT_INDEX[tag.local] !== undefined) {
+            currentSlot = THEME_SLOT_INDEX[tag.local];
+        } else if (inClrScheme && currentSlot !== undefined && (tag.local === 'srgbClr' || tag.local === 'sysClr')) {
+            const val = tag.attributes.lastClr?.value ?? tag.attributes.val?.value;
+            if (val && /^[0-9A-Fa-f]{6}$/.test(val)) {
+                palette[currentSlot] = `#${val.toLowerCase()}`;
+            }
+        }
+    });
+    parser.on('closetag', tag => {
+        if (tag.local === 'clrScheme') {
+            inClrScheme = false;
+            currentSlot = undefined;
+        } else if (inClrScheme && THEME_SLOT_INDEX[tag.local] !== undefined) {
+            currentSlot = undefined;
+        }
+    });
+    parser.write(xmlText).close();
+    return palette;
+}
+
+function applyColorTint(hex: string, tintRaw: string | undefined): string {
+    if (!tintRaw) return hex;
+    const tint = Number(tintRaw);
+    if (!Number.isFinite(tint) || tint === 0) return hex;
+    const clean = hex.replace('#', '');
+    const r = parseInt(clean.slice(0, 2), 16) / 255;
+    const g = parseInt(clean.slice(2, 4), 16) / 255;
+    const b = parseInt(clean.slice(4, 6), 16) / 255;
+
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    let h = 0;
+    let s = 0;
+    let l = (max + min) / 2;
+    if (max !== min) {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+        else if (max === g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        h /= 6;
+    }
+
+    if (tint < 0) {
+        l = l * (1 + tint);
+    } else {
+        l = l * (1 - tint) + tint;
+    }
+    l = Math.max(0, Math.min(1, l));
+
+    const hue2rgb = (p: number, q: number, t: number): number => {
+        let tt = t;
+        if (tt < 0) tt += 1;
+        if (tt > 1) tt -= 1;
+        if (tt < 1 / 6) return p + (q - p) * 6 * tt;
+        if (tt < 1 / 2) return q;
+        if (tt < 2 / 3) return p + (q - p) * (2 / 3 - tt) * 6;
+        return p;
+    };
+
+    let nr: number;
+    let ng: number;
+    let nb: number;
+    if (s === 0) {
+        nr = ng = nb = l;
+    } else {
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        nr = hue2rgb(p, q, h + 1 / 3);
+        ng = hue2rgb(p, q, h);
+        nb = hue2rgb(p, q, h - 1 / 3);
+    }
+    const toHex = (c: number) => Math.round(Math.max(0, Math.min(255, c * 255))).toString(16).padStart(2, '0');
+    return `#${toHex(nr)}${toHex(ng)}${toHex(nb)}`;
+}
+
+function normalizeColor(attrs: Record<string, {value: string}>, themePalette: Record<string, string> = DEFAULT_THEME_PALETTE): string | undefined {
     const rgb = attrs.rgb?.value;
     if (rgb && /^[0-9A-Fa-f]{6,8}$/.test(rgb)) {
         const hex = rgb.length === 8 ? rgb.slice(2) : rgb;
-        return `#${hex.toLowerCase()}`;
+        return applyColorTint(`#${hex.toLowerCase()}`, attrs.tint?.value);
     }
     const theme = attrs.theme?.value;
     if (theme !== undefined) {
-        const themeDefaults: Record<string, string> = {
-            '0': '#ffffff',
-            '1': '#000000',
-            '2': '#e7e6e6',
-            '3': '#44546a',
-            '4': '#4472c4',
-            '5': '#ed7d31',
-            '6': '#a5a5a5',
-            '7': '#ffc000',
-            '8': '#5b9bd5',
-            '9': '#70ad47',
-        };
-        return themeDefaults[theme];
+        const base = themePalette[theme] ?? DEFAULT_THEME_PALETTE[theme];
+        if (!base) return undefined;
+        return applyColorTint(base, attrs.tint?.value);
     }
     return undefined;
 }
@@ -312,13 +439,62 @@ function shiftSharedFormula(formula: string, rowDelta: number, colDelta: number)
     });
 }
 
-function parseSharedStrings(xmlText: string | undefined): string[] {
+function buildUniverRichTextDoc(text: string, runs: RichTextRun[], hyperlink?: {url: string; tooltip?: string}): JsonObject {
+    const textRuns: JsonObject[] = [];
+    let offset = 0;
+    for (const run of runs) {
+        if (!run.text) continue;
+        const ts: JsonObject = {};
+        if (run.bold !== undefined) ts.bl = run.bold ? 1 : 0;
+        if (run.italic !== undefined) ts.it = run.italic ? 1 : 0;
+        if (run.underline !== undefined) ts.ul = {s: run.underline ? 1 : 0};
+        if (run.strike !== undefined) ts.st = {s: run.strike ? 1 : 0};
+        if (run.color) ts.cl = {rgb: run.color};
+        if (run.fontFamily) ts.ff = run.fontFamily;
+        if (run.fontSize !== undefined) ts.fs = run.fontSize;
+        textRuns.push({
+            st: offset,
+            ed: offset + run.text.length,
+            ts,
+        });
+        offset += run.text.length;
+    }
+    const customRanges: JsonObject[] = hyperlink
+        ? [{
+            rangeId: `hl_${randomUUID()}`,
+            rangeType: 0,
+            startIndex: 0,
+            endIndex: Math.max(0, text.length - 1),
+            properties: {
+                url: hyperlink.url,
+                ...(hyperlink.tooltip ? {tooltip: hyperlink.tooltip} : {}),
+            },
+        }]
+        : [];
+    return {
+        id: `doc_${randomUUID()}`,
+        body: {
+            dataStream: `${text}\r\n`,
+            textRuns,
+            customRanges,
+            paragraphs: [{startIndex: text.length}],
+        },
+        documentStyle: {},
+    };
+}
+
+function parseSharedStrings(xmlText: string | undefined, themePalette: Record<string, string> = DEFAULT_THEME_PALETTE): SharedStringEntry[] {
     if (!xmlText) return [];
-    const strings: string[] = [];
+    const strings: SharedStringEntry[] = [];
     let inSi = false;
+    let inR = false;
+    let inRPr = false;
     let inT = false;
     let inPhonetic = false;
     let current = '';
+    let currentRuns: RichTextRun[] = [];
+    let currentRun: RichTextRun | null = null;
+    let hasRuns = false;
 
     const parser = new SaxesParser({xmlns: true, position: false});
     parser.on('doctype', () => {
@@ -328,20 +504,54 @@ function parseSharedStrings(xmlText: string | undefined): string[] {
         if (tag.local === 'si') {
             inSi = true;
             current = '';
+            currentRuns = [];
+            currentRun = null;
+            hasRuns = false;
         } else if (tag.local === 'rPh') {
             inPhonetic = true;
+        } else if (inSi && !inPhonetic && tag.local === 'r') {
+            inR = true;
+            hasRuns = true;
+            currentRun = {text: ''};
+        } else if (inR && tag.local === 'rPr') {
+            inRPr = true;
+        } else if (inRPr && currentRun) {
+            const val = tag.attributes.val?.value;
+            if (tag.local === 'b') currentRun.bold = val !== '0' && val !== 'false';
+            else if (tag.local === 'i') currentRun.italic = val !== '0' && val !== 'false';
+            else if (tag.local === 'u') currentRun.underline = val !== 'none';
+            else if (tag.local === 'strike') currentRun.strike = val !== '0' && val !== 'false';
+            else if (tag.local === 'color') {
+                const c = normalizeColor(tag.attributes, themePalette);
+                if (c) currentRun.color = c;
+            } else if (tag.local === 'rFont' && val) {
+                currentRun.fontFamily = val;
+            } else if (tag.local === 'sz' && val) {
+                const sz = Number(val);
+                if (Number.isFinite(sz) && sz > 0) currentRun.fontSize = sz;
+            }
         } else if (inSi && !inPhonetic && tag.local === 't') {
             inT = true;
         }
     });
     parser.on('text', text => {
-        if (inSi && inT && !inPhonetic) current += text;
+        if (inSi && inT && !inPhonetic) {
+            current += text;
+            if (inR && currentRun) currentRun.text += text;
+        }
     });
     parser.on('closetag', tag => {
         if (tag.local === 't') inT = false;
         else if (tag.local === 'rPh') inPhonetic = false;
-        else if (tag.local === 'si') {
-            strings.push(current);
+        else if (tag.local === 'rPr') inRPr = false;
+        else if (tag.local === 'r') {
+            if (currentRun && currentRun.text.length > 0) {
+                currentRuns.push(currentRun);
+            }
+            currentRun = null;
+            inR = false;
+        } else if (tag.local === 'si') {
+            strings.push(hasRuns && currentRuns.length > 0 ? {text: current, runs: currentRuns} : {text: current});
             inSi = false;
         }
     });
@@ -356,7 +566,7 @@ interface ParsedStyles {
     dxfs: UniverStyle[];
 }
 
-function parseStylesXml(xmlText: string | undefined, losses: ExchangeLossEntry[]): ParsedStyles {
+function parseStylesXml(xmlText: string | undefined, losses: ExchangeLossEntry[], themePalette: Record<string, string> = DEFAULT_THEME_PALETTE): ParsedStyles {
     if (!xmlText) {
         return {styles: [{}], numFmtIds: [0], numFmtPatterns: [undefined], dxfs: []};
     }
@@ -404,7 +614,7 @@ function parseStylesXml(xmlText: string | undefined, losses: ExchangeLossEntry[]
                     const ff = attrVal(tag, 'val');
                     if (ff) currentFont.ff = ff;
                 } else if (name === 'color') {
-                    const rgb = normalizeColor(tag.attributes);
+                    const rgb = normalizeColor(tag.attributes, themePalette);
                     if (rgb) currentFont.cl = {rgb};
                 }
             }
@@ -414,13 +624,13 @@ function parseStylesXml(xmlText: string | undefined, losses: ExchangeLossEntry[]
                 const pt = attrVal(tag, 'patternType');
                 if (pt === 'none' || pt === 'gray125') currentFill = {};
             } else if (currentFill && name === 'fgColor') {
-                const rgb = normalizeColor(tag.attributes);
+                const rgb = normalizeColor(tag.attributes, themePalette);
                 if (rgb) currentFill.bg = {rgb};
             }
         } else if (section === 'borders') {
             if (name === 'border') currentBorder = {};
             else if (currentBorder && name === 'color') {
-                const rgb = normalizeColor(tag.attributes);
+                const rgb = normalizeColor(tag.attributes, themePalette);
                 if (currentBorderSide && rgb) currentBorder[currentBorderSide].cl = {rgb};
             } else if (currentBorder) {
                 currentBorderSide = null;
@@ -468,11 +678,11 @@ function parseStylesXml(xmlText: string | undefined, losses: ExchangeLossEntry[]
                     else if (name === 'u') currentDxf.ul = {s: 1};
                     else if (name === 'strike') currentDxf.st = {s: 1};
                     else if (name === 'color') {
-                        const rgb = normalizeColor(tag.attributes);
+                        const rgb = normalizeColor(tag.attributes, themePalette);
                         if (rgb) currentDxf.cl = {rgb};
                     }
                 } else if (dxfSub === 'fill' && (name === 'fgColor' || name === 'bgColor')) {
-                    const rgb = normalizeColor(tag.attributes);
+                    const rgb = normalizeColor(tag.attributes, themePalette);
                     if (rgb && !currentDxf.bg) currentDxf.bg = {rgb};
                 }
             }
@@ -618,6 +828,44 @@ function mapCfOperator(op: string | undefined): string {
     }
 }
 
+function parseTableXml(xmlText: string, sheetId: string): TableBinding | null {
+    let tableInfo: TableBinding | null = null;
+    let startCol = 0;
+    const parser = new SaxesParser({xmlns: true, position: false});
+    parser.on('doctype', () => {
+        throw new ExchangeError('unsafe_archive', 'DOCTYPE is forbidden in table XML');
+    });
+    parser.on('opentag', tag => {
+        if (tag.local === 'table') {
+            const ref = attrVal(tag, 'ref') ?? 'A1:A1';
+            const parsedRange = parseSqref(ref)[0] ?? {startRow: 0, startColumn: 0, endRow: 0, endColumn: 0};
+            startCol = parsedRange.startColumn;
+            const headerRowCount = attrVal(tag, 'headerRowCount') === '0' ? 0 : 1;
+            const firstDataRow = parsedRange.startRow + headerRowCount + 1;
+            const lastDataRow = parsedRange.endRow + 1;
+            const rows: {row_id: string; row: number}[] = [];
+            for (let r = firstDataRow; r <= lastDataRow; r++) {
+                rows.push({row_id: `row_${r}`, row: r});
+            }
+            tableInfo = {
+                table_id: `tbl_${attrVal(tag, 'id') ?? randomUUID()}`,
+                sheet_id: sheetId,
+                header_row: parsedRange.startRow + 1,
+                columns: [],
+                rows,
+            };
+        } else if (tag.local === 'tableColumn' && tableInfo) {
+            const colName = attrVal(tag, 'name') ?? `col_${tableInfo.columns.length + 1}`;
+            tableInfo.columns.push({
+                column_id: colName,
+                column: startCol + tableInfo.columns.length + 1,
+            });
+        }
+    });
+    parser.write(xmlText).close();
+    return tableInfo;
+}
+
 export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<ImportResult> {
     const sourceSha = createHash('sha256').update(bytes).digest('hex');
     const archive = await inspectAndReadXlsxZip(bytes);
@@ -636,9 +884,10 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
 
     const wbRelsXml = archive.xmlTexts.get('xl/_rels/workbook.xml.rels');
     const wbRels = wbRelsXml ? parseRelsXml(wbRelsXml) : new Map();
-    const sharedStrings = parseSharedStrings(archive.xmlTexts.get('xl/sharedStrings.xml'));
+    const themePalette = parseThemePalette(archive.xmlTexts.get('xl/theme/theme1.xml'));
+    const sharedStrings = parseSharedStrings(archive.xmlTexts.get('xl/sharedStrings.xml'), themePalette);
     const losses: ExchangeLossEntry[] = [];
-    const parsedStyles = parseStylesXml(archive.xmlTexts.get('xl/styles.xml'), losses);
+    const parsedStyles = parseStylesXml(archive.xmlTexts.get('xl/styles.xml'), losses, themePalette);
 
     const unitId = `wb_${randomUUID()}`;
     const sheetOrder: string[] = [];
@@ -651,6 +900,9 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
     const cfBySheet: Record<string, JsonObject[]> = {};
     const filterBySheet: Record<string, JsonObject> = {};
     const knownEntries = new Set<string>();
+    let hasHyperlinks = false;
+    const importedTables: TableBinding[] = [];
+    const protectionRules: JsonObject[] = [];
 
     const styleKeyForXf = (xfIdx: number): string | undefined => {
         const existing = styleIdByXf.get(xfIdx);
@@ -722,10 +974,19 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
         let inDvF2 = false;
         let inX14Dv = false;
         let inX14F1 = false;
+        let currentFilterCol: JsonObject | null = null;
+        const pendingHyperlinks: {ref: string; rId?: string; location?: string; tooltip?: string}[] = [];
+        let sheetProtection: JsonObject | null = null;
+        const tablePartRIds: string[] = [];
+        const sheetBasename = `sheet${sheetOrder.length + 1}.xml`;
+        const sheetRelsPath = `xl/worksheets/_rels/${sheetBasename}.rels`;
+        const sheetRelsXml = archive.xmlTexts.get(sheetRelsPath);
+        if (sheetRelsXml) knownEntries.add(sheetRelsPath);
+        const sheetRels = sheetRelsXml ? parseRelsXml(sheetRelsXml) : new Map();
         let inX14F2 = false;
         let inX14Sqref = false;
         let currentCfSqref = '';
-        let currentCfRule: {type: string; operator?: string; dxfId?: number; stopIfTrue: boolean; formulas: string[]; text?: string} | null = null;
+        let currentCfRule: {type: string; operator?: string; dxfId?: number; stopIfTrue: boolean; formulas: string[]; text?: string; cfvos?: {type: string; val?: string}[]; colors?: string[]; rank?: number; bottom?: boolean; percent?: boolean; aboveAverage?: boolean; equalAverage?: boolean; showValue?: boolean} | null = null;
         let inCfFormula = false;
         let cfFormulaBuf = '';
 
@@ -837,6 +1098,7 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
                 currentCfSqref = attrVal(tag, 'sqref') ?? '';
             } else if (name === 'cfRule' && currentCfSqref) {
                 const dxfRaw = attrVal(tag, 'dxfId');
+                const rankRaw = attrVal(tag, 'rank');
                 currentCfRule = {
                     type: attrVal(tag, 'type') ?? 'cellIs',
                     operator: attrVal(tag, 'operator'),
@@ -844,7 +1106,27 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
                     stopIfTrue: attrVal(tag, 'stopIfTrue') === '1',
                     formulas: [],
                     text: attrVal(tag, 'text'),
+                    cfvos: [],
+                    colors: [],
+                    ...(rankRaw !== undefined ? {rank: Number(rankRaw)} : {}),
+                    bottom: attrVal(tag, 'bottom') === '1',
+                    percent: attrVal(tag, 'percent') === '1',
+                    aboveAverage: attrVal(tag, 'aboveAverage') !== '0',
+                    equalAverage: attrVal(tag, 'equalAverage') === '1',
+                    showValue: true,
                 };
+            } else if (currentCfRule && name === 'dataBar') {
+                if (attrVal(tag, 'showValue') === '0') {
+                    currentCfRule.showValue = false;
+                }
+            } else if (currentCfRule && name === 'cfvo') {
+                (currentCfRule.cfvos as {type: string; val?: string}[]).push({
+                    type: attrVal(tag, 'type') ?? 'num',
+                    val: attrVal(tag, 'val'),
+                });
+            } else if (currentCfRule && name === 'color') {
+                const c = normalizeColor(tag.attributes, themePalette);
+                if (c) (currentCfRule.colors as string[]).push(c);
             } else if (currentCfRule && name === 'formula') {
                 inCfFormula = true;
                 cfFormulaBuf = '';
@@ -860,15 +1142,56 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
                         };
                     }
                 }
+            } else if (name === 'filterColumn' && filterBySheet[sheetId]) {
+                const relColId = Number(attrVal(tag, 'colId') ?? '0');
+                const baseStartCol = (filterBySheet[sheetId].ref as JsonObject)?.startColumn as number ?? 0;
+                const absColId = baseStartCol + (Number.isFinite(relColId) ? relColId : 0);
+                currentFilterCol = {colId: absColId};
+            } else if (name === 'filters' && currentFilterCol) {
+                currentFilterCol.filters = {filters: []};
+            } else if (name === 'filter' && currentFilterCol && currentFilterCol.filters) {
+                const val = attrVal(tag, 'val');
+                if (val !== undefined) {
+                    ((currentFilterCol.filters as JsonObject).filters as string[]).push(val);
+                }
+            } else if (name === 'customFilters' && currentFilterCol) {
+                currentFilterCol.customFilters = {
+                    and: attrVal(tag, 'and') === '1' ? 1 : 0,
+                    customFilters: [],
+                };
+            } else if (name === 'customFilter' && currentFilterCol && currentFilterCol.customFilters) {
+                const op = attrVal(tag, 'operator') ?? 'equal';
+                const val = attrVal(tag, 'val') ?? '';
+                ((currentFilterCol.customFilters as JsonObject).customFilters as JsonObject[]).push({
+                    operator: op,
+                    val,
+                });
             } else if (name === 'hyperlink') {
                 const ref = attrVal(tag, 'ref');
-                losses.push({
-                    scope: 'object',
-                    target: ref ? `${meta.name}!${ref}` : meta.name,
-                    property: 'hyperlink',
-                    status: 'lost',
-                    reason: 'unsupported_ooxml_sheet_object',
-                });
+                const rId = attrVal(tag, 'r:id') ?? attrVal(tag, 'id');
+                const location = attrVal(tag, 'location');
+                const tooltip = attrVal(tag, 'tooltip');
+                if (ref) {
+                    pendingHyperlinks.push({ref, rId, location, tooltip});
+                }
+            } else if (name === 'sheetProtection') {
+                sheetProtection = {
+                    sheet: attrVal(tag, 'sheet') !== '0',
+                    objects: attrVal(tag, 'objects') === '1',
+                    scenarios: attrVal(tag, 'scenarios') === '1',
+                    formatCells: attrVal(tag, 'formatCells') !== '0',
+                    formatColumns: attrVal(tag, 'formatColumns') !== '0',
+                    formatRows: attrVal(tag, 'formatRows') !== '0',
+                    insertColumns: attrVal(tag, 'insertColumns') !== '0',
+                    insertRows: attrVal(tag, 'insertRows') !== '0',
+                    deleteColumns: attrVal(tag, 'deleteColumns') !== '0',
+                    deleteRows: attrVal(tag, 'deleteRows') !== '0',
+                    sort: attrVal(tag, 'sort') !== '0',
+                    autoFilter: attrVal(tag, 'autoFilter') !== '0',
+                };
+            } else if (name === 'tablePart') {
+                const rId = attrVal(tag, 'r:id') ?? attrVal(tag, 'id');
+                if (rId) tablePartRIds.push(rId);
             } else if (name === 'drawing' || name === 'legacyDrawing' || name === 'oleObjects' || name === 'controls' || name === 'sparklineGroups') {
                 losses.push({
                     scope: 'object',
@@ -892,7 +1215,10 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
         });
         parser.on('closetag', tag => {
             const name = tag.local;
-            if (name === 'v') inV = false;
+            if (name === 'filterColumn' && currentFilterCol && filterBySheet[sheetId]) {
+                (filterBySheet[sheetId].filterColumns as JsonObject[]).push(currentFilterCol);
+                currentFilterCol = null;
+            } else if (name === 'v') inV = false;
             else if (name === 'f') inF = false;
             else if (name === 't') inIsT = false;
             else if (name === 'formula1') {
@@ -999,6 +1325,95 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
                                 style: styleObj,
                             },
                         });
+                    } else if (currentCfRule.type === 'colorScale') {
+                        const cfvos = (currentCfRule.cfvos as {type: string; val?: string}[] | undefined) ?? [];
+                        const colors = (currentCfRule.colors as string[] | undefined) ?? [];
+                        const mapCfvo = (v: {type: string; val?: string}): JsonObject => {
+                            const t = v.type === 'min' || v.type === 'max' || v.type === 'percent' || v.type === 'percentile' || v.type === 'formula' ? v.type : 'num';
+                            if (v.val === undefined) return {type: t};
+                            if (t === 'formula') return {type: t, value: v.val.startsWith('=') ? v.val : `=${v.val}`};
+                            const n = Number(v.val);
+                            return {type: t, value: Number.isFinite(n) ? n : v.val};
+                        };
+                        cfRules.push({
+                            cfId: `cf_${randomUUID().slice(0, 8)}`,
+                            ranges,
+                            stopIfTrue: currentCfRule.stopIfTrue,
+                            rule: {
+                                type: 'colorScale',
+                                config: cfvos.map((v, index) => ({
+                                    index,
+                                    color: colors[index] ?? '#ffffff',
+                                    value: mapCfvo(v),
+                                })),
+                            },
+                        });
+                    } else if (currentCfRule.type === 'dataBar') {
+                        const cfvos = (currentCfRule.cfvos as {type: string; val?: string}[] | undefined) ?? [];
+                        const colors = (currentCfRule.colors as string[] | undefined) ?? [];
+                        const mapCfvo = (v: {type: string; val?: string}): JsonObject => {
+                            const t = v.type === 'min' || v.type === 'max' || v.type === 'percent' || v.type === 'percentile' || v.type === 'formula' ? v.type : 'num';
+                            if (v.val === undefined) return {type: t};
+                            if (t === 'formula') return {type: t, value: v.val.startsWith('=') ? v.val : `=${v.val}`};
+                            const n = Number(v.val);
+                            return {type: t, value: Number.isFinite(n) ? n : v.val};
+                        };
+                        cfRules.push({
+                            cfId: `cf_${randomUUID().slice(0, 8)}`,
+                            ranges,
+                            stopIfTrue: currentCfRule.stopIfTrue,
+                            rule: {
+                                type: 'dataBar',
+                                isShowValue: currentCfRule.showValue !== false,
+                                config: {
+                                    min: mapCfvo(cfvos[0] ?? {type: 'min'}),
+                                    max: mapCfvo(cfvos[1] ?? {type: 'max'}),
+                                    isGradient: true,
+                                    positiveColor: colors[0] ?? '#638ec6',
+                                    nativeColor: '#ff5555',
+                                },
+                            },
+                        });
+                    } else if (currentCfRule.type === 'top10') {
+                        cfRules.push({
+                            cfId: `cf_${randomUUID().slice(0, 8)}`,
+                            ranges,
+                            stopIfTrue: currentCfRule.stopIfTrue,
+                            rule: {
+                                type: 'highlightCell',
+                                subType: 'rank',
+                                isBottom: Boolean(currentCfRule.bottom),
+                                isPercent: Boolean(currentCfRule.percent),
+                                value: Number(currentCfRule.rank ?? 10),
+                                style: styleObj,
+                            },
+                        });
+                    } else if (currentCfRule.type === 'aboveAverage') {
+                        const op = currentCfRule.aboveAverage === false
+                            ? (currentCfRule.equalAverage ? 'lessThanOrEqual' : 'lessThan')
+                            : (currentCfRule.equalAverage ? 'greaterThanOrEqual' : 'greaterThan');
+                        cfRules.push({
+                            cfId: `cf_${randomUUID().slice(0, 8)}`,
+                            ranges,
+                            stopIfTrue: currentCfRule.stopIfTrue,
+                            rule: {
+                                type: 'highlightCell',
+                                subType: 'average',
+                                operator: op,
+                                style: styleObj,
+                            },
+                        });
+                    } else if (currentCfRule.type === 'uniqueValues' || currentCfRule.type === 'duplicateValues') {
+                        cfRules.push({
+                            cfId: `cf_${randomUUID().slice(0, 8)}`,
+                            ranges,
+                            stopIfTrue: currentCfRule.stopIfTrue,
+                            rule: {
+                                type: 'highlightCell',
+                                subType: currentCfRule.type,
+                                style: styleObj,
+                            },
+                        });
                     } else {
                         losses.push({
                             scope: 'sheet',
@@ -1078,7 +1493,10 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
                             const str = Number.isSafeInteger(idx) ? sharedStrings[idx] : undefined;
                             if (str !== undefined) {
                                 cellObj.t = 1;
-                                cellObj.v = str;
+                                cellObj.v = str.text;
+                                if (str.runs && str.runs.length > 0) {
+                                    cellObj.p = buildUniverRichTextDoc(str.text, str.runs);
+                                }
                             }
                         } else if (currentCellType === 'inlineStr') {
                             cellObj.t = 1;
@@ -1150,6 +1568,67 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
         });
         parser.write(sheetXml).close();
 
+        for (const hl of pendingHyperlinks) {
+            const coord = parseCellRef(hl.ref);
+            if (!coord) continue;
+            let url = '';
+            if (hl.rId) {
+                const rel = sheetRels.get(hl.rId);
+                if (rel && /^(https?:\/\/|mailto:)/i.test(rel.target)) {
+                    url = rel.target;
+                }
+            } else if (hl.location) {
+                const bangIdx = hl.location.indexOf('!');
+                const targetSheetName = bangIdx >= 0 ? hl.location.slice(0, bangIdx).replace(/^'|'$/g, '') : meta.name;
+                const targetRange = bangIdx >= 0 ? hl.location.slice(bangIdx + 1) : hl.location;
+                const targetMetaIdx = wbMeta.sheets.findIndex(s => s.name === targetSheetName);
+                const targetGid = targetMetaIdx >= 0 ? `sheet_${targetMetaIdx + 1}` : sheetId;
+                url = `#gid=${targetGid}&range=${targetRange}`;
+            }
+            if (!url) continue;
+            hasHyperlinks = true;
+            const rowKey = String(coord.row - 1);
+            const colKey = String(coord.col - 1);
+            const existingCell = cellData[rowKey]?.[colKey] ?? {};
+            const cellText = String(existingCell.v ?? url);
+            const existingDoc = existingCell.p as JsonObject | undefined;
+            if (existingDoc && typeof existingDoc.body === 'object' && existingDoc.body !== null) {
+                const body = existingDoc.body as JsonObject;
+                const ranges = Array.isArray(body.customRanges) ? body.customRanges : [];
+                ranges.push({
+                    rangeId: `hl_${randomUUID()}`,
+                    rangeType: 0,
+                    startIndex: 0,
+                    endIndex: Math.max(0, cellText.length - 1),
+                    properties: {url, ...(hl.tooltip ? {tooltip: hl.tooltip} : {})},
+                });
+                body.customRanges = ranges;
+            } else {
+                existingCell.p = buildUniverRichTextDoc(cellText, [], {url, tooltip: hl.tooltip});
+            }
+            if (existingCell.v === undefined) {
+                existingCell.t = 1;
+                existingCell.v = cellText;
+            }
+            cellData[rowKey] ??= {};
+            cellData[rowKey][colKey] = existingCell;
+        }
+
+        for (const rId of tablePartRIds) {
+            const rel = sheetRels.get(rId);
+            if (!rel) continue;
+            const tablePath = rel.target.startsWith('../')
+                ? `xl/${rel.target.slice(3)}`
+                : rel.target.startsWith('/')
+                    ? rel.target.slice(1)
+                    : `xl/worksheets/${rel.target}`;
+            const tableXml = archive.xmlTexts.get(tablePath);
+            if (!tableXml) continue;
+            knownEntries.add(tablePath);
+            const parsedTable = parseTableXml(tableXml, sheetId);
+            if (parsedTable) importedTables.push(parsedTable);
+        }
+
         if (validations.length > 0) dataValidationsBySheet[sheetId] = validations;
         if (cfRules.length > 0) cfBySheet[sheetId] = cfRules;
 
@@ -1174,6 +1653,15 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
             scrollTop: 0,
             tabColor: '',
         };
+        if (sheetProtection) {
+            protectionRules.push({
+                unitId,
+                subUnitId: sheetId,
+                permissionId: `prot_${sheetId}`,
+                name: meta.name,
+                sheetProtection,
+            });
+        }
 
         sheetSummaries.push({
             sheet_id: sheetId,
@@ -1193,7 +1681,7 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
     let defPreserved = 0;
     let defLost = 0;
     for (const def of wbMeta.definedNames) {
-        if (def.name.startsWith('_xlnm.')) {
+        if (def.name.startsWith('_xlnm.') && def.name !== '_xlnm.Print_Area' && def.name !== '_xlnm.Print_Titles') {
             defLost++;
             losses.push({
                 scope: 'workbook',
@@ -1247,8 +1735,14 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
     if (Object.keys(definedNamesMap).length > 0) {
         resources.push({name: 'SHEET_DEFINED_NAME_PLUGIN', data: JSON.stringify(definedNamesMap)});
     }
+    if (hasHyperlinks) {
+        resources.push({name: 'SHEET_HYPER_LINK_PLUGIN', data: '{}'});
+    }
     if (Object.keys(filterBySheet).length > 0) {
         resources.push({name: 'SHEET_FILTER_PLUGIN', data: JSON.stringify(filterBySheet)});
+    }
+    if (protectionRules.length > 0) {
+        resources.push({name: 'SHEET_WORKSHEET_PROTECTION_PLUGIN', data: JSON.stringify({[unitId]: protectionRules})});
     }
 
     const unknownParts: string[] = [];
@@ -1322,11 +1816,19 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
         session.dispose();
     }
 
+    if (hasHyperlinks) {
+        const savedResources = Array.isArray(savedNative.resources) ? savedNative.resources as JsonObject[] : [];
+        if (!savedResources.some(r => r && typeof r === 'object' && r.name === 'SHEET_HYPER_LINK_PLUGIN')) {
+            savedResources.push({name: 'SHEET_HYPER_LINK_PLUGIN', data: '{}'});
+            savedNative.resources = savedResources;
+        }
+    }
+
     const workbook: WorkbookV2 = {
         format_version: 2,
         profile: WIRE_PROFILE,
         native: savedNative,
-        tables: [],
+        tables: importedTables,
     };
     const outputSha = sha256Canonical(workbook);
 
@@ -1549,6 +2051,8 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
     const encoder = new TextEncoder();
     const workbookSheetsXml: string[] = [];
     const workbookRelsXml: string[] = [];
+    const tableContentTypeOverrides: string[] = [];
+    let tableExportCounter = 1;
     const contentTypeOverrides: string[] = [];
     const sheetSummaries: SheetExchangeSummary[] = [];
 
@@ -1660,7 +2164,41 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
             const dxfId = ensureDxf(rule.style as UniverStyle | undefined);
             const priority = cfXmlParts.length + 1;
             const stop = item.stopIfTrue === true ? ' stopIfTrue="1"' : '';
-            if (rule.subType === 'formula') {
+            if (rule.type === 'colorScale') {
+                const config = Array.isArray(rule.config) ? rule.config as JsonObject[] : [];
+                const cfvosXml = config.map(item => {
+                    const valObj = (item.value ?? {}) as JsonObject;
+                    const t = String(valObj.type ?? 'num');
+                    const vAttr = valObj.value !== undefined ? ` val="${escapeXml(String(valObj.value).replace(/^=/, ''))}"` : '';
+                    return `<cfvo type="${escapeXml(t)}"${vAttr}/>`;
+                }).join('');
+                const colorsXml = config.map(item => {
+                    const rgb = rgbHexForOoxml(typeof item.color === 'string' ? item.color : undefined) ?? 'FFFFFFFF';
+                    return `<color rgb="${rgb}"/>`;
+                }).join('');
+                cfXmlParts.push(`<conditionalFormatting sqref="${escapeXml(sqref)}"><cfRule type="colorScale" priority="${priority}"${stop}><colorScale>${cfvosXml}${colorsXml}</colorScale></cfRule></conditionalFormatting>`);
+            } else if (rule.type === 'dataBar') {
+                const cfg = (rule.config ?? {}) as JsonObject;
+                const minObj = (cfg.min ?? {type: 'min'}) as JsonObject;
+                const maxObj = (cfg.max ?? {type: 'max'}) as JsonObject;
+                const minXml = `<cfvo type="${escapeXml(String(minObj.type ?? 'min'))}"${minObj.value !== undefined ? ` val="${escapeXml(String(minObj.value).replace(/^=/, ''))}"` : ''}/>`;
+                const maxXml = `<cfvo type="${escapeXml(String(maxObj.type ?? 'max'))}"${maxObj.value !== undefined ? ` val="${escapeXml(String(maxObj.value).replace(/^=/, ''))}"` : ''}/>`;
+                const posRgb = rgbHexForOoxml(typeof cfg.positiveColor === 'string' ? cfg.positiveColor : undefined) ?? 'FF638EC6';
+                const showValAttr = rule.isShowValue === false ? ' showValue="0"' : '';
+                cfXmlParts.push(`<conditionalFormatting sqref="${escapeXml(sqref)}"><cfRule type="dataBar" priority="${priority}"${stop}><dataBar${showValAttr}>${minXml}${maxXml}<color rgb="${posRgb}"/></dataBar></cfRule></conditionalFormatting>`);
+            } else if (rule.subType === 'rank') {
+                const rankVal = Number(rule.value ?? 10);
+                const bottomAttr = rule.isBottom ? ' bottom="1"' : '';
+                const percentAttr = rule.isPercent ? ' percent="1"' : '';
+                cfXmlParts.push(`<conditionalFormatting sqref="${escapeXml(sqref)}"><cfRule type="top10" dxfId="${dxfId}" priority="${priority}"${stop} rank="${rankVal}"${bottomAttr}${percentAttr}/></conditionalFormatting>`);
+            } else if (rule.subType === 'average') {
+                const op = String(rule.operator ?? 'greaterThan');
+                const aboveAttr = op.startsWith('less') ? ' aboveAverage="0"' : '';
+                const equalAttr = op.endsWith('OrEqual') ? ' equalAverage="1"' : '';
+                cfXmlParts.push(`<conditionalFormatting sqref="${escapeXml(sqref)}"><cfRule type="aboveAverage" dxfId="${dxfId}" priority="${priority}"${stop}${aboveAttr}${equalAttr}/></conditionalFormatting>`);
+            } else if (rule.subType === 'uniqueValues' || rule.subType === 'duplicateValues') {
+                cfXmlParts.push(`<conditionalFormatting sqref="${escapeXml(sqref)}"><cfRule type="${rule.subType}" dxfId="${dxfId}" priority="${priority}"${stop}/></conditionalFormatting>`);
+            } else if (rule.subType === 'formula') {
                 const expr = String(rule.value ?? '');
                 const formula = expr.startsWith('=') ? expr.slice(1) : expr;
                 cfXmlParts.push(`<conditionalFormatting sqref="${escapeXml(sqref)}"><cfRule type="expression" dxfId="${dxfId}" priority="${priority}"${stop}><formula>${escapeXml(formula)}</formula></cfRule></conditionalFormatting>`);
@@ -1722,14 +2260,36 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
 
         const filterObj = filterAll[sheetId];
         const filterRef = filterObj?.ref as JsonObject | undefined;
-        const autoFilterXml = filterRef
-            ? `<autoFilter ref="${escapeXml(formatRangeA1({
+        let autoFilterXml = '';
+        if (filterRef) {
+            const filterRefA1 = formatRangeA1({
                 startRow: Number(filterRef.startRow ?? 0),
                 startColumn: Number(filterRef.startColumn ?? 0),
                 endRow: Number(filterRef.endRow ?? 0),
                 endColumn: Number(filterRef.endColumn ?? 0),
-            }))}"/>`
-            : '';
+            });
+            const baseStartCol = Number(filterRef.startColumn ?? 0);
+            const filterCols = Array.isArray(filterObj?.filterColumns) ? filterObj.filterColumns as JsonObject[] : [];
+            const filterColsXml = filterCols.map(fc => {
+                const relColId = Math.max(0, Number(fc.colId ?? 0) - baseStartCol);
+                if (fc.filters && typeof fc.filters === 'object' && Array.isArray((fc.filters as JsonObject).filters)) {
+                    const vals = ((fc.filters as JsonObject).filters as unknown[]).map(v => `<filter val="${escapeXml(String(v))}"/>`).join('');
+                    return `<filterColumn colId="${relColId}"><filters>${vals}</filters></filterColumn>`;
+                }
+                if (fc.customFilters && typeof fc.customFilters === 'object' && Array.isArray((fc.customFilters as JsonObject).customFilters)) {
+                    const cfObj = fc.customFilters as JsonObject;
+                    const andAttr = cfObj.and ? ' and="1"' : '';
+                    const items = (cfObj.customFilters as JsonObject[]).map(item =>
+                        `<customFilter operator="${escapeXml(String(item.operator ?? 'equal'))}" val="${escapeXml(String(item.val ?? ''))}"/>`,
+                    ).join('');
+                    return `<filterColumn colId="${relColId}"><customFilters${andAttr}>${items}</customFilters></filterColumn>`;
+                }
+                return '';
+            }).filter(Boolean).join('');
+            autoFilterXml = filterColsXml
+                ? `<autoFilter ref="${escapeXml(filterRefA1)}">${filterColsXml}</autoFilter>`
+                : `<autoFilter ref="${escapeXml(filterRefA1)}"/>`;
+        }
 
         const freezeObj = sheet.freeze as JsonObject | undefined;
         const xSplit = Number(freezeObj?.xSplit ?? 0);
@@ -1752,17 +2312,111 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
             .map(item => `<col min="${item.col}" max="${item.col}"${item.w > 0 ? ` width="${item.w.toFixed(2)}" customWidth="1"` : ''}${item.hd ? ' hidden="1"' : ''}/>`);
         const colsXml = colXmlItems.length > 0 ? `<cols>${colXmlItems.join('')}</cols>` : '';
 
+        const protAll = parseResource('SHEET_WORKSHEET_PROTECTION_PLUGIN');
+        let sheetProtectionXml = '';
+        const protRules = Array.isArray(protAll[unitId]) ? protAll[unitId] as JsonObject[] : Object.values(protAll).flat().filter((x): x is JsonObject => Boolean(x && typeof x === 'object'));
+        const matchedProt = protRules.find(r => r.subUnitId === sheetId);
+        if (matchedProt && matchedProt.sheetProtection && typeof matchedProt.sheetProtection === 'object') {
+            const sp = matchedProt.sheetProtection as JsonObject;
+            sheetProtectionXml = `<sheetProtection sheet="${sp.sheet === false ? '0' : '1'}"` +
+                `${sp.objects ? ' objects="1"' : ''}` +
+                `${sp.scenarios ? ' scenarios="1"' : ''}` +
+                `${sp.formatCells === false ? ' formatCells="0"' : ''}` +
+                `${sp.formatColumns === false ? ' formatColumns="0"' : ''}` +
+                `${sp.formatRows === false ? ' formatRows="0"' : ''}` +
+                `${sp.insertColumns === false ? ' insertColumns="0"' : ''}` +
+                `${sp.insertRows === false ? ' insertRows="0"' : ''}` +
+                `${sp.deleteColumns === false ? ' deleteColumns="0"' : ''}` +
+                `${sp.deleteRows === false ? ' deleteRows="0"' : ''}` +
+                `${sp.sort === false ? ' sort="0"' : ''}` +
+                `${sp.autoFilter === false ? ' autoFilter="0"' : ''}/>`;
+        }
+
+        const sheetRelsEntries: string[] = [];
+        const hyperlinkXmlParts: string[] = [];
+        for (const [rKey, rowObj] of Object.entries(cellData)) {
+            const rNum = Number(rKey);
+            if (!Number.isSafeInteger(rNum) || rNum < 0 || !rowObj || typeof rowObj !== 'object') continue;
+            for (const [cKey, cell] of Object.entries(rowObj)) {
+                const cNum = Number(cKey);
+                if (!Number.isSafeInteger(cNum) || cNum < 0 || !cell || typeof cell !== 'object') continue;
+                const p = cell.p as JsonObject | undefined;
+                const body = p?.body as JsonObject | undefined;
+                const customRanges = Array.isArray(body?.customRanges) ? body.customRanges as JsonObject[] : [];
+                for (const cr of customRanges) {
+                    if (cr.rangeType !== 0 || !cr.properties || typeof cr.properties !== 'object') continue;
+                    const props = cr.properties as JsonObject;
+                    const url = typeof props.url === 'string' ? props.url : '';
+                    if (!url) continue;
+                    const coordRef = `${columnLetters(cNum + 1)}${rNum + 1}`;
+                    const tooltipAttr = typeof props.tooltip === 'string' && props.tooltip ? ` tooltip="${escapeXml(props.tooltip)}"` : '';
+                    if (url.startsWith('#gid=')) {
+                        const m = /^#gid=([^&]+)&range=(.+)$/.exec(url);
+                        if (m) {
+                            const targetSheet = sheetsMap[m[1]];
+                            const targetName = typeof targetSheet?.name === 'string' ? targetSheet.name : m[1];
+                            hyperlinkXmlParts.push(`<hyperlink ref="${coordRef}" location="${escapeXml(`${targetName}!${m[2]}`)}"${tooltipAttr}/>`);
+                        }
+                    } else if (/^(https?:\/\/|mailto:)/i.test(url)) {
+                        const rId = `rId${sheetRelsEntries.length + 1}`;
+                        sheetRelsEntries.push(`<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${escapeXml(url)}" TargetMode="External"/>`);
+                        hyperlinkXmlParts.push(`<hyperlink ref="${coordRef}" r:id="${rId}"${tooltipAttr}/>`);
+                    }
+                }
+            }
+        }
+        const hyperlinksXml = hyperlinkXmlParts.length > 0 ? `<hyperlinks>${hyperlinkXmlParts.join('')}</hyperlinks>` : '';
+
+        const sheetTables = Array.isArray(workbook.tables)
+            ? workbook.tables.filter(t => t.sheet_id === sheetId)
+            : [];
+        const tablePartXmlParts: string[] = [];
+        for (const tbl of sheetTables) {
+            const tableNum = tableExportCounter++;
+            const startRow = Math.max(0, tbl.header_row - 1);
+            const endRow = tbl.rows.length > 0 ? Math.max(startRow, ...tbl.rows.map(r => r.row - 1)) : startRow;
+            const startCol = tbl.columns.length > 0 ? Math.max(0, Math.min(...tbl.columns.map(c => c.column - 1))) : 0;
+            const endCol = tbl.columns.length > 0 ? Math.max(startCol, ...tbl.columns.map(c => c.column - 1)) : 0;
+            const refA1 = formatRangeA1({startRow, startColumn: startCol, endRow, endColumn: endCol});
+            const safeName = tbl.table_id.replace(/[^A-Za-z0-9_.]/g, '_').replace(/^[^A-Za-z_]/, 'T_');
+            const colsXmlInner = tbl.columns.map((c, idx) =>
+                `<tableColumn id="${idx + 1}" name="${escapeXml(c.column_id)}"/>`,
+            ).join('');
+            const tableXml =
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                `<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${tableNum}" name="${escapeXml(safeName)}" displayName="${escapeXml(safeName)}" ref="${escapeXml(refA1)}" totalsRowShown="0">` +
+                `<autoFilter ref="${escapeXml(refA1)}"/>` +
+                `<tableColumns count="${tbl.columns.length}">${colsXmlInner}</tableColumns>` +
+                '</table>';
+            zipEntries[`xl/tables/table${tableNum}.xml`] = encoder.encode(tableXml);
+            tableContentTypeOverrides.push(`<Override PartName="/xl/tables/table${tableNum}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>`);
+            const rId = `rId${sheetRelsEntries.length + 1}`;
+            sheetRelsEntries.push(`<Relationship Id="${rId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table${tableNum}.xml"/>`);
+            tablePartXmlParts.push(`<tablePart r:id="${rId}"/>`);
+        }
+        const tablePartsXml = tablePartXmlParts.length > 0 ? `<tableParts count="${tablePartXmlParts.length}">${tablePartXmlParts.join('')}</tableParts>` : '';
+
+        if (sheetRelsEntries.length > 0) {
+            zipEntries[`xl/worksheets/_rels/${sheetFileName}.rels`] = encoder.encode(
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+                `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheetRelsEntries.join('')}</Relationships>`,
+            );
+        }
+
         const sheetXml =
             '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
             '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
             sheetViewsXml +
             colsXml +
             `<sheetData>${rowsXml.join('')}</sheetData>` +
+            sheetProtectionXml +
             autoFilterXml +
             mergesXml +
             cfXmlParts.join('') +
             stdDvsBlock +
+            hyperlinksXml +
             x14DvsBlock +
+            tablePartsXml +
             '</worksheet>';
 
         zipEntries[`xl/worksheets/${sheetFileName}`] = encoder.encode(sheetXml);
@@ -1844,6 +2498,7 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
         contentTypeOverrides.join('') +
         '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
         '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>' +
+        tableContentTypeOverrides.join('') +
         '</Types>';
 
     const rootRelsXml =
@@ -1868,16 +2523,6 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
     const zipped = zipSync(zipEntries, {level: 6});
     const outBuffer = Buffer.from(zipped.buffer, zipped.byteOffset, zipped.byteLength);
     const outputSha = createHash('sha256').update(outBuffer).digest('hex');
-
-    if (Array.isArray(workbook.tables) && workbook.tables.length > 0) {
-        losses.push({
-            scope: 'workbook',
-            target: 'tables',
-            property: 'logical_table_bindings',
-            status: 'lost',
-            reason: 'xlsx_exports_worksheet_grid_only',
-        });
-    }
 
     return {
         bytes: outBuffer,

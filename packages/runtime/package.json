@@ -47,5 +47,8 @@
     "@types/node": "^26.0.0",
     "@types/yauzl": "^3.4.0",
     "typescript": "^5.9.3"
+  },
+  "optionalDependencies": {
+    "@ironcalc/nodejs": "0.9.1"
   }
 }

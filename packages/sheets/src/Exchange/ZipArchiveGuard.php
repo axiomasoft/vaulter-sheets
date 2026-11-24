@@ -28,6 +28,28 @@ final class ZipArchiveGuard
 
     private const int S_IFMT = 0170000;
 
+    /**
+     * @param resource $stream
+     */
+    public static function inspectStream(mixed $stream, int $maxCompressedBytes): void
+    {
+        if (!is_resource($stream)) {
+            throw new WorkbookProblem('unsafe_archive', 422);
+        }
+        $bytes = '';
+        while (!feof($stream)) {
+            $chunk = fread($stream, 65536);
+            if ($chunk === false) {
+                throw new WorkbookProblem('unsafe_archive', 422);
+            }
+            $bytes .= $chunk;
+            if (strlen($bytes) > $maxCompressedBytes) {
+                throw new WorkbookProblem('limit_exceeded', 413);
+            }
+        }
+        (new self())->assertSafe($bytes);
+    }
+
     private const int S_IFREG = 0100000;
 
     private const int S_IFDIR = 0040000;
