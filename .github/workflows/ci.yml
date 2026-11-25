@@ -120,7 +120,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup Node
-        uses: ./.github/actions/setup-node
+        uses: $/.github/actions/setup-node
         with:
           node-version: "26.13.1"
           install: "false"
@@ -134,7 +134,7 @@ jobs:
         run: scripts/ci/checkout-ecosystem.sh vaulter vaulter-collaboration packman
 
       - name: Setup PHP and Composer
-        uses: ./.github/actions/setup-php
+        uses: $/.github/actions/setup-php
         with:
           php-version: "8.4"
           extensions: mbstring, xml, xmlreader, zip, pdo_pgsql, pgsql
@@ -161,7 +161,7 @@ jobs:
         run: composer test:types
 
       - name: Lint workflows
-        uses: ./.github/actions/lint-workflows
+        uses: $/.github/actions/lint-workflows
 
       - name: Quality summary
         if: always()
@@ -228,7 +228,7 @@ jobs:
         run: scripts/ci/checkout-ecosystem.sh vaulter vaulter-collaboration packman
 
       - name: Setup PHP and Composer
-        uses: ./.github/actions/setup-php
+        uses: $/.github/actions/setup-php
         with:
           php-version: ${{ matrix.php }}
           extensions: mbstring, xml, xmlreader, zip, pdo_pgsql, pgsql
@@ -253,7 +253,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libatomic1
 
       - name: Setup Node
-        uses: ./.github/actions/setup-node
+        uses: $/.github/actions/setup-node
         with:
           node-version: "26.13.1"
 
@@ -302,7 +302,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libatomic1
 
       - name: Setup Node
-        uses: ./.github/actions/setup-node
+        uses: $/.github/actions/setup-node
         with:
           node-version: "26.13.1"
           install: "false"
@@ -313,7 +313,7 @@ jobs:
           node -e 'const engines = require("./package.json").engines || {}; if (engines.node !== ">=26.13.1") { console.error(engines); process.exit(1); }'
 
       - name: Setup PHP and Composer
-        uses: ./.github/actions/setup-php
+        uses: $/.github/actions/setup-php
         with:
           php-version: "8.4"
           extensions: mbstring, xml, xmlreader, zip, pdo_pgsql, pgsql
