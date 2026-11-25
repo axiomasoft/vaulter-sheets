@@ -1,32 +1,22 @@
 name: CI
 
-# PHP 8.4 and 8.5, PostgreSQL 18.7 and 19.0, Node.js 26.13.1.
-# Migrations run before the unindexed-FK gate, then Pest. The static job runs
-# PHPStan, Pint, Rector (dry run) and 100 % type coverage once per PHP
-# version. JS workspaces, package CI scripts, and the runtime/realtime images
-# are built here.
-# Stop-cranes (scripts/ci/engineering-rails.py), enforced before review:
-# Zero-Royalty denylist (0 forbidden packages), 64-bit hashtextextended locks,
-# no session pg_advisory_lock, no DEFERRABLE INITIALLY DEFERRED, no raw
-# DB::transaction(), no set_config(..., false), no parse_url(), no
-# ZipArchive::extractTo(), no CURLOPT_RESOLVE, no unindexed FK, no
-# Helpers/Utils/Common/Misc/Traits directories, no @phpstan-ignore,
-# no @psalm-suppress, no test ->skip(), no Eloquent Model on an #[Api]
-# surface, no libclamav linkage, no registry.tiptap.dev.
-# scripts/ci/engineering-rails.py carries a negative fixture (--self-test) that
-# must fail when a forbidden package or a banned call is introduced.
-# Private sibling checkouts sit beside GITHUB_WORKSPACE
-# (../vaulter, ../vaulter-collaboration, ../packman) so Composer path
-# repositories and packages/vue file:../../../vaulter/packages/vue resolve.
-# scripts/ci/checkout-ecosystem.sh fetches them: vaulter and
-# vaulter-collaboration at main, Packman at the tag the root composer.json
-# pins. secrets.VAULTER_READ_TOKEN is sent as an HTTP header for the private
-# axiomasoft repositories. An existing sibling directory is reused.
-# `CI gate` needs every job and is the one check a branch rule should require.
+# DAG (GitHub draws this from `needs`):
+#   changes → quality → { php, node, images } → CI gate
+#
+# quality is the fast fail: stop-cranes, composer validate, Pint, PHPStan, Rector,
+# 100 % type coverage, the Node engines assertion, actionlint and zizmor. The
+# heavier lanes only start after it succeeds. Path filters skip unaffected lanes
+# on feature branches; a push to main, workflow_dispatch, or a change under
+# .github/ always runs every lane. `CI gate` is the single check a branch rule
+# should require (skipped lanes are allowed).
+#
+# Siblings (../vaulter, ../vaulter-collaboration, ../packman) come from
+# scripts/ci/checkout-ecosystem.sh. VAULTER_READ_TOKEN is optional now that those
+# repositories are public; when set, it is sent as an HTTP header (never in a URL).
 
 on:
   push:
-    branches: [main, 'feat/**', 'fix/**']
+    branches: [main, 'refactor/**', 'feat/**', 'fix/**', 'hotfix/**', 'chore/**']
   pull_request:
   workflow_dispatch:
 
@@ -37,31 +27,117 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  VAULTER_READ_TOKEN: ${{ secrets.VAULTER_READ_TOKEN }}
+  COMPOSER_NO_INTERACTION: "1"
+
 jobs:
-  stop-cranes:
-    name: Stop-cranes
+  changes:
+    name: Changes
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.plan.outputs.full }}
+      php: ${{ steps.plan.outputs.php }}
+      node: ${{ steps.plan.outputs.node }}
+      docker: ${{ steps.plan.outputs.docker }}
+      e2e: ${{ steps.plan.outputs.e2e }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Filter paths
+        id: filter
+        if: github.event_name != 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: |
+            php:
+              - "**/*.php"
+              - "composer.json"
+              - "phpstan*"
+              - "pint.json"
+              - "rector.php"
+              - "**/phpunit.xml*"
+            node:
+              - "package.json"
+              - "package-lock.json"
+              - "packages/**/package.json"
+              - "packages/**/*.{js,mjs,cjs,ts,tsx,vue,json}"
+              - "scripts/**/*.{js,mjs,cjs,sh}"
+            docker:
+              - "**/Dockerfile*"
+            e2e:
+              - "scripts/ci/*.sh"
+              - "tests/e2e/**"
+            workflows:
+              - ".github/**"
+              - "scripts/ci/**"
+
+      - name: Plan lanes
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          FILTER_PHP: ${{ steps.filter.outputs.php }}
+          FILTER_NODE: ${{ steps.filter.outputs.node }}
+          FILTER_DOCKER: ${{ steps.filter.outputs.docker }}
+          FILTER_E2E: ${{ steps.filter.outputs.e2e }}
+          FILTER_WORKFLOWS: ${{ steps.filter.outputs.workflows }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == "workflow_dispatch" || "$REF" == "refs/heads/main" || "$FILTER_WORKFLOWS" == "true" || -z "$FILTER_PHP" ]]; then
+            full=true; php=true; node=true; docker=true; e2e=true
+          else
+            full=false
+            php=${FILTER_PHP:-false}
+            node=${FILTER_NODE:-false}
+            docker=${FILTER_DOCKER:-false}
+            e2e=${FILTER_E2E:-false}
+          fi
+          {
+            echo "full=$full"
+            echo "php=$php"
+            echo "node=$node"
+            echo "docker=$docker"
+            echo "e2e=$e2e"
+          } >> "$GITHUB_OUTPUT"
+          echo "lanes full=$full php=$php node=$node docker=$docker e2e=$e2e"
+
+  quality:
+    name: Quality (stop-cranes, Pint, PHPStan, Rector, type coverage, workflow lint)
+    needs: changes
+    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.php == 'true' || needs.changes.outputs.node == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Setup Node.js 26.13.1
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
         with:
           node-version: "26.13.1"
+          install: "false"
 
       - name: Assert Node.js >=26.13.1
         run: |
           node -e 'const parts = process.versions.node.split(".").map(Number); const ok = parts[0] > 26 || (parts[0] === 26 && (parts[1] > 13 || (parts[1] === 13 && parts[2] >= 1))); if (!ok) { console.error(process.versions.node); process.exit(1); }'
           node -e 'const engines = require("./package.json").engines || {}; if (engines.node !== ">=26.13.1") { console.error(engines); process.exit(1); }'
 
-      - name: Setup PHP 8.4
-        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
+      - name: Checkout sibling repositories
+        run: scripts/ci/checkout-ecosystem.sh vaulter vaulter-collaboration packman
+
+      - name: Setup PHP and Composer
+        uses: ./.github/actions/setup-php
         with:
           php-version: "8.4"
+          extensions: mbstring, xml, xmlreader, zip, pdo_pgsql, pgsql
           coverage: none
 
       - name: Validate composer.json
@@ -72,10 +148,39 @@ jobs:
           python3 scripts/ci/engineering-rails.py --root "$GITHUB_WORKSPACE"
           python3 scripts/ci/engineering-rails.py --self-test
 
+      - name: Pint
+        run: composer lint:check
+
+      - name: PHPStan
+        run: composer analyse
+
+      - name: Rector (dry run)
+        run: composer refactor:check
+
+      - name: Type coverage
+        run: composer test:types
+
+      - name: Lint workflows
+        uses: ./.github/actions/lint-workflows
+
+      - name: Quality summary
+        if: always()
+        run: |
+          {
+            echo "## Quality"
+            echo
+            echo "Stop-cranes, composer validate, Pint, PHPStan, Rector, 100 % type coverage, actionlint and zizmor ran on PHP 8.4 / Node 26.13.1."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   php:
     name: PHP ${{ matrix.php }} / PG ${{ matrix.postgres }}
+    needs: [changes, quality]
+    if: always() && needs.quality.result == 'success' && (needs.changes.outputs.full == 'true' || needs.changes.outputs.php == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    permissions:
+      contents: read
+      actions: write
     strategy:
       fail-fast: false
       matrix:
@@ -120,56 +225,37 @@ jobs:
           persist-credentials: false
 
       - name: Checkout sibling repositories
-        env:
-          VAULTER_READ_TOKEN: ${{ secrets.VAULTER_READ_TOKEN }}
         run: scripts/ci/checkout-ecosystem.sh vaulter vaulter-collaboration packman
 
-      - name: Setup PHP ${{ matrix.php }}
-        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
+      - name: Setup PHP and Composer
+        uses: ./.github/actions/setup-php
         with:
           php-version: ${{ matrix.php }}
           extensions: mbstring, xml, xmlreader, zip, pdo_pgsql, pgsql
-          coverage: none
+          coverage: ${{ matrix.php == '8.4' && matrix.postgres == '18.7' && 'pcov' || 'none' }}
 
       - name: Install PostgreSQL client
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
 
       - name: Assert PostgreSQL ${{ matrix.postgres }}
+        env:
+          EXPECTED: ${{ matrix.postgres }}
         run: |
           ver=$(psql -tAc 'SHOW server_version')
           ver=${ver//[[:space:]]/}
           echo "server_version=${ver}"
-          expected="${{ matrix.postgres }}"
           case "${ver}" in
-            ${expected}*) ;;
-            *) echo "expected PostgreSQL ${expected}, got ${ver}" >&2; exit 1 ;;
+            "${EXPECTED}"*) ;;
+            *) echo "expected PostgreSQL ${EXPECTED}, got ${ver}" >&2; exit 1 ;;
           esac
-
-      - name: Locate the Composer cache
-        id: composer-cache
-        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Composer downloads
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.composer-cache.outputs.dir }}
-          key: composer-${{ runner.os }}-${{ hashFiles('composer.json', 'packages/*/composer.json') }}
-          restore-keys: composer-${{ runner.os }}-
-
-      - name: Install PHP dependencies
-        run: composer install --no-interaction --no-progress --prefer-dist
 
       - name: Install libatomic1
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libatomic1
 
-      - name: Setup Node.js 26.13.1
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
         with:
           node-version: "26.13.1"
-          cache: npm
-
-      - name: Install Node dependencies
-        run: npm ci
 
       - name: Migrate
         run: php tests/e2e/owner.php
@@ -178,62 +264,29 @@ jobs:
         run: psql -v ON_ERROR_STOP=1 -f scripts/ci/unindexed-fks.sql
 
       - name: Test
-        run: composer test
-
-  static:
-    name: PHP ${{ matrix.php }} static
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        php: ['8.4', '8.5']
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Checkout sibling repositories
         env:
-          VAULTER_READ_TOKEN: ${{ secrets.VAULTER_READ_TOKEN }}
-        run: scripts/ci/checkout-ecosystem.sh vaulter vaulter-collaboration packman
+          WITH_COVERAGE: ${{ matrix.php == '8.4' && matrix.postgres == '18.7' && '1' || '0' }}
+        run: |
+          if [[ "$WITH_COVERAGE" == 1 ]]; then
+            mkdir -p build/coverage
+            composer test -- --coverage --coverage-clover build/coverage/clover.xml
+          else
+            composer test
+          fi
 
-      - name: Setup PHP ${{ matrix.php }}
-        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
+      - name: Upload coverage
+        if: matrix.php == '8.4' && matrix.postgres == '18.7'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          php-version: ${{ matrix.php }}
-          extensions: mbstring, xml, xmlreader, zip, pdo_pgsql, pgsql
-          coverage: none
-
-      - name: Locate the Composer cache
-        id: composer-cache
-        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Composer downloads
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.composer-cache.outputs.dir }}
-          key: composer-${{ runner.os }}-${{ hashFiles('composer.json', 'packages/*/composer.json') }}
-          restore-keys: composer-${{ runner.os }}-
-
-      - name: Install PHP dependencies
-        run: composer install --no-interaction --no-progress --prefer-dist
-
-      - name: PHPStan
-        run: composer analyse
-
-      - name: Pint
-        run: composer lint:check
-
-      - name: Rector
-        run: composer refactor:check
-
-      - name: Type coverage
-        run: composer test:types
+          name: coverage-php-pgsql
+          path: build/coverage/clover.xml
+          if-no-files-found: warn
+          retention-days: 14
 
   node:
     name: Node 26.13.1 workspaces
+    needs: [changes, quality]
+    if: always() && needs.quality.result == 'success' && (needs.changes.outputs.full == 'true' || needs.changes.outputs.node == 'true' || needs.changes.outputs.php == 'true' || needs.changes.outputs.e2e == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -243,44 +296,28 @@ jobs:
           persist-credentials: false
 
       - name: Checkout sibling repositories
-        env:
-          VAULTER_READ_TOKEN: ${{ secrets.VAULTER_READ_TOKEN }}
         run: scripts/ci/checkout-ecosystem.sh vaulter vaulter-collaboration packman
 
       - name: Install libatomic1
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libatomic1
 
-      - name: Setup Node.js 26.13.1
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - name: Setup Node
+        uses: ./.github/actions/setup-node
         with:
           node-version: "26.13.1"
-          cache: npm
+          install: "false"
 
       - name: Assert Node.js >=26.13.1
         run: |
           node -e 'const parts = process.versions.node.split(".").map(Number); const ok = parts[0] > 26 || (parts[0] === 26 && (parts[1] > 13 || (parts[1] === 13 && parts[2] >= 1))); if (!ok) { console.error(process.versions.node); process.exit(1); }'
           node -e 'const engines = require("./package.json").engines || {}; if (engines.node !== ">=26.13.1") { console.error(engines); process.exit(1); }'
 
-      - name: Setup PHP 8.4
-        uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
+      - name: Setup PHP and Composer
+        uses: ./.github/actions/setup-php
         with:
           php-version: "8.4"
           extensions: mbstring, xml, xmlreader, zip, pdo_pgsql, pgsql
           coverage: none
-
-      - name: Locate the Composer cache
-        id: composer-cache
-        run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
-
-      - name: Cache Composer downloads
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.composer-cache.outputs.dir }}
-          key: composer-${{ runner.os }}-${{ hashFiles('composer.json', 'packages/*/composer.json') }}
-          restore-keys: composer-${{ runner.os }}-
-
-      - name: Install PHP dependencies
-        run: composer install --no-interaction --no-progress --prefer-dist
 
       - name: Build sibling @vaulter/vue
         run: (cd ../vaulter && npm ci --no-audit --no-fund && npm run build --workspace @vaulter/vue)
@@ -321,6 +358,8 @@ jobs:
 
   images:
     name: Runtime and realtime images
+    needs: [changes, quality]
+    if: always() && (needs.quality.result == 'success' || needs.quality.result == 'skipped') && (needs.changes.outputs.full == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.node == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -338,14 +377,29 @@ jobs:
   ci-gate:
     name: CI gate
     if: always()
-    needs: [stop-cranes, php, static, node, images]
+    needs: [changes, quality, php, node, images]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      # The one check a branch rule has to require: red unless every job (and every matrix cell) succeeded,
-      # so a failed, cancelled or skipped lane can never pass as green.
       - name: Verdict
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          jq -e -r 'to_entries | map(select(.value.result != "success") | "\(.key): \(.value.result)") | if length == 0 then "all jobs succeeded" else (join("\n") | halt_error(1)) end' <<< "$NEEDS"
+          python3 - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["NEEDS"])
+          lines = [f"- `{name}`: {job['result']}" for name, job in sorted(needs.items())]
+          failed = {name: job["result"] for name, job in needs.items() if job["result"] not in ("success", "skipped")}
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as fh:
+                  fh.write("## CI gate\n\n")
+                  fh.write("\n".join(lines) + "\n")
+                  if failed:
+                      fh.write("\nA skipped lane is allowed when the path filter dropped it; failed or cancelled jobs are not.\n")
+          for name, result in sorted(failed.items()):
+              print(f"::error::{name}: {result}")
+          if failed:
+              sys.exit(1)
+          print("all required jobs succeeded or were skipped")
+          PY

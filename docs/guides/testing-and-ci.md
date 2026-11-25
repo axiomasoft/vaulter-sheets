@@ -59,27 +59,37 @@ owner and a Vite page, then drive Chromium through Playwright. They need Docker 
 
 ## CI (`.github/workflows/ci.yml`)
 
-| Job | Runs |
-| --- | --- |
-| `stop-cranes` | Node.js version assertion, `composer validate`, stop-cranes and their self-test |
-| `php` (PHP 8.4, 8.5 × PostgreSQL 18.7, 19.0) | Migrations via `tests/e2e/owner.php`, the unindexed-FK gate, `composer test` |
-| `static` (PHP 8.4, 8.5) | PHPStan, Pint, Rector, type coverage |
-| `node` | Sibling `@vaulter/vue` build, test/typecheck/build of the four workspaces, all end-to-end lanes |
-| `images` | `docker build` of the runtime and realtime images |
-| `CI gate` | Fails unless every job above (and every matrix cell) succeeded |
+The workflow is a DAG. GitHub draws it from each job's `needs`:
 
-Branch protection should require only `CI gate`. The workflow runs on pushes to `main`, `feat/**`
-and `fix/**`, on pull requests and on demand. Actions are pinned by commit SHA, PostgreSQL images
-by digest; npm and Composer downloads are cached.
+```
+changes ──► quality ──► php (8.4/8.5 × PostgreSQL 18.7/19.0; default SQLite is local)
+                   ├──► node (workspaces, then the end-to-end lanes)
+                   └──► images (runtime and realtime Docker builds)
+                         └──► CI gate
+```
 
-### Running CI on another account
+1. **Changes** selects lanes. A push to `main`, a `workflow_dispatch`, or a change under
+   `.github/` or `scripts/ci/` runs every lane. On other branches, `dorny/paths-filter` skips
+   lanes whose files did not change.
+2. **Quality** is the fast fail: the Node engines assertion, stop-cranes, `composer validate`,
+   Pint, PHPStan, Rector, 100 % type coverage, actionlint and zizmor. Heavier lanes start only
+   after it succeeds.
+3. **PHP, Node and images** then run in parallel. The PHP 8.4 / PostgreSQL 18.7 cell uploads a
+   Clover coverage artifact.
+4. **CI gate** waits for every job (`if: always()`) and fails if any needed job failed or was
+   cancelled. A skipped lane (path filter) is allowed. Branch protection should require only
+   `CI gate`.
 
-Every job except `images` checks out the sibling repositories with
-`scripts/ci/checkout-ecosystem.sh`. A mirror needs:
+Triggers: pushes to `main`, `refactor/**`, `feat/**`, `fix/**`, `hotfix/**` and `chore/**`, pull
+requests, and manual `workflow_dispatch`. Concurrent runs on the same ref cancel the earlier one.
+Actions are pinned by commit SHA (with a version comment); PostgreSQL images by digest. PHP and
+Node setup, Composer/npm caching, and workflow lint live in composite actions under
+`.github/actions/`.
 
-- the repositories `vaulter`, `vaulter-collaboration` and `packman` (with the tag named in
-  `composer.json`, currently `v0.1.1`) readable from the mirror's owner, or the script's URLs
-  pointed at where they live;
-- a secret `VAULTER_READ_TOKEN` that can read them, when they are private;
-- GitHub-hosted `ubuntu-24.04` runners (or self-hosted ones with Docker), since the end-to-end lanes
-  and the image job start containers.
+### Sibling repositories
+
+Every job except `images` checks out the siblings with `scripts/ci/checkout-ecosystem.sh`
+(`vaulter` and `vaulter-collaboration` at `main`, Packman at the tag pinned in `composer.json`,
+currently `v0.1.1`). The secret `VAULTER_READ_TOKEN` is optional while those repositories are
+public; when set, it is sent as an HTTP header, never in a URL. Runners need Docker (service
+containers, end-to-end lanes, and the image job).

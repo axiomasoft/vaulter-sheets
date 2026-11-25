@@ -1,0 +1,45 @@
+name: Setup PHP and Composer
+description: Install PHP, cache Composer downloads, and install dependencies.
+
+inputs:
+  php-version:
+    description: PHP version to install
+    default: "8.4"
+  extensions:
+    description: Comma-separated PHP extensions
+    default: "mbstring, xml, zip, pdo, pdo_sqlite, sqlite3, pdo_pgsql, pgsql, pcntl, posix"
+  coverage:
+    description: Coverage driver (none, pcov, xdebug)
+    default: none
+  install:
+    description: Run composer install after setup
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Setup PHP ${{ inputs.php-version }}
+      uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
+      with:
+        php-version: ${{ inputs.php-version }}
+        extensions: ${{ inputs.extensions }}
+        coverage: ${{ inputs.coverage }}
+        tools: composer:v2
+
+    - name: Composer cache directory
+      id: composer-cache
+      shell: bash
+      run: echo "dir=$(composer config cache-files-dir)" >> "$GITHUB_OUTPUT"
+
+    - name: Cache Composer downloads
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.composer-cache.outputs.dir }}
+        # composer.lock is gitignored in the satellites; key on the manifests.
+        key: composer-${{ runner.os }}-php${{ inputs.php-version }}-${{ hashFiles('composer.json', 'packages/*/composer.json') }}
+        restore-keys: composer-${{ runner.os }}-php${{ inputs.php-version }}-
+
+    - name: Install Composer dependencies
+      if: inputs.install == 'true'
+      shell: bash
+      run: composer install --prefer-dist --no-interaction --no-progress
