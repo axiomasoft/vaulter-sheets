@@ -795,3 +795,25 @@ test('leaves DDE links and program calls out of an exported workbook', async () 
     assert.match(sheetXml, /<f>A1\*3<\/f>/);
     assert.ok(report.losses.some(loss => loss.target === 'Sheet1!B1' && loss.reason === 'dde_link_stripped'));
 });
+
+test('CSV export neutralises each leading formula trigger in text cells, and nothing else', async () => {
+    const {workbook} = await importCsv(Buffer.from('x\n'), {delimiter: ',', line_ending: '\n'});
+    const sheetId = (workbook.native.sheetOrder as string[])[0];
+    const sheet = (workbook.native.sheets as Record<string, JsonObject>)[sheetId];
+    sheet.columnCount = 10;
+    sheet.cellData = {'0': {
+        '0': {t: 1, v: '@SUM(A1)'},
+        '1': {t: 1, v: '-2+3'},
+        '2': {t: 1, v: '\tx'},
+        '3': {t: 1, v: '\rx'},
+        '4': {t: 1, v: 'plain'},
+        '5': {t: 2, v: -15},
+    }};
+
+    const exported = await exportCsv(workbook, {delimiter: ',', line_ending: '\n'});
+    assert.equal(exported.bytes.toString('utf8'), `'@SUM(A1),'-2+3,'\tx,"'\rx",plain,-15\n`);
+    assert.deepEqual(
+        exported.report.diagnostics.filter(d => d.code === 'formula_injection_escaped').map(d => d.target),
+        ['R1C1', 'R1C2', 'R1C3', 'R1C4'],
+    );
+});
