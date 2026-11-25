@@ -132,4 +132,4 @@ expiry, revocation and access each time. The room process only decides when to a
   Identity in a presence is the room's: `client_id` is an id the room gives each socket, and
   `user.id` / `user.type` are the subject (`sub`, `sub_type`) of the room token the owner accepted.
   A client's own `client_id` and `user.id` are not passed on; its name and colour are, display only.
-- **Commands.** A room queues at most 64 intents; the next is answered `room_busy` (retryable).
+- **Commands.** A room queues at most 64 intents, and at most 4 of one peer; the next is answered `room_busy` (retryable).

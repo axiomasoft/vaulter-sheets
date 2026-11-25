@@ -44,20 +44,25 @@ async function startRoom(t: TestContext, owner: {acquire: (body: Body) => Reply;
     const address = app.server.address();
     assert.ok(address && typeof address !== 'string');
 
-    const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/rooms/fixture`, WEBSOCKET_SUBPROTOCOL);
-    t.after(() => socket.terminate());
-    const messages: {type: string; command_id?: string; code?: string; retryable?: boolean; receipt?: {command_id: string; seq: number}}[] = [];
-    let closed: {code: number; reason: string} | null = null;
-    socket.on('message', data => { messages.push(JSON.parse(data.toString())); });
-    socket.on('close', (code, reason) => { closed = {code, reason: reason.toString()}; });
-    await once(socket, 'open');
-    socket.send(JSON.stringify({type: 'open', token: 'fixture'}));
-    await waitFor(() => messages.some(m => m.type === 'state'));
-    const intent = (id: string) => socket.send(JSON.stringify({type: 'intent', if_match: etag, intent: {
-        command_id: id, expected_generation: 2, policy: 'rebase_cells',
-        commands: [{kind: 'set_number', sheet_id: 'detail', row: 3, column: 3, expected: null, value: 1}],
-    }}));
-    return {messages, intent, closed: () => closed};
+    type Message = {type: string; command_id?: string; code?: string; retryable?: boolean; receipt?: {command_id: string; seq: number}};
+    /** One more peer of the room, admitted and holding its first state. */
+    const join = async () => {
+        const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/rooms/fixture`, WEBSOCKET_SUBPROTOCOL);
+        t.after(() => socket.terminate());
+        const messages: Message[] = [];
+        let closed: {code: number; reason: string} | null = null;
+        socket.on('message', data => { messages.push(JSON.parse(data.toString())); });
+        socket.on('close', (code, reason) => { closed = {code, reason: reason.toString()}; });
+        await once(socket, 'open');
+        socket.send(JSON.stringify({type: 'open', token: 'fixture'}));
+        await waitFor(() => messages.some(m => m.type === 'state'));
+        const intent = (id: string) => socket.send(JSON.stringify({type: 'intent', if_match: etag, intent: {
+            command_id: id, expected_generation: 2, policy: 'rebase_cells',
+            commands: [{kind: 'set_number', sheet_id: 'detail', row: 3, column: 3, expected: null, value: 1}],
+        }}));
+        return {messages, intent, closed: () => closed};
+    };
+    return {...await join(), join};
 }
 
 async function waitFor(condition: () => boolean): Promise<void> {
@@ -126,15 +131,43 @@ test('a room queues at most 64 intents and answers the next with a retryable roo
         append: body => new Promise(resolve => { held.push(() => resolve(committed(body, ++seq))); }),
     });
     t.after(() => { for (const release of held) release(); });
-    for (let index = 1; index <= 65; index++) room.intent(`intent-${index}`);
-    await waitFor(() => room.messages.some(m => m.type === 'error'));
-    const errors = room.messages.filter(m => m.type === 'error');
+    // 16 peers at their own limit of 4 fill the room's 64 slots.
+    const peers = [room, ...await Promise.all(Array.from({length: 16}, () => room.join()))];
+    for (let index = 1; index <= 64; index++) peers[Math.floor((index - 1) / 4)]!.intent(`intent-${index}`);
+    peers[16]!.intent('intent-65');
+    await waitFor(() => peers[16]!.messages.some(m => m.type === 'error'));
+    const errors = peers.flatMap(peer => peer.messages.filter(m => m.type === 'error'));
     assert.deepEqual(errors, [{type: 'error', command_id: 'intent-65', code: 'room_busy', retryable: true}]);
     assert.equal(held.length, 1, 'only the head of the queue reached the owner');
 
     held.shift()!();
     await waitFor(() => held.length === 1);
-    room.intent('after-drain');
+    peers[16]!.intent('after-drain');
     await new Promise<void>(resolve => setTimeout(resolve, 100));
-    assert.equal(room.messages.filter(m => m.type === 'error').length, 1, 'a slot freed by a receipt takes a new intent');
+    assert.equal(peers[16]!.messages.filter(m => m.type === 'error').length, 1, 'a slot freed by a receipt takes a new intent');
+});
+
+test('one peer holds at most 4 queued intents, so it cannot take the room\'s queue from the others', {timeout: 8000}, async t => {
+    const held: (() => void)[] = [];
+    let seq = 0;
+    const room = await startRoom(t, {
+        headSeq: () => seq,
+        acquire: () => ({body: {owner_fence: 1, head_seq: seq, owner_expires_at: later()}}),
+        append: body => new Promise(resolve => { held.push(() => resolve(committed(body, ++seq))); }),
+    });
+    t.after(() => { for (const release of held) release(); });
+    for (let index = 1; index <= 5; index++) room.intent(`flood-${index}`);
+    await waitFor(() => room.messages.some(m => m.type === 'error'));
+    assert.deepEqual(room.messages.filter(m => m.type === 'error'), [{type: 'error', command_id: 'flood-5', code: 'room_busy', retryable: true}]);
+
+    const other = await room.join();
+    other.intent('other');
+    held.shift()!();
+    await waitFor(() => held.length === 1);
+    assert.equal(other.messages.some(m => m.type === 'error'), false, 'another peer still gets a slot');
+    room.intent('flood-6');
+    await new Promise<void>(resolve => setTimeout(resolve, 100));
+    assert.equal(room.messages.filter(m => m.type === 'error').length, 1, 'a receipt frees the peer\'s own slot');
+    // Draining the flood's appends one by one reaches the other peer's intent.
+    await waitFor(() => { held.shift()?.(); return other.messages.some(m => m.type === 'ack' && m.receipt?.command_id === 'other'); });
 });

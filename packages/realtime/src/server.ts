@@ -22,6 +22,9 @@ const MAX_TIMER_MS = 2_147_483_647;
 const REVALIDATE_MS = 60_000;
 /** The peers one room serves; only peers whose credential the owner accepted count. */
 const ROOM_PEER_LIMIT = 32;
+/** The intents a room holds for all its peers, and for one peer: the client sends one at a time, so one peer cannot fill the room's queue. */
+const ROOM_QUEUE_LIMIT = 64;
+const PEER_QUEUE_LIMIT = 4;
 /** The sockets one process holds, peers still presenting their credential included. */
 const SOCKET_LIMIT = 1024;
 /**
@@ -113,6 +116,8 @@ interface Peer {
     principal?: {id: string; type: string} | null;
     expiry?: NodeJS.Timeout;
     checkedAt: number;
+    /** This peer's intents in the room's queue. */
+    queued: number;
 }
 
 /**
@@ -579,7 +584,7 @@ export function createRealtimeServer(options: Options) {
     function attach(roomId: string, socket: WebSocket, address: string): void {
         const room = rooms.get(roomId) ?? {peers: new Set<Peer>(), work: Promise.resolve(), queued: 0, history: new Map<number, WorkbookDeltaUpdate>(), idleStreak: 0, nextPollAt: Date.now() + baseRefreshMs};
         rooms.set(roomId, room);
-        const peer: Peer = {socket, token: '', seq: -1, opening: true, presenceId: randomUUID(), checkedAt: 0};
+        const peer: Peer = {socket, token: '', seq: -1, opening: true, presenceId: randomUUID(), checkedAt: 0, queued: 0};
         room.peers.add(peer);
         const timer = setTimeout(() => socket.close(4403, 'Room credential required'), 5000);
         pending.set(address, (pending.get(address) ?? 0) + 1);
@@ -654,13 +659,14 @@ export function createRealtimeServer(options: Options) {
                 return;
             }
             const commandId = intent.command_id;
-            if (room.queued >= 64) {
+            if (room.queued >= ROOM_QUEUE_LIMIT || peer.queued >= PEER_QUEUE_LIMIT) {
                 send(peer, {type: 'error', command_id: commandId, code: 'room_busy', retryable: true});
                 return;
             }
             const tag = message.if_match;
             const traceparent = typeof message.traceparent === 'string' && /^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/.test(message.traceparent) ? message.traceparent : undefined;
             room.queued++;
+            peer.queued++;
             room.work = room.work.then(async () => {
                 try {
                     if (socket.readyState !== WebSocket.OPEN) return;
@@ -727,6 +733,7 @@ export function createRealtimeServer(options: Options) {
                     error(peer, cause, commandId);
                 } finally {
                     room.queued--;
+                    peer.queued--;
                     if (!room.peers.size && !room.queued) rooms.delete(roomId);
                 }
             });
