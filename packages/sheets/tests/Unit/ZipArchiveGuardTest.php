@@ -103,10 +103,19 @@ it('rejects an unsafe archive with the reason that names the broken rule', funct
     'entries declared above 150 MiB in total' => fn (): array => [declaredSize(guardZip(array_map(static fn (int $i): array => ['name' => "xl/{$i}.bin", 'data' => random_bytes(600 * 1024)], range(1, 4))), 40 * 1024 * 1024), 'limit_exceeded', 413, 'total_size_limit'],
     'entry inflating past its declared size' => fn (): array => [declaredSize(guardZip([['name' => 'xl/a.bin', 'data' => random_bytes(128 * 1024)]]), 1000), 'limit_exceeded', 413, 'zip_bomb_overflow'],
     'entry shorter than its declared size' => fn (): array => [declaredSize(guardZip([['name' => 'xl/a.bin', 'data' => random_bytes(128 * 1024)]]), 256 * 1024), 'unsafe_archive', 422, 'size_mismatch'],
-    'XInclude namespace spelled with a character reference in relationships' => fn (): array => [guardZip([['name' => '_rels/.rels', 'data' => '<Relationships xmlns="'.RELS_NS.'"><x:include xmlns:x="http&#58;//www.w3.org/2001/XInclude" href="/etc/passwd"/></Relationships>']]), 'unsafe_archive', 422, 'xxe_xinclude'],
+    'XInclude namespace spelled with a decimal character reference in XML' => fn (): array => [guardZip([['name' => 'xl/workbook.xml', 'data' => '<a xmlns:xi="http&#58;//www.w3.org/2001/XInclude"><xi:include href="/etc/passwd"/></a>']]), 'unsafe_archive', 422, 'xxe_or_xinclude'],
+    'XInclude default namespace spelled with hex references in XML' => fn (): array => [guardZip([['name' => 'xl/worksheets/sheet1.xml', 'data' => "<include xmlns = 'http&#x3A;&#x2F;/www.w3.org/2001/XInclude' href='/etc/passwd'/>"]]), 'unsafe_archive', 422, 'xxe_or_xinclude'],
+    'XInclude namespace spelled with a character reference in relationships' => fn (): array => [guardZip([['name' => '_rels/.rels', 'data' => '<Relationships xmlns="'.RELS_NS.'"><x:include xmlns:x="http&#58;//www.w3.org/2001/XInclude" href="/etc/passwd"/></Relationships>']]), 'unsafe_archive', 422, 'xxe_or_xinclude'],
     'lower-case external target mode' => fn (): array => [guardZip([['name' => 'xl/_rels/workbook.xml.rels', 'data' => relationship('http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate', 'https://evil.invalid/a.dotm', 'external')]]), 'unsafe_archive', 422, 'disallowed_external_relationship'],
     'external hyperlink with a javascript URL' => fn (): array => [guardZip([['name' => 'xl/worksheets/_rels/sheet1.xml.rels', 'data' => relationship(HYPERLINK_REL, 'javascript:alert(1)')]]), 'unsafe_archive', 422, 'disallowed_external_relationship'],
 ]);
+
+it('accepts character references in XML text and in other namespace declarations', function (): void {
+    $sheet = '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:x="urn:a&#58;b">'
+        .'<sheetData><row><c t="inlineStr"><is><t>line&#10;two &#x26; http&#58;//www.w3.org/2001/XInclude</t></is></c></row></sheetData></worksheet>';
+
+    expect(guardProblem(guardZip([['name' => 'xl/worksheets/sheet1.xml', 'data' => $sheet]])))->toBeNull();
+});
 
 it('accepts web and mail hyperlinks and internal relationships', function (string $rels): void {
     $bytes = guardZip([

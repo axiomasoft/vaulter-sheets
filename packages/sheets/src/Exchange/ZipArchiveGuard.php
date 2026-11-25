@@ -230,9 +230,32 @@ final class ZipArchiveGuard
         if (str_contains($xml, "\0") || !mb_check_encoding($xml, 'UTF-8')) {
             throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'invalid_xml_encoding', 'entry' => $entry]);
         }
-        if (preg_match('/<!\s*(?:DOCTYPE|ENTITY)\b/i', $xml) === 1 || str_contains($xml, self::XINCLUDE_NS)) {
+        if (preg_match('/<!\s*(?:DOCTYPE|ENTITY)\b/i', $xml) === 1 || str_contains($xml, self::XINCLUDE_NS)
+            || (str_contains($xml, '&#') && $this->bindsXIncludeThroughCharacterReferences($xml))) {
             throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'xxe_or_xinclude', 'entry' => $entry]);
         }
+    }
+
+    /**
+     * Only an xmlns attribute can put an element in the XInclude namespace, and without a DTD (refused
+     * above) the only escapes its value may hold are character and predefined entity references. Decoding
+     * just those values finds a namespace spelled as "http&#58;//..." that the plain substring check misses,
+     * without parsing the whole part.
+     */
+    private function bindsXIncludeThroughCharacterReferences(string $xml): bool
+    {
+        $found = preg_match_all('/\bxmlns(?::[^\s=\/>]+)?\s*=\s*(?:"([^"]*)"|\'([^\']*)\')/', $xml, $matches, PREG_SET_ORDER);
+        if ($found === false) {
+            return true;
+        }
+        foreach ($matches as $match) {
+            $value = ($match[1] ?? '') !== '' ? $match[1] : ($match[2] ?? '');
+            if (html_entity_decode($value, ENT_QUOTES | ENT_XML1, 'UTF-8') === self::XINCLUDE_NS) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function assertSafeRelationships(string $xml, string $entry): void

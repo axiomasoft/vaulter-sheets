@@ -11,6 +11,13 @@ released on its own line (`release/packages.json`); an entry names the package i
 
 ### Fixed
 
+- `axiomasoft/vaulter-sheets`: a malformed cell range (`A0`, `ZZZZ1`, `B2:A1`, plain text) is
+  answered `422 invalid_command` before the workbook is loaded. It used to reach the runtime and
+  come back as `503 runtime_failed`, which told clients to retry a request that cannot succeed;
+  clients that retried every 503 now get the 422 at once.
+- `axiomasoft/vaulter-sheets`: the archive guard also refuses an XLSX part that declares the
+  XInclude namespace with character references (`http&#58;//www.w3.org/2001/XInclude`); the plain
+  substring check let it through in every part except relationships.
 - `axiomasoft/vaulter-sheets`: an XLSX upload whose relationships part is empty is rejected as
   `unsafe_archive` (HTTP 422, reason `malformed_rels`) instead of failing with HTTP 500.
 - `axiomasoft/vaulter-sheets`: `vaulter-sheets.commands` is read as a boolean with the
