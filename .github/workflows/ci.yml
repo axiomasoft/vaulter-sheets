@@ -16,9 +16,10 @@ name: CI
 # Private sibling checkouts sit beside GITHUB_WORKSPACE
 # (../vaulter, ../vaulter-collaboration, ../packman) so Composer path
 # repositories and packages/vue file:../../../vaulter/packages/vue resolve.
-# secrets.VAULTER_READ_TOKEN is used when the default token cannot read those
-# axiomasoft repositories. An existing sibling directory is reused. Packman is
-# fetched at tag v0.1.1, matching the path-repository version alias.
+# scripts/ci/checkout-ecosystem.sh fetches them: vaulter and
+# vaulter-collaboration at main, Packman at the tag the root composer.json
+# pins. secrets.VAULTER_READ_TOKEN is sent as an HTTP header for the private
+# axiomasoft repositories. An existing sibling directory is reused.
 
 on:
   push:
@@ -113,31 +114,7 @@ jobs:
       - name: Checkout sibling repositories
         env:
           VAULTER_READ_TOKEN: ${{ secrets.VAULTER_READ_TOKEN }}
-          GIT_TERMINAL_PROMPT: "0"
-        run: |
-          set -euo pipefail
-          root="$GITHUB_WORKSPACE"
-          workspace="$(dirname "$root")"
-          fetch_dependency() {
-            local directory="$1" url="$2" ref="$3"
-            local dest="$workspace/$directory"
-            if [ -e "$dest" ]; then
-              echo "sibling present: $dest"
-              return 0
-            fi
-            mkdir -p "$dest"
-            git -C "$dest" init -q -b ci-fetch
-            git -C "$dest" fetch --quiet --depth=1 "$url" "$ref"
-            git -C "$dest" checkout -q -B main FETCH_HEAD
-          }
-          if [ -n "${VAULTER_READ_TOKEN}" ]; then
-            base="https://x-access-token:${VAULTER_READ_TOKEN}@github.com/axiomasoft"
-          else
-            base="https://github.com/axiomasoft"
-          fi
-          fetch_dependency vaulter "$base/vaulter.git" refs/heads/main
-          fetch_dependency vaulter-collaboration "$base/vaulter-collaboration.git" refs/heads/main
-          fetch_dependency packman "$base/packman.git" refs/tags/v0.1.1
+        run: scripts/ci/checkout-ecosystem.sh vaulter vaulter-collaboration packman
 
       - name: Setup PHP ${{ matrix.php }}
         uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
@@ -199,31 +176,7 @@ jobs:
       - name: Checkout sibling repositories
         env:
           VAULTER_READ_TOKEN: ${{ secrets.VAULTER_READ_TOKEN }}
-          GIT_TERMINAL_PROMPT: "0"
-        run: |
-          set -euo pipefail
-          root="$GITHUB_WORKSPACE"
-          workspace="$(dirname "$root")"
-          fetch_dependency() {
-            local directory="$1" url="$2" ref="$3"
-            local dest="$workspace/$directory"
-            if [ -e "$dest" ]; then
-              echo "sibling present: $dest"
-              return 0
-            fi
-            mkdir -p "$dest"
-            git -C "$dest" init -q -b ci-fetch
-            git -C "$dest" fetch --quiet --depth=1 "$url" "$ref"
-            git -C "$dest" checkout -q -B main FETCH_HEAD
-          }
-          if [ -n "${VAULTER_READ_TOKEN}" ]; then
-            base="https://x-access-token:${VAULTER_READ_TOKEN}@github.com/axiomasoft"
-          else
-            base="https://github.com/axiomasoft"
-          fi
-          fetch_dependency vaulter "$base/vaulter.git" refs/heads/main
-          fetch_dependency vaulter-collaboration "$base/vaulter-collaboration.git" refs/heads/main
-          fetch_dependency packman "$base/packman.git" refs/tags/v0.1.1
+        run: scripts/ci/checkout-ecosystem.sh vaulter vaulter-collaboration packman
 
       - name: Install libatomic1
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libatomic1
