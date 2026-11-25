@@ -7,6 +7,9 @@
          failOnEmptyTestSuite="true"
 >
     <testsuites>
+        <testsuite name="Unit">
+            <directory>tests/Unit</directory>
+        </testsuite>
         <testsuite name="Contract">
             <directory>tests/Contract</directory>
         </testsuite>

@@ -237,13 +237,16 @@ final class ZipArchiveGuard
 
     private function assertSafeRelationships(string $xml, string $entry): void
     {
-        $reader = new XMLReader;
+        // XMLReader refuses an empty source with a ValueError; in an archive that is
+        // a malformed relationships part, not an internal error. Parsing is lazy, so
+        // every other malformation surfaces through read() and libxml below.
+        if ($xml === '') {
+            throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'malformed_rels', 'entry' => $entry]);
+        }
+        $reader = XMLReader::fromString($xml, 'UTF-8', LIBXML_NONET | LIBXML_NOERROR | LIBXML_NOWARNING);
         $prevInternal = libxml_use_internal_errors(true);
         libxml_clear_errors();
         try {
-            if (!$reader->XML($xml, 'UTF-8', LIBXML_NONET | LIBXML_NOERROR | LIBXML_NOWARNING)) {
-                throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'malformed_rels', 'entry' => $entry]);
-            }
             while ($reader->read()) {
                 if (in_array($reader->nodeType, [XMLReader::DOC_TYPE, XMLReader::ENTITY, XMLReader::ENTITY_REF], true)) {
                     throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'xxe_doctype', 'entry' => $entry]);
