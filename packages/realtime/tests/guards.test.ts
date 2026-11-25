@@ -18,7 +18,7 @@ const checkpoint = Buffer.from(JSON.stringify({workbook, update_id: null})).toSt
 const roomLog = {generation: 2, head_seq: 0, checkpoint_seq: 0, checkpoint, marker, etag, tail: [], insertions: []};
 
 type Answer = {status?: number; body: unknown};
-type Message = {type: string; command_id?: string; code?: string};
+type Message = {type: string; command_id?: string; code?: string; state?: {generation: number}};
 
 async function waitFor(condition: () => boolean, attempts = 150): Promise<void> {
     for (let attempt = 0; attempt < attempts; attempt++) {
@@ -188,4 +188,29 @@ test('a socket that presents no credential is closed after 5 s', {timeout: 9000}
     const idle = await connect('idle', null);
     await waitFor(() => idle.closed() !== null, 350);
     assert.equal(idle.closed(), 4403);
+});
+
+test('a new generation reaches every peer and drops the cached owner lease, so the next intent acquires one for it', {timeout: 8000}, async t => {
+    let generation = 2;
+    let acquires = 0;
+    const {join} = await startRoom(t, (url, body) => {
+        if (url === '/read') return {body: {...roomLog, generation, marker: {...marker, generation}}};
+        if (url === '/acquire') return {body: {owner_fence: ++acquires, head_seq: 0, owner_expires_at: new Date(Date.now() + 60_000).toISOString()}};
+        if (url === '/append') {
+            // The first command ends the generation (a restore); its receipt carries no update, so the room re-reads.
+            const answer = {body: {state: 'committed', command_id: (body.intent as {command_id: string}).command_id, seq: 1, marker, etag}};
+            generation = 3;
+            return answer;
+        }
+        return undefined;
+    });
+    const peer = await join('restored');
+    const intent = (id: string) => ({type: 'intent', if_match: etag, intent: {command_id: id, expected_generation: 2, policy: 'rebase_cells', commands: []}});
+    peer.send(intent('first'));
+    // The re-read after the receipt runs on the room's queue, ahead of the next intent.
+    await waitFor(() => peer.has('ack'));
+    peer.send(intent('second'));
+    await waitFor(() => peer.messages.filter(m => m.type === 'ack').length === 2 || peer.has('error'));
+    assert.equal(acquires, 2, 'the lease of generation 2 is not reused for generation 3');
+    assert.equal(peer.messages.filter(m => m.type === 'state').at(-1)?.state?.generation, 3, 'the peer is sent the new generation even at the same seq');
 });

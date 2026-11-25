@@ -107,6 +107,8 @@ export function clientAddress(request: IncomingMessage, proxies: BlockList): str
 interface Peer {
     socket: WebSocket;
     token: string;
+    /** The generation and seq of the last state this peer was sent (-1 before the first). */
+    generation: number;
     seq: number;
     opening: boolean;
     presence?: WorkbookPresence;
@@ -312,11 +314,13 @@ export function createRealtimeServer(options: Options) {
     function sendPeerState(room: Room, peer: Peer, fromSeq: number | null = null): void {
         if (!room.state || peer.socket.readyState !== WebSocket.OPEN) return;
         const baseSeq = fromSeq ?? peer.seq;
-        if (baseSeq >= 0 && baseSeq <= room.state.seq) {
+        // A delta continues the peer's own generation; after a new one it is sent the whole state.
+        if (baseSeq >= 0 && baseSeq <= room.state.seq && (fromSeq !== null || peer.generation === room.state.generation)) {
             const updates = deltaSlice(room, baseSeq);
             if (updates !== null) {
                 const insertions = updates.flatMap(u => u.commands.filter((c): c is Extract<typeof c, {kind: 'insert_row_before'}> => c.kind === 'insert_row_before')
                     .map(c => ({sheet_id: c.sheet_id, row: c.row, count: c.count})));
+                peer.generation = room.state.generation;
                 peer.seq = room.state.seq;
                 send(peer, {
                     type: 'state',
@@ -333,6 +337,7 @@ export function createRealtimeServer(options: Options) {
                 return;
             }
         }
+        peer.generation = room.state.generation;
         peer.seq = room.state.seq;
         send(peer, {type: 'state', state: room.state});
     }
@@ -341,7 +346,7 @@ export function createRealtimeServer(options: Options) {
         if (!room.state) return;
         for (const peer of room.peers) {
             if (!peer.token || peer.opening || peer.socket.readyState !== WebSocket.OPEN) continue;
-            if (peer.seq === room.state.seq) continue;
+            if (peer.generation === room.state.generation && peer.seq === room.state.seq) continue;
             sendPeerState(room, peer);
         }
     }
@@ -584,7 +589,7 @@ export function createRealtimeServer(options: Options) {
     function attach(roomId: string, socket: WebSocket, address: string): void {
         const room = rooms.get(roomId) ?? {peers: new Set<Peer>(), work: Promise.resolve(), queued: 0, history: new Map<number, WorkbookDeltaUpdate>(), idleStreak: 0, nextPollAt: Date.now() + baseRefreshMs};
         rooms.set(roomId, room);
-        const peer: Peer = {socket, token: '', seq: -1, opening: true, presenceId: randomUUID(), checkedAt: 0, queued: 0};
+        const peer: Peer = {socket, token: '', generation: -1, seq: -1, opening: true, presenceId: randomUUID(), checkedAt: 0, queued: 0};
         room.peers.add(peer);
         const timer = setTimeout(() => socket.close(4403, 'Room credential required'), 5000);
         pending.set(address, (pending.get(address) ?? 0) + 1);
