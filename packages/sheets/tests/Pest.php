@@ -9,6 +9,7 @@ use Vaulter\Sheets\Tests\WithoutSheetsTestCase;
 
 uses(TestCase::class)->in('Contract');
 uses(TestCase::class)->in('Feature/WorkbookCommandTest.php');
+uses(TestCase::class)->in('Feature/WorkbookCommandSwitchTest.php');
 uses(RealtimeTestCase::class)->in('Feature/WorkbookRealtimeTest.php');
 uses(TestCase::class)->in('Feature/WorkbookExchangeTest.php');
 uses(TestCase::class, RefreshDatabase::class)->in('Feature/SpreadsheetContentTest.php');
