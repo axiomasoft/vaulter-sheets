@@ -80,9 +80,14 @@ jobs:
       matrix:
         php: ['8.4', '8.5']
         postgres: ['18.7', '19.0']
+        include:
+          - postgres: '18.7'
+            image: postgres:18.7@sha256:c699303802144847d238196173655dbbecf7a96aeca1565f2b02eb671a1f0b6b
+          - postgres: '19.0'
+            image: postgres:19.0@sha256:aaa10f7ba7328b4a221a6c3184d83eef885bd16bf1f6de864757863156b0a4d1
     services:
       postgres:
-        image: postgres:${{ matrix.postgres }}
+        image: ${{ matrix.image }}
         env:
           POSTGRES_USER: vaulter
           POSTGRES_PASSWORD: vaulter
