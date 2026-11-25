@@ -211,9 +211,10 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Test, typecheck and build workspaces
+        # Dependency order: vue type-checks against the realtime native-adapter build output.
         run: |
           set -euo pipefail
-          for workspace in @vaulter/sheets-runtime @vaulter/sheets-vue @vaulter/sheets-realtime @vaulter/sheets-tiptap; do
+          for workspace in @vaulter/sheets-runtime @vaulter/sheets-realtime @vaulter/sheets-vue @vaulter/sheets-tiptap; do
             npm run test --workspace "$workspace"
             npm run typecheck --workspace "$workspace"
             npm run build --workspace "$workspace"
