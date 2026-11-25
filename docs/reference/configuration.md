@@ -97,6 +97,7 @@ replaces the raw `config()` reads; until then, set the values explicitly in prod
 | `SHEETS_RUNTIME_GZIP_MIN_BYTES` | 16 384 | Responses from this size are gzip-compressed (`0` compresses all) |
 | `SHEETS_EXCHANGE_FORMATS` | empty | Enabled exchange formats, must match PHP |
 | `SHEETS_EXCHANGE_MAX_BYTES` | 32 MiB | Largest exchange file (1–128 MiB) |
+| `SHEETS_ENGINE_IRONCALC_VERIFY` | unset | `1` recalculates every operation's result with IronCalc as well and returns the comparison with the response; a diagnostic that doubles the calculation cost (a request can also ask for it with `ironcalc_verify: true`) |
 
 Invalid integers fall back to the default.
 
