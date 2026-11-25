@@ -60,6 +60,9 @@ it('answers only a caller holding the owner key, and only while the key file hol
     file_put_contents($short, 'short-key');
     config(['vaulter-sheets.realtime.owner_token_file' => $short]);
     $this->postJson(OWNER_PORT.'ready', [], ['X-Vaulter-Sheets-Owner' => 'short-key'])->assertUnauthorized();
+    // Nor is a key above 4096 bytes, of which only the first 4097 are ever read.
+    file_put_contents($short, str_repeat('k', 4097));
+    $this->postJson(OWNER_PORT.'ready', [], ['X-Vaulter-Sheets-Owner' => str_repeat('k', 4097)])->assertUnauthorized();
     unlink($short);
     config(['vaulter-sheets.realtime.owner_token_file' => $short]);
     $this->postJson(OWNER_PORT.'ready', [], ['X-Vaulter-Sheets-Owner' => ''])->assertUnauthorized();
@@ -97,6 +100,13 @@ it('checks the body before it reads or writes anything', function (): void {
     $this->call('POST', OWNER_PORT.'read', server: [
         'HTTP_X_VAULTER_SHEETS_OWNER' => RealtimeTestCase::OWNER_KEY, 'HTTP_AUTHORIZATION' => 'Bearer '.$token, 'CONTENT_TYPE' => 'application/json',
     ], content: json_encode($owner + ['pad' => str_repeat('x', 1_048_576)], JSON_THROW_ON_ERROR))->assertStatus(413)->assertJsonPath('code', 'limit_exceeded');
+
+    // Exactly 1 MiB of body is read; whitespace keeps it valid JSON.
+    $this->call('POST', OWNER_PORT.'acquire', server: [
+        'HTTP_X_VAULTER_SHEETS_OWNER' => RealtimeTestCase::OWNER_KEY, 'HTTP_AUTHORIZATION' => 'Bearer '.$token, 'CONTENT_TYPE' => 'application/json',
+    ], content: str_pad(json_encode($owner, JSON_THROW_ON_ERROR), 1_048_576))->assertOk();
+    // A fence must stay within the integers a JavaScript room process can hold exactly.
+    ownerCall('renew', $owner + ['owner_fence' => 9_007_199_254_740_992], $token)->assertUnprocessable()->assertJsonPath('code', 'invalid_command');
 
     $this->postJson(OWNER_PORT.'steal', $owner, ['X-Vaulter-Sheets-Owner' => RealtimeTestCase::OWNER_KEY, 'Authorization' => 'Bearer '.$token])->assertNotFound();
     ownerCall('acquire', $owner, $token)->assertOk();

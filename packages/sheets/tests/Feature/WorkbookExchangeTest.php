@@ -716,3 +716,11 @@ it('packs and unpacks > 5 MiB VX01 exchange frames and enforces ZipArchiveGuard:
         ->toThrow(WorkbookProblem::class);
     fclose($stream);
 });
+
+it('reads an exchange registration body of up to 256 KiB and refuses a larger one unread', function (): void {
+    $url = createExchangeWorkbookUrl($this);
+    $post = fn (string $body) => $this->call('POST', $url.'/exchanges', server: ['CONTENT_TYPE' => 'application/json'], content: $body);
+
+    expect($post(str_pad('[]', 256 * 1024))->assertUnprocessable()->json('code'))->toBe('invalid_command')
+        ->and($post(str_pad('[]', 256 * 1024 + 1))->assertStatus(413)->json('code'))->toBe('limit_exceeded');
+});
