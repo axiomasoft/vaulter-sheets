@@ -391,6 +391,57 @@ test('an opening peer never rides on another peer\'s read: its own token is chec
     assert.ok(!forged.types.includes('state'), 'the forged peer received no room state');
 });
 
+/** A room token as the PHP owner issues it, as far as the room process reads it (header and signature unchecked). */
+function roomToken(claims: Record<string, unknown>): string {
+    const part = (value: object) => Buffer.from(JSON.stringify(value)).toString('base64url');
+    return `${part({alg: 'HS256', typ: 'JWT'})}.${part(claims)}.signature`;
+}
+
+async function startRoomServer(t: TestContext, handle: (bearer: string) => {status: number; body: object}, refreshMs?: number) {
+    const owner = createServer((request, response) => {
+        const {status, body} = request.url === '/read' ? handle(request.headers.authorization ?? '') : {status: 404, body: {}};
+        response.writeHead(status, {'Content-Type': 'application/json'}).end(JSON.stringify(body));
+    });
+    owner.listen(0, '127.0.0.1');
+    t.after(() => { owner.close(); owner.closeAllConnections(); });
+    await once(owner, 'listening');
+    const ownerAddress = owner.address();
+    assert.ok(ownerAddress && typeof ownerAddress !== 'string');
+    const app = createRealtimeServer({ownerUrl: `http://127.0.0.1:${ownerAddress.port}`, ownerToken: 'x'.repeat(32), refreshMs});
+    app.server.listen(0, '127.0.0.1');
+    t.after(app.close);
+    await once(app.server, 'listening');
+    const address = app.server.address();
+    assert.ok(address && typeof address !== 'string');
+    return async (token: string) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/rooms/guarded`, WEBSOCKET_SUBPROTOCOL);
+        const types: string[] = [];
+        let closeCode: number | null = null;
+        socket.on('message', data => { types.push(String(JSON.parse(data.toString()).type)); });
+        socket.on('close', code => { closeCode = code; });
+        t.after(() => socket.terminate());
+        await once(socket, 'open');
+        socket.send(JSON.stringify({type: 'open', token}));
+        return {types, closeCode: () => closeCode};
+    };
+}
+
+function roomLog(): object {
+    const checkpoint = Buffer.from(JSON.stringify({workbook, update_id: null})).toString('base64');
+    return {generation: 2, head_seq: 0, checkpoint_seq: 0, checkpoint, marker, etag: initial.etag, tail: [], insertions: []};
+}
+
+test('closes a peer with 4001 when its room token expires', {timeout: 5000}, async t => {
+    const open = await startRoomServer(t, () => ({status: 200, body: roomLog()}));
+    const peer = await open(roomToken({exp: Math.floor(Date.now() / 1000) + 1}));
+    await waitFor(() => peer.types.includes('state'));
+    assert.equal(peer.closeCode(), null, 'the peer is served while its token lives');
+    for (let attempt = 0; attempt < 150 && peer.closeCode() === null; attempt++) {
+        await new Promise<void>(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(peer.closeCode(), 4001);
+});
+
 test('captures format, freeze, and merge mutations in connectNativeWorkbook', {timeout: 5000}, async t => {
     const peer = new WebSocketServer({port: 0, host: '127.0.0.1'});
     await once(peer, 'listening');

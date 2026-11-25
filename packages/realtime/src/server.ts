@@ -13,6 +13,10 @@ const LEASE_SAFETY_MS = 5_000;
 const DEFAULT_LEASE_TTL_MS = 10_000;
 const HISTORY_LIMIT = 64;
 const TERMINAL_ROOM_CODES = new Set(['generation_changed', 'room_not_active', 'stale_owner', 'owner_busy']);
+/** The close of a peer whose room token expired; the code the collaboration hub uses, so a client renews its session. */
+const TOKEN_EXPIRED = {code: 4001, reason: 'Room credential expired'} as const;
+/** setTimeout() fires at once for a delay above 2^31 - 1 ms; a later expiry is re-armed from there. */
+const MAX_TIMER_MS = 2_147_483_647;
 
 class OwnerProblem extends Error {
     readonly status: number;
@@ -26,7 +30,23 @@ class OwnerProblem extends Error {
 }
 
 interface Options {ownerUrl: string; ownerToken: string; refreshMs?: number}
-interface Peer {socket: WebSocket; token: string; seq: number; opening: boolean; presence?: WorkbookPresence}
+interface Peer {socket: WebSocket; token: string; seq: number; opening: boolean; presence?: WorkbookPresence; expiry?: NodeJS.Timeout}
+
+/**
+ * The `exp` claim (unix seconds) of a room JWT, read WITHOUT verifying the signature: the owner verifies
+ * the token on every call, this only bounds how long fan-out may reach a peer between those calls.
+ * A token without a readable `exp` gets null and relies on the owner's checks alone.
+ */
+export function tokenExpiry(token: string): number | null {
+    const payload = token.split('.')[1];
+    if (payload === undefined) return null;
+    try {
+        const claims: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+        return record(claims) && Number.isSafeInteger(claims.exp) ? claims.exp as number : null;
+    } catch {
+        return null;
+    }
+}
 interface RoomLease {fence: number; headSeq: number; expiresAt: number}
 interface Room {
     peers: Set<Peer>;
@@ -381,6 +401,22 @@ export function createRealtimeServer(options: Options) {
         sockets.handleUpgrade(request, socket, head, ws => attach(match[1], ws));
     });
 
+    /** Close the peer when its token expires, so no fan-out reaches it on a dead credential. */
+    function armExpiry(peer: Peer): void {
+        const exp = tokenExpiry(peer.token);
+        if (exp === null) return;
+        const fire = (): void => {
+            const left = exp * 1000 - Date.now();
+            if (left <= 0) {
+                peer.socket.close(TOKEN_EXPIRED.code, TOKEN_EXPIRED.reason);
+                return;
+            }
+            peer.expiry = setTimeout(fire, Math.min(left, MAX_TIMER_MS));
+            peer.expiry.unref();
+        };
+        fire();
+    }
+
     function attach(roomId: string, socket: WebSocket): void {
         const room = rooms.get(roomId) ?? {peers: new Set<Peer>(), work: Promise.resolve(), queued: 0, history: new Map<number, WorkbookDeltaUpdate>(), idleStreak: 0, nextPollAt: Date.now() + baseRefreshMs};
         rooms.set(roomId, room);
@@ -391,6 +427,7 @@ export function createRealtimeServer(options: Options) {
         socket.on('error', () => socket.terminate());
         socket.on('close', () => {
             clearTimeout(timer);
+            clearTimeout(peer.expiry);
             const hadPresence = Boolean(peer.presence);
             room.peers.delete(peer);
             if (hadPresence) broadcastAwareness(room);
@@ -406,6 +443,7 @@ export function createRealtimeServer(options: Options) {
                     return;
                 }
                 peer.token = message.token;
+                armExpiry(peer);
                 const resume = position(message.after_seq) ? message.after_seq : null;
                 void syncRoom(roomId, room, peer.token, false, true).then(() => {
                     if (socket.readyState !== WebSocket.OPEN) return;
