@@ -25,3 +25,27 @@ __pycache__/
 /coverage/
 /coverage.xml
 /clover.xml
+
+# AI agent and tool configuration, state and logs never belong in the repository
+# (any depth, including packages/*).
+.claude/
+.cursor/
+.codex/
+.agents/
+.grok/
+.gemini/
+.serena/
+.windsurf/
+.aider*
+.continue/
+.swissknife/
+.swissknifeman/
+.swissknife*.json
+.skm*/
+.mcp.json
+.mcp.json.*
+CLAUDE.md
+CLAUDE.local.md
+AGENTS.md
+GEMINI.md
+*.last
