@@ -9,7 +9,7 @@ import {runOperation} from '../src/operation.ts';
 import {WIRE_PROFILE} from '../src/profile.ts';
 import {canonicalize, sha256Canonical, type JsonObject, type WorkbookV2} from '../src/protocol.ts';
 import {importCsv, exportCsv} from '../src/exchange/csv.ts';
-import {importXlsx, exportXlsx} from '../src/exchange/xlsx.ts';
+import {importXlsx, exportXlsx, hasDynamicExchangeLink} from '../src/exchange/xlsx.ts';
 import {
     createExchangeHttpHandler,
     parseEnabledExchangeFormats,
@@ -742,4 +742,56 @@ test('streams > 5 MiB XLSX payload via VX01 without base64 frame limit failure',
     assert.ok(frame.length > 5 * 1024 * 1024);
     const decoded = decodeExchangeStreamFrame(frame);
     assert.equal(decoded.payload.length, bigPayload.length);
+});
+
+test('recognises DDE links and program calls in formulas, not pipes in literals or sheet names', () => {
+    for (const formula of [
+        "=cmd|' /C calc'!A0",
+        "cmd|'/c powershell'!'A1'",
+        "=MSEXCEL|'\\..\\..\\Windows\\System32\\cmd.exe /c calc'!''",
+        "=SUM(1,2)+cmd|'x'!A0",
+        '=DDE("cmd";"/c calc";"x")',
+        '=_xlfn.CALL("kernel32","WinExec","JCJ","calc",0)',
+        '=register.id ("a","b")',
+        '=IF(A1,EXEC("calc"),0)',
+    ]) {
+        assert.equal(hasDynamicExchangeLink(formula), true, formula);
+    }
+    for (const formula of ['="a|b"', "='Q1|Q2'!A1", '=SUM(A1:A3)', '=A1&"|"&B1', '=MYCALL(1)', '=Table1[Col]', '=CALLS', "='it''s|x'!B2"]) {
+        assert.equal(hasDynamicExchangeLink(formula), false, formula);
+    }
+});
+
+test('drops DDE links and program calls from imported cells, names, validations and formats', async () => {
+    const input = makeMinimalXlsx({
+        'xl/workbook.xml': '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+            '<workbookPr/><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>' +
+            "<definedNames><definedName name=\"Launch\">cmd|'/c calc'!A0</definedName><definedName name=\"Safe\">Sheet1!$A$1</definedName></definedNames></workbook>",
+    }, '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' +
+        "<row r=\"1\"><c r=\"A1\"><v>1</v></c><c r=\"B1\" t=\"str\"><f>cmd|' /C calc'!A0</f><v>0</v></c><c r=\"C1\"><f>A1+1</f><v>2</v></c></row>" +
+        '</sheetData>' +
+        '<conditionalFormatting sqref="A1"><cfRule type="expression" priority="1"><formula>DDE("cmd","/c calc","x")=1</formula></cfRule></conditionalFormatting>' +
+        '<dataValidations count="1"><dataValidation type="custom" sqref="A2"><formula1>CALL("kernel32","WinExec","JCJ","calc",0)</formula1></dataValidation></dataValidations>' +
+        '</worksheet>');
+    const {workbook, report} = await importXlsx(input, {});
+    const lost = report.losses.filter(loss => loss.reason === 'dde_link_stripped').map(loss => `${loss.property}@${loss.target}`).sort();
+    assert.deepEqual(lost, ['conditional_formatting@Sheet1:A1', 'data_validation@Sheet1!A2', 'defined_name@Launch', 'formula@Sheet1!B1']);
+    const cells = (workbook.native.sheets as Record<string, JsonObject>).sheet_1.cellData as Record<string, Record<string, JsonObject>>;
+    assert.equal(cells['0']['1']?.f, undefined);
+    assert.equal(cells['0']['2'].f, '=A1+1');
+    assert.doesNotMatch(JSON.stringify(workbook.native), /cmd|kernel32|DDE\(/);
+    await assert.rejects(() => importXlsx(input, {strict_profile: true}), /Strict profile refuses/);
+});
+
+test('leaves DDE links and program calls out of an exported workbook', async () => {
+    const {workbook} = await importXlsx(makeMinimalXlsx({}, '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' +
+        '<row r="1"><c r="A1"><v>1</v></c><c r="B1"><f>A1+1</f><v>2</v></c></row></sheetData></worksheet>'), {});
+    const cells = (workbook.native.sheets as Record<string, JsonObject>).sheet_1.cellData as Record<string, Record<string, JsonObject>>;
+    cells['0']['1'].f = "=cmd|' /C calc'!A0";
+    cells['0']['2'] = {f: '=A1*3', v: 3};
+    const {bytes, report} = await exportXlsx(workbook, {});
+    const sheetXml = new TextDecoder().decode(unzipSync(new Uint8Array(bytes))['xl/worksheets/sheet1.xml']);
+    assert.doesNotMatch(sheetXml, /calc|cmd/);
+    assert.match(sheetXml, /<f>A1\*3<\/f>/);
+    assert.ok(report.losses.some(loss => loss.target === 'Sheet1!B1' && loss.reason === 'dde_link_stripped'));
 });

@@ -403,6 +403,77 @@ function stripXlfn(formula: string): {formula: string; stripped: boolean} {
     return {formula: out, stripped};
 }
 
+/**
+ * Functions that let a spreadsheet application run a program, load a library or open a DDE
+ * channel when the workbook is opened (Excel's `CALL`/`REGISTER.ID`, the XLM `EXEC`,
+ * LibreOffice's `DDE`). No workbook here computes with them, so a formula calling one is
+ * dropped on import and on export.
+ */
+const LAUNCHING_FUNCTIONS = new Set(['CALL', 'DDE', 'DDEAUTO', 'EXEC', 'REGISTER', 'REGISTER.ID']);
+
+/**
+ * Whether a formula carries a dynamic data exchange link: Excel's `app|topic!item` form
+ * (`=cmd|' /C calc'!A0`), whose `|` is no operator of the formula grammar, or a call of one of
+ * LAUNCHING_FUNCTIONS. String literals and quoted sheet names are skipped, so `"a|b"` and
+ * `'Q1|Q2'!A1` stay formulas.
+ */
+export function hasDynamicExchangeLink(expr: string): boolean {
+    for (let i = 0; i < expr.length; i++) {
+        const ch = expr[i];
+        if (ch === '"' || ch === "'") {
+            const close = skipQuoted(expr, i, ch);
+            if (close < 0) return false;
+            i = close;
+            continue;
+        }
+        if (ch === '|') return true;
+        if (/[A-Za-z_]/.test(ch) && (i === 0 || !/[A-Za-z0-9_.]/.test(expr[i - 1]))) {
+            let end = i;
+            while (end < expr.length && /[A-Za-z0-9_.]/.test(expr[end])) end++;
+            let next = end;
+            while (next < expr.length && expr[next] === ' ') next++;
+            const name = expr.slice(i, end).toUpperCase().replace(/^_XLFN\./, '').replace(/^_XLL\./, '');
+            if (expr[next] === '(' && LAUNCHING_FUNCTIONS.has(name)) return true;
+            i = end - 1;
+        }
+    }
+    return false;
+}
+
+/** The index of the quote closing the literal opened at `start` (doubled quotes escape), or -1. */
+function skipQuoted(expr: string, start: number, quote: string): number {
+    for (let i = start + 1; i < expr.length; i++) {
+        if (expr[i] !== quote) continue;
+        if (expr[i + 1] === quote) {
+            i++;
+            continue;
+        }
+        return i;
+    }
+    return -1;
+}
+
+/** The formulas of a conditional format rule: its value(s) and its scale/bar thresholds. */
+function cfFormulaTexts(rule: JsonObject): string[] {
+    const texts: string[] = [];
+    const values = Array.isArray(rule.value) ? rule.value : [rule.value];
+    for (const value of values) if (typeof value === 'string') texts.push(value);
+    const config = Array.isArray(rule.config) ? rule.config : [];
+    for (const entry of config) {
+        if (entry && typeof entry === 'object' && !Array.isArray(entry) && typeof entry.value === 'object' && entry.value !== null && !Array.isArray(entry.value)) {
+            const threshold = entry.value.value;
+            if (typeof threshold === 'string') texts.push(threshold);
+        }
+    }
+    return texts;
+}
+
+/** Why a formula from or into a file must not be kept, or null when it may. */
+function unsafeFormulaReason(expr: string): 'external_ref_stripped' | 'dde_link_stripped' | null {
+    if (hasDynamicExchangeLink(expr)) return 'dde_link_stripped';
+    return hasExternalWorkbookRef(expr) ? 'external_ref_stripped' : null;
+}
+
 function hasExternalWorkbookRef(expr: string): boolean {
     let inString = false;
     for (let i = 0; i < expr.length; i++) {
@@ -1243,16 +1314,20 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
                 }));
                 if (ranges.length > 0 && currentDv.type !== 'none') {
                     let f1 = currentDv.formula1.trim();
+                    const literalList = currentDv.type === 'list' && /^"(?:[^"]|"")*"$/.test(f1);
+                    const dvUnsafe = (literalList ? null : unsafeFormulaReason(f1)) ?? unsafeFormulaReason(currentDv.formula2);
+                    if (dvUnsafe !== null) {
+                        losses.push({
+                            scope: 'object', target: `${meta.name}!${currentDv.sqref}`,
+                            property: currentDv.type === 'list' ? 'list_validation' : 'data_validation', status: 'lost', reason: dvUnsafe,
+                        });
+                        currentDv = null;
+                        inX14Dv = false;
+                        return;
+                    }
                     if (currentDv.type === 'list' && f1 !== '') {
-                        if (/^"(?:[^"]|"")*"$/.test(f1)) {
+                        if (literalList) {
                             f1 = JSON.stringify(f1.slice(1, -1).replaceAll('""', '"').split(','));
-                        } else if (hasExternalWorkbookRef(f1)) {
-                            losses.push({
-                                scope: 'object', target: `${meta.name}!${currentDv.sqref}`,
-                                property: 'list_validation', status: 'lost', reason: 'external_ref_stripped',
-                            });
-                            currentDv = null;
-                            return;
                         } else if (!f1.startsWith('=')) {
                             f1 = `=${f1}`;
                         }
@@ -1281,7 +1356,16 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
                 }));
                 const dxfStyle = currentCfRule.dxfId !== undefined ? parsedStyles.dxfs[currentCfRule.dxfId] : undefined;
                 const styleObj = (dxfStyle ?? {}) as unknown as JsonObject;
-                if (ranges.length > 0) {
+                const cfUnsafe = [...currentCfRule.formulas, ...(currentCfRule.cfvos ?? []).map(v => v.val ?? '')].map(unsafeFormulaReason).find(reason => reason !== null) ?? null;
+                if (cfUnsafe !== null) {
+                    losses.push({
+                        scope: 'sheet',
+                        target: `${meta.name}:${currentCfSqref}`,
+                        property: 'conditional_formatting',
+                        status: 'lost',
+                        reason: cfUnsafe,
+                    });
+                } else if (ranges.length > 0) {
                     if (currentCfRule.type === 'cellIs') {
                         const rawF1 = currentCfRule.formulas[0] ?? '0';
                         const rawF2 = currentCfRule.formulas[1];
@@ -1467,18 +1551,19 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
 
                     let hadExternalRef = false;
                     if (resolvedFormula !== undefined) {
-                        if (hasExternalWorkbookRef(resolvedFormula)) {
+                        const unsafe = unsafeFormulaReason(resolvedFormula);
+                        if (unsafe !== null) {
                             hadExternalRef = true;
                             losses.push({
                                 scope: 'cell',
                                 target: `${meta.name}!${currentCellRef}`,
                                 property: 'formula',
                                 status: 'lost',
-                                reason: 'external_ref_stripped',
+                                reason: unsafe,
                             });
                             diagnostics.push({
-                                code: 'external_ref_stripped',
-                                message: 'Removed external workbook reference formula',
+                                code: unsafe,
+                                message: unsafe === 'dde_link_stripped' ? 'Removed formula with a DDE link or program call' : 'Removed external workbook reference formula',
                                 target: `${meta.name}!${currentCellRef}`,
                             });
                         } else {
@@ -1696,18 +1781,19 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
         if (stripped) {
             diagnostics.push({code: 'xlfn_stripped', message: 'Stripped _xlfn. from defined name formula', target: def.name});
         }
-        if (hasExternalWorkbookRef(formula)) {
+        const unsafeName = unsafeFormulaReason(formula);
+        if (unsafeName !== null) {
             defLost++;
             losses.push({
                 scope: 'workbook',
                 target: def.name,
                 property: 'defined_name',
                 status: 'lost',
-                reason: 'external_ref_stripped',
+                reason: unsafeName,
             });
             diagnostics.push({
-                code: 'external_ref_stripped',
-                message: 'Removed external workbook reference in defined name',
+                code: unsafeName,
+                message: unsafeName === 'dde_link_stripped' ? 'Removed DDE link or program call in defined name' : 'Removed external workbook reference in defined name',
                 target: def.name,
             });
             continue;
@@ -1888,6 +1974,15 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
 
     const losses: ExchangeLossEntry[] = [];
     const diagnostics: ExchangeDiagnostic[] = [];
+    // A formula another application would act on when the file is opened (a DDE link, a program
+    // call, a link into another workbook) is not written; the report names what was left out.
+    const refuseFormula = (formulas: readonly string[], scope: ExchangeLossEntry['scope'], target: string, property: string): boolean => {
+        const reason = formulas.map(unsafeFormulaReason).find(found => found !== null) ?? null;
+        if (reason === null) return false;
+        losses.push({scope, target, property, status: 'lost', reason});
+        diagnostics.push({code: reason, message: `Left out ${property.replaceAll('_', ' ')} the file would act on when opened`, target});
+        return true;
+    };
     if (dateSystem === '1904') {
         diagnostics.push({
             code: 'date1904_exported',
@@ -2100,7 +2195,8 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
                 const {idx: xfIdx, isDate} = ensureXf(styleKey);
                 const sAttr = xfIdx > 0 ? ` s="${xfIdx}"` : '';
 
-                const formulaRaw = typeof cell.f === 'string' && cell.f !== '' ? cell.f : undefined;
+                const formulaText = typeof cell.f === 'string' && cell.f !== '' ? cell.f : undefined;
+                const formulaRaw = formulaText !== undefined && !refuseFormula([formulaText], 'cell', `${sheetName}!${coordRef}`, 'formula') ? formulaText : undefined;
                 const formulaXml = formulaRaw ? `<f>${escapeXml(formulaRaw.startsWith('=') ? formulaRaw.slice(1) : formulaRaw)}</f>` : '';
                 if (formulaRaw) sheetFormulaCount++;
 
@@ -2161,6 +2257,7 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
             })).join(' ');
             const rule = item.rule as JsonObject | undefined;
             if (!sqref || !rule) continue;
+            if (rule.subType !== 'text' && refuseFormula(cfFormulaTexts(rule), 'sheet', `${sheetName}:${sqref}`, 'conditional_formatting')) continue;
             const dxfId = ensureDxf(rule.style as UniverStyle | undefined);
             const priority = cfXmlParts.length + 1;
             const stop = item.stopIfTrue === true ? ' stopIfTrue="1"' : '';
@@ -2242,6 +2339,8 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
                 f1 = f1.slice(1);
             }
             const f2 = typeof dv.formula2 === 'string' ? dv.formula2 : '';
+            const listed = dvType === 'list' && f1.startsWith('"');
+            if (refuseFormula(listed ? [f2] : [f1, f2], 'object', `${sheetName}!${sqref}`, dvType === 'list' ? 'list_validation' : 'data_validation')) continue;
             const isCrossSheetRange = dvType === 'list' && f1.includes('!') && !f1.startsWith('"');
             if (isCrossSheetRange) {
                 x14DvXml.push(
@@ -2442,6 +2541,7 @@ export async function exportXlsx(workbook: WorkbookV2, options: JsonObject): Pro
         const name = typeof dn.name === 'string' ? dn.name : '';
         const expr = typeof dn.formulaOrRefString === 'string' ? dn.formulaOrRefString : '';
         if (!name || !expr) continue;
+        if (refuseFormula([expr], 'workbook', name, 'defined_name')) continue;
         const localSheetId = typeof dn.localSheetId === 'string' && dn.localSheetId !== 'AllDefaultWorkbook'
             ? sheetOrder.indexOf(dn.localSheetId)
             : -1;

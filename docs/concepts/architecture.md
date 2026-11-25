@@ -82,6 +82,13 @@ would lose content the workbook profile cannot represent, the runtime reports it
 (`unsupported_content` with `detail.reason = strict_profile_loss` and a loss report) instead of
 dropping it silently.
 
+Formulas another spreadsheet application would act on when the file is opened never cross the
+exchange in either direction: a link into another workbook (`[Book.xlsx]Sheet!A1`), a DDE link
+(`=cmd|' /C calc'!A0`) or a call of `DDE`, `CALL`, `REGISTER`, `REGISTER.ID` or `EXEC`. Import
+and export leave such a cell formula, defined name, validation or conditional format out and
+report it as a loss (`external_ref_stripped`, `dde_link_stripped`); an exported cell keeps its
+last value.
+
 ## Realtime
 
 With `vaulter-collaboration` and the `sheets-realtime` module enabled, an editor switches a
