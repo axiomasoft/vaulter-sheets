@@ -108,3 +108,14 @@ expiry, revocation and access each time. The room process only decides when to a
   with each peer that is due, so a read another peer's token passed never counts for someone else.
   A refused token (401/403/404) closes only that peer: `4403 Room access ended` for 401/404, `1013`
   for 403. A revoked token or lost access therefore stops fan-out within about a minute.
+
+### Room limits
+
+- **Peers.** A room serves at most 32 peers and a process at most 1024 sockets. Only peers the
+  owner admitted count against the room limit, so sockets that never present a credential cannot
+  lock a room; they are closed after 5 seconds. A peer admitted into a full room is closed
+  `1013 Room full`.
+- **Presence.** Awareness changes are sent on at most once every 50 ms per room, the latest
+  presence of every peer included. Each broadcast is a list of every other peer's presence for
+  every peer, so the interval, not the senders, sets the cost of presence.
+- **Commands.** A room queues at most 64 intents; the next is answered `room_busy` (retryable).

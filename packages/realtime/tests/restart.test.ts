@@ -591,3 +591,21 @@ test('a room serves at most 32 admitted peers, also when they open together', {t
     assert.equal(turnedAway.length, 1);
     assert.ok(turnedAway[0].refused() || turnedAway[0].closeCode() === 1013);
 });
+
+test('presence changes are sent on once per interval, the latest one included', {timeout: 8000}, async t => {
+    const {open} = await startOpenRoomServer(t);
+    const sender = await open('presence', 'a');
+    const watcher = await open('presence', 'b');
+    await waitFor(() => sender.has('state') && watcher.has('state'));
+
+    for (let row = 1; row <= 200; row++) {
+        sender.socket.send(JSON.stringify({type: 'awareness', client_id: 'c-a', selection: {sheet_id: 'detail', start_row: 1, start_column: 1, end_row: row, end_column: 1}}));
+    }
+    const latest = () => watcher.messages.filter(m => m.type === 'awareness').at(-1)?.peers?.[0]?.selection?.end_row;
+    await waitFor(() => latest() === 200);
+    await new Promise<void>(resolve => setTimeout(resolve, 200));
+
+    const broadcasts = watcher.messages.filter(m => m.type === 'awareness').length;
+    assert.ok(broadcasts <= 10, `200 changes were sent on as ${broadcasts} broadcasts`);
+    assert.equal(latest(), 200);
+});

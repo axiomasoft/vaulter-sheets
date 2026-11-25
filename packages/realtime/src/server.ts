@@ -23,6 +23,12 @@ const REVALIDATE_MS = 60_000;
 const ROOM_PEER_LIMIT = 32;
 /** The sockets one process holds, peers still presenting their credential included. */
 const SOCKET_LIMIT = 1024;
+/**
+ * Presence changes of a room are sent on at most once per this interval: every change is a list of every
+ * other peer's presence for every peer (quadratic in the room), so a peer moving its selection, or sending
+ * awareness messages as fast as it can, must not set the rate of that fan-out.
+ */
+const AWARENESS_INTERVAL_MS = 50;
 
 class OwnerProblem extends Error {
     readonly status: number;
@@ -64,6 +70,8 @@ interface Room {
     refreshInFlight?: Promise<void>;
     /** A pollRoom() pass is running; its reads are sequential, so the timer must not start a second one between them. */
     polling?: boolean;
+    /** A presence broadcast is scheduled (AWARENESS_INTERVAL_MS); later changes ride on it. */
+    awarenessTimer?: NodeJS.Timeout;
     idleStreak: number;
     nextPollAt: number;
 }
@@ -247,6 +255,16 @@ export function createRealtimeServer(options: Options) {
         let count = 0;
         for (const peer of room?.peers ?? []) if (!peer.opening) count++;
         return count;
+    }
+
+    /** Send the room's presence on once the current interval ends; changes until then are sent together. */
+    function scheduleAwareness(room: Room): void {
+        if (room.awarenessTimer) return;
+        room.awarenessTimer = setTimeout(() => {
+            room.awarenessTimer = undefined;
+            broadcastAwareness(room);
+        }, AWARENESS_INTERVAL_MS);
+        room.awarenessTimer.unref();
     }
 
     function broadcastAwareness(room: Room): void {
@@ -469,8 +487,11 @@ export function createRealtimeServer(options: Options) {
             clearTimeout(peer.expiry);
             const hadPresence = Boolean(peer.presence);
             room.peers.delete(peer);
-            if (hadPresence) broadcastAwareness(room);
-            if (!room.peers.size && !room.queued) rooms.delete(roomId);
+            if (hadPresence) scheduleAwareness(room);
+            if (!room.peers.size && !room.queued) {
+                clearTimeout(room.awarenessTimer);
+                rooms.delete(roomId);
+            }
         });
         socket.on('message', (data, binary) => {
             let message: unknown;
@@ -509,7 +530,7 @@ export function createRealtimeServer(options: Options) {
                     return;
                 }
                 peer.presence = parsed;
-                broadcastAwareness(room);
+                scheduleAwareness(room);
                 return;
             }
             const intent = message.intent;
