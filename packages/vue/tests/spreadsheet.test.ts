@@ -231,7 +231,7 @@ describe('VaulterSpreadsheet', () => {
     wrapper.unmount()
   })
 
-  it('translates F-09a format, numfmt, structural, merge, freeze mutations and resolves table row_ids', () => {
+  it('translates format, numfmt, structural, merge, freeze mutations and resolves table row_ids', () => {
     expect(styleToFormatSpec({bl: 1, bg: {rgb: '#ff0'}, ht: 2})).toEqual({
       font: {bold: true},
       fill: '#ffff00',
