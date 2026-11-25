@@ -296,10 +296,20 @@ export function createRealtimeServer(options: Options) {
         return updates;
     }
 
-    async function syncRoom(roomId: string, room: Room, token: string, forceFull = false): Promise<void> {
-        if (room.refreshInFlight) {
-            await room.refreshInFlight;
-            return;
+    /**
+     * Refresh the room from the PHP owner with `token`. A poll joins a refresh already in flight. A peer
+     * that is opening (`admit`) must not: the owner checks the bearer of each read, so riding on another
+     * peer's read would hand the room to a token nobody verified. It waits for that read and makes its own.
+     */
+    async function syncRoom(roomId: string, room: Room, token: string, forceFull = false, admit = false): Promise<void> {
+        while (room.refreshInFlight) {
+            const pending = room.refreshInFlight;
+            if (!admit) {
+                await pending;
+                return;
+            }
+            // Another peer's failure says nothing about this token; its own read below decides.
+            await pending.catch(() => undefined);
         }
         const run = (async () => {
             const needFull = forceFull || !room.state;
@@ -397,7 +407,7 @@ export function createRealtimeServer(options: Options) {
                 }
                 peer.token = message.token;
                 const resume = position(message.after_seq) ? message.after_seq : null;
-                void syncRoom(roomId, room, peer.token).then(() => {
+                void syncRoom(roomId, room, peer.token, false, true).then(() => {
                     if (socket.readyState !== WebSocket.OPEN) return;
                     sendPeerState(room, peer, resume);
                     peer.opening = false;

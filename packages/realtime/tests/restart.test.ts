@@ -341,6 +341,56 @@ test('broadcasts awareness presence between peers and removes on disconnect', {t
     await waitFor(() => Array.isArray(peersB.at(-1)) && (peersB.at(-1) as unknown[]).length === 0);
 });
 
+test('an opening peer never rides on another peer\'s read: its own token is checked', {timeout: 5000}, async t => {
+    const checkpoint = Buffer.from(JSON.stringify({workbook, update_id: null})).toString('base64');
+    const log = {generation: 2, head_seq: 0, checkpoint_seq: 0, checkpoint, marker, etag: initial.etag, tail: [], insertions: []};
+    let release: () => void = () => {};
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const readers: string[] = [];
+    const owner = createServer(async (request, response) => {
+        const reply = (status: number, data: object) => response.writeHead(status, {'Content-Type': 'application/json'}).end(JSON.stringify(data));
+        if (request.url !== '/read') return reply(404, {});
+        const bearer = request.headers.authorization ?? '';
+        readers.push(bearer);
+        if (bearer !== 'Bearer valid') return reply(403, {code: 'forbidden'});
+        await held;
+        return reply(200, log);
+    });
+    owner.listen(0, '127.0.0.1');
+    t.after(() => { owner.close(); owner.closeAllConnections(); });
+    await once(owner, 'listening');
+    const ownerAddress = owner.address();
+    assert.ok(ownerAddress && typeof ownerAddress !== 'string');
+    const app = createRealtimeServer({ownerUrl: `http://127.0.0.1:${ownerAddress.port}`, ownerToken: 'x'.repeat(32)});
+    app.server.listen(0, '127.0.0.1');
+    t.after(app.close);
+    await once(app.server, 'listening');
+    const address = app.server.address();
+    assert.ok(address && typeof address !== 'string');
+
+    const open = async (token: string) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/rooms/shared`, WEBSOCKET_SUBPROTOCOL);
+        const types: string[] = [];
+        let closed = false;
+        socket.on('message', data => { types.push(String(JSON.parse(data.toString()).type)); });
+        socket.on('close', () => { closed = true; });
+        t.after(() => socket.terminate());
+        await once(socket, 'open');
+        socket.send(JSON.stringify({type: 'open', token}));
+        return {types, isClosed: () => closed};
+    };
+    const valid = await open('valid');
+    await waitFor(() => readers.length === 1);
+    // The valid peer's read is held open; a forged token joins while it is in flight.
+    const forged = await open('forged');
+    await new Promise<void>(resolve => setTimeout(resolve, 50));
+    release();
+
+    await waitFor(() => valid.types.includes('state') && forged.isClosed());
+    assert.ok(readers.includes('Bearer forged'), 'the forged token was sent to the owner');
+    assert.ok(!forged.types.includes('state'), 'the forged peer received no room state');
+});
+
 test('captures format, freeze, and merge mutations in connectNativeWorkbook', {timeout: 5000}, async t => {
     const peer = new WebSocketServer({port: 0, host: '127.0.0.1'});
     await once(peer, 'listening');
