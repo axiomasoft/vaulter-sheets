@@ -86,7 +86,7 @@ final readonly class SheetsSchema implements ModuleSchema
         }
         $replaced = preg_replace_callback('/\bv_(\w+)/', fn (array $match): string => $this->schema->table($match[1]), $sql);
         $sql = is_string($replaced) ? $replaced : $sql;
-        foreach (array_filter(array_map(trim(...), explode(';', $sql))) as $statement) {
+        foreach (array_filter(array_map(trim(...), explode(';', $sql)), static fn (string $statement): bool => $statement !== '') as $statement) {
             $db->statement($statement);
         }
     }

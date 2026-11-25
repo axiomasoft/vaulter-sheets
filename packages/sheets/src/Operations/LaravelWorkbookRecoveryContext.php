@@ -6,6 +6,7 @@ namespace Vaulter\Sheets\Operations;
 
 use Closure;
 use Illuminate\Support\Facades\Context;
+use Vaulter\Drive\Operations\DriveContext;
 use Vaulter\Drive\Operations\NodeJobContext;
 use Vaulter\Sheets\Contracts\WorkbookRecoveryContext;
 use Vaulter\ValueObjects\Access\ActorRef;
@@ -14,6 +15,7 @@ final readonly class LaravelWorkbookRecoveryContext implements WorkbookRecoveryC
 {
     public function __construct(private NodeJobContext $contexts) {}
 
+    /** @param Closure(DriveContext): void $operation */
     public function run(string $tenant, string $scope, string $actorType, string $actorId, string $node, Closure $operation): void
     {
         if (!str_starts_with($scope, 'drive:') || $actorType === ActorRef::SYSTEM_TYPE) {

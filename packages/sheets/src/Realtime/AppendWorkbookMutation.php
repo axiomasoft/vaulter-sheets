@@ -431,12 +431,13 @@ final readonly class AppendWorkbookMutation
     }
 
     /**
-     * @param  list<stdClass>                          $commands
-     * @return array<int|string, array<string, mixed>>
+     * @param  list<stdClass>                              $commands
+     * @return array<int|string, array<int|string, mixed>>
      */
     private static function shiftCells(stdClass $cellData, string $sheetId, array $commands): array
     {
-        /** @var array<string, array<string, mixed>> $rows */
+        // PHP stores numeric string keys ("0", "12") as integers.
+        /** @var array<int|string, array<int|string, mixed>> $rows */
         $rows = [];
         foreach (get_object_vars($cellData) as $rKey => $rowObj) {
             if ($rowObj instanceof stdClass) {

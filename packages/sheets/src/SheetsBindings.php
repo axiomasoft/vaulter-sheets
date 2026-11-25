@@ -22,7 +22,6 @@ final class SheetsBindings implements ModuleBindings
 {
     public function register(Application $app): void
     {
-        /** @var Repository $config */
         $config = $app->make(Repository::class);
         $config->set('queue.connections.sheets-commands', $config->get('queue.connections.sheets-commands') ?? [
             'driver' => 'database', 'table' => 'jobs', 'queue' => 'sheets-commands', 'retry_after' => 75, 'after_commit' => true,
@@ -35,11 +34,19 @@ final class SheetsBindings implements ModuleBindings
             $app->bind(WorkbookRecoveryContext::class, LaravelWorkbookRecoveryContext::class);
         }
         $app->bind(WorkbookRuntime::class, static fn (Application $app): WorkbookRuntime => $app->make(
-            $app->make(Repository::class)->get('vaulter-sheets.runtime_url') ? HttpWorkbookRuntime::class : NodeWorkbookRuntime::class,
+            self::usesHttpRuntime($app) ? HttpWorkbookRuntime::class : NodeWorkbookRuntime::class,
         ));
         $app->bind(WorkbookExchangeRuntime::class, static fn (Application $app): WorkbookExchangeRuntime => $app->make(
-            $app->make(Repository::class)->get('vaulter-sheets.runtime_url') ? HttpWorkbookExchangeRuntime::class : NodeWorkbookExchangeRuntime::class,
+            self::usesHttpRuntime($app) ? HttpWorkbookExchangeRuntime::class : NodeWorkbookExchangeRuntime::class,
         ));
+    }
+
+    /** The HTTP calculator is used whenever a runtime URL is configured; otherwise the CLI runtime is spawned. */
+    private static function usesHttpRuntime(Application $app): bool
+    {
+        $url = $app->make(Repository::class)->get('vaulter-sheets.runtime_url');
+
+        return is_string($url) && $url !== '';
     }
 
     public function boot(Application $app): void {}

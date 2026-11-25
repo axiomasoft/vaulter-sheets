@@ -445,7 +445,7 @@ final readonly class WorkbookExchange
 
         $nodeSnap = $this->driveHandle($context, $context->operation->scope->id)->nodes()->find($node);
         $baseName = pathinfo($nodeSnap->name, PATHINFO_FILENAME);
-        $safeBase = preg_replace('/[^A-Za-z0-9._-]+/', '_', $baseName !== '' ? $baseName : 'workbook') ?: 'workbook';
+        $safeBase = preg_replace('/[^A-Za-z0-9._-]+/', '_', $baseName !== '' ? $baseName : 'workbook') ?? 'workbook';
 
         return [
             'stream' => $stream,
