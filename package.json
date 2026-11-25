@@ -9,18 +9,13 @@
     "node": ">=26.13.1"
   },
   "workspaces": [
-    "packages/vue",
     "packages/runtime",
     "packages/realtime",
+    "packages/vue",
     "packages/tiptap"
   ],
   "devDependencies": {
     "@playwright/test": "1.65.1"
-  },
-  "pnpm": {
-    "patchedDependencies": {
-      "@univerjs/engine-formula@1.5.2": "patches/@univerjs__engine-formula@1.5.2.patch"
-    }
   },
   "scripts": {
     "postinstall": "node scripts/patch-univer.mjs"
