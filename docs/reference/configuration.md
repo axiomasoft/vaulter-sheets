@@ -77,7 +77,8 @@ without the key, or an invalid value.
    work only through their code fallbacks and are not discoverable from the config file.
 4. **Two variables for one exchange limit**: PHP reads `SHEETS_EXCHANGE_MAX_IMPORT_BYTES` /
    `SHEETS_EXCHANGE_MAX_EXPORT_BYTES`, the Node exchange worker reads `SHEETS_EXCHANGE_MAX_BYTES`
-   (default 32 MiB, clamped to 1–128 MiB). Raise both together.
+   (default 32 MiB; a value below 1 MiB or not a number falls back to 32 MiB, one above 128 MiB is
+   capped there). Raise both together.
 5. **`SHEETS_EXCHANGE_FORMATS`** is read independently by PHP and by the runtime; a format
    enabled on one side only fails at run time (`format_disabled`).
 
@@ -96,7 +97,7 @@ replaces the raw `config()` reads; until then, set the values explicitly in prod
 | `SHEETS_RUNTIME_TIMEOUT_MS` | 20 000 | Per-calculation timeout; keep it below the PHP `runtime_timeout_seconds` |
 | `SHEETS_RUNTIME_GZIP_MIN_BYTES` | 16 384 | Responses from this size are gzip-compressed (`0` compresses all) |
 | `SHEETS_EXCHANGE_FORMATS` | empty | Enabled exchange formats, must match PHP |
-| `SHEETS_EXCHANGE_MAX_BYTES` | 32 MiB | Largest exchange file (1–128 MiB) |
+| `SHEETS_EXCHANGE_MAX_BYTES` | 32 MiB | Largest exchange file; capped at 128 MiB, below 1 MiB falls back to 32 MiB |
 | `SHEETS_ENGINE_IRONCALC_VERIFY` | unset | `1` recalculates every operation's result with IronCalc as well and returns the comparison with the response; a diagnostic that doubles the calculation cost (a request can also ask for it with `ironcalc_verify: true`) |
 
 Invalid integers fall back to the default.
