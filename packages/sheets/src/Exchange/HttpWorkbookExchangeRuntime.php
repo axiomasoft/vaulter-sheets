@@ -7,6 +7,7 @@ namespace Vaulter\Sheets\Exchange;
 use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use Psr\Http\Message\StreamInterface;
+use RuntimeException;
 use stdClass;
 use Vaulter\Sheets\Contracts\WorkbookExchangeRuntime;
 use Vaulter\Sheets\Data\WorkbookProblem;
@@ -53,7 +54,7 @@ final class HttpWorkbookExchangeRuntime implements WorkbookExchangeRuntime
             } finally {
                 $stream->close();
             }
-        } catch (ConnectionException|\RuntimeException $error) {
+        } catch (ConnectionException|RuntimeException $error) {
             throw $error instanceof WorkbookProblem ? $error : new WorkbookProblem('runtime_failed', 503);
         }
     }

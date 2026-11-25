@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Vaulter\Sheets\Data;
 
-final class WorkbookProblem extends \RuntimeException
+use RuntimeException;
+
+final class WorkbookProblem extends RuntimeException
 {
     /**
      * @param array<string, mixed> $detail

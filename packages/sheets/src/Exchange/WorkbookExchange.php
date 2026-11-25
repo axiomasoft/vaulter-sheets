@@ -7,6 +7,7 @@ namespace Vaulter\Sheets\Exchange;
 use Illuminate\Database\Connection;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Str;
+use JsonException;
 use stdClass;
 use Vaulter\Database\VaulterDatabase;
 use Vaulter\Documents\Contracts\AtomicDocumentMutation;
@@ -220,7 +221,7 @@ final readonly class WorkbookExchange
             $this->pins->pin($prepared['source_blob_id'], self::SOURCE_PIN_OWNER, $jobId);
 
             $this->database->afterCommit(static function () use ($jobId): void {
-                RunWorkbookExchange::dispatch($jobId);
+                dispatch(new RunWorkbookExchange($jobId));
             });
 
             return ['created' => true, 'job' => $this->presentJob($inserted)];
@@ -482,7 +483,7 @@ final readonly class WorkbookExchange
             }
         }
 
-        $sourceDriveId = $sourceContext !== null ? $sourceContext->operation->scope->id : $context->operation->scope->id;
+        $sourceDriveId = $sourceContext->operation->scope->id ?? $context->operation->scope->id;
         try {
             $fileStream = $this->driveHandle($context, $sourceDriveId)->files()->read(
                 (string) $sourceNodeId,
@@ -568,8 +569,8 @@ final readonly class WorkbookExchange
     ): array {
         if (isset($sourceIdentity->revision_id)) {
             $targetState = $this->loadWorkbook($context, $node, self::str($sourceIdentity->revision_id));
-            $generation = $targetState->revision !== null ? $targetState->revision->epoch : $targetState->epoch;
-            $position = $targetState->revision !== null ? $targetState->revision->stateVersion : $targetState->stateVersion;
+            $generation = $targetState->revision->epoch ?? $targetState->epoch;
+            $position = $targetState->revision->stateVersion ?? $targetState->stateVersion;
         } else {
             $generation = self::intVal($sourceIdentity->generation);
             $position = self::intVal($sourceIdentity->position);
@@ -969,7 +970,7 @@ final readonly class WorkbookExchange
         if (is_string($row->report ?? null)) {
             try {
                 $report = json_decode($row->report, true, 256, JSON_THROW_ON_ERROR);
-            } catch (\JsonException) {
+            } catch (JsonException) {
                 $report = null;
             }
         }
@@ -985,7 +986,7 @@ final readonly class WorkbookExchange
                         }
                     }
                 }
-            } catch (\JsonException) {
+            } catch (JsonException) {
                 $options = [];
             }
         }

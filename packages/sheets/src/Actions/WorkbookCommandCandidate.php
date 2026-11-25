@@ -224,8 +224,8 @@ final readonly class WorkbookCommandCandidate
             $commands[] = $item;
         }
         usort($tables, static fn (stdClass $left, stdClass $right): int => strcmp(
-            (string) mb_convert_encoding(self::str($left->table_id ?? ''), 'UTF-16BE', 'UTF-8'),
-            (string) mb_convert_encoding(self::str($right->table_id ?? ''), 'UTF-16BE', 'UTF-8'),
+            mb_convert_encoding(self::str($left->table_id ?? ''), 'UTF-16BE', 'UTF-8'),
+            mb_convert_encoding(self::str($right->table_id ?? ''), 'UTF-16BE', 'UTF-8'),
         ));
         foreach ($tables as $table) {
             $cols = is_array($table->columns ?? null) ? array_values(array_filter($table->columns, static fn (mixed $c): bool => $c instanceof stdClass)) : [];

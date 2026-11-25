@@ -187,7 +187,7 @@ final class ZipArchiveGuard
         if ($mode === self::S_IFLNK) {
             throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'symlink_entry', 'entry' => $name]);
         }
-        if ($mode !== 0 && $mode !== self::S_IFREG && $mode !== self::S_IFDIR) {
+        if (!in_array($mode, [0, self::S_IFREG, self::S_IFDIR], true)) {
             throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'special_file_entry', 'entry' => $name]);
         }
     }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Vaulter\Sheets\Realtime;
 
 use Illuminate\Support\Str;
+use stdClass;
 use Vaulter\Collaboration\CollaborationCall;
 use Vaulter\Collaboration\Contracts\HostUserResolver;
 use Vaulter\Collaboration\Persistence\NativeJournal;
@@ -201,7 +202,7 @@ final readonly class WorkbookRoomSession
             $checkpointSeq = $log->checkpointSeq;
             $tail = $log->tail;
             $decodedCheckpoint = json_decode($checkpointBytes, false);
-            if ($decodedCheckpoint instanceof \stdClass && ($decodedCheckpoint->kind ?? null) === 'snapshot_ref') {
+            if ($decodedCheckpoint instanceof stdClass && ($decodedCheckpoint->kind ?? null) === 'snapshot_ref') {
                 $checkpointBytes = CanonicalJson::encode((object) ['workbook' => $this->codec->snapshot($content), 'update_id' => null]);
                 $checkpointSeq = $log->headSeq;
                 $tail = [];
@@ -234,7 +235,7 @@ final readonly class WorkbookRoomSession
         $insertions = [];
         foreach ($rows as $bytes) {
             $evidence = is_string($bytes) ? StrictJson::decode($bytes) : null;
-            if (!$evidence instanceof \stdClass || !is_array($evidence->insertions ?? null)) {
+            if (!$evidence instanceof stdClass || !is_array($evidence->insertions ?? null)) {
                 return null;
             }
             array_push($insertions, ...array_values($evidence->insertions));

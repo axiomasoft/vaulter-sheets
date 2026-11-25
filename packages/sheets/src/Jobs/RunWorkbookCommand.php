@@ -58,7 +58,7 @@ final class RunWorkbookCommand implements ShouldBeUnique, ShouldQueue
             static function (DriveContext $context) use ($tenantId, $projectScope, $subjectType, $subjectId, $nodeId, $ifMatch, $intent, $commit): void {
                 $actor = $context->actor->ref();
                 $ctxTenant = $context->operation->tenant->id ?? '0';
-                if ((string) $ctxTenant !== $tenantId
+                if ($ctxTenant !== $tenantId
                     || $context->operation->scope->kind.':'.$context->operation->scope->id !== $projectScope
                     || $actor->type !== $subjectType || (string) ($actor->id ?? 0) !== $subjectId) {
                     return;

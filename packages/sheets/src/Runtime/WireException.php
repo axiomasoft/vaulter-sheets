@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Vaulter\Sheets\Runtime;
 
-final class WireException extends \RuntimeException
+use RuntimeException;
+
+final class WireException extends RuntimeException
 {
     public function __construct(public readonly string $wireCode, string $message)
     {

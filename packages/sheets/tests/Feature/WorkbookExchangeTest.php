@@ -453,7 +453,7 @@ it('checks later ZIP metadata before opening earlier entry streams', function ()
         expect($archive->open($path, ZipArchive::RDONLY))->toBeTrue();
         try {
             $inspect = new ReflectionMethod(ZipArchiveGuard::class, 'inspectArchive');
-            expect(fn () => $inspect->invoke(app(ZipArchiveGuard::class), $archive))
+            expect(fn (): mixed => $inspect->invoke(app(ZipArchiveGuard::class), $archive))
                 ->toThrow(WorkbookProblem::class, 'unsafe_archive');
             expect($archive->streamsOpened)->toBe(0);
         } finally {

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Vaulter\Sheets\Runtime;
 
+use stdClass;
+
 final class CanonicalJson
 {
     public static function encode(mixed $value): string
@@ -16,7 +18,7 @@ final class CanonicalJson
             is_float($value) => self::number($value),
             is_string($value) => json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_LINE_TERMINATORS | JSON_THROW_ON_ERROR),
             is_array($value) && array_is_list($value) => '['.implode(',', array_map(self::encode(...), $value)).']',
-            $value instanceof \stdClass => self::object(get_object_vars($value)),
+            $value instanceof stdClass => self::object(get_object_vars($value)),
             default => throw new WireException('invalid_message', 'value cannot be canonicalized (associative PHP array or resource)'),
         };
     }
@@ -38,7 +40,7 @@ final class CanonicalJson
     /** @param array<int|string, mixed> $members */
     private static function object(array $members): string
     {
-        $keys = array_map('strval', array_keys($members));
+        $keys = array_map(strval(...), array_keys($members));
         // RFC 8785 §3.2.3: order by UTF-16 code units; big-endian UTF-16 bytes compare the same way.
         usort($keys, static fn (string $a, string $b): int => strcmp(mb_convert_encoding($a, 'UTF-16BE', 'UTF-8'), mb_convert_encoding($b, 'UTF-16BE', 'UTF-8')));
         $parts = [];
@@ -55,7 +57,7 @@ final class CanonicalJson
         if (!is_finite($value)) {
             throw new WireException('invalid_message', 'non-finite number');
         }
-        if ($value == 0.0) {
+        if ($value === 0.0) {
             return '0';
         }
         $sign = $value < 0 ? '-' : '';

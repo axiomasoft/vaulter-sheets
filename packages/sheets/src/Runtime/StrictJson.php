@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Vaulter\Sheets\Runtime;
 
+use JsonException;
+use stdClass;
+
 final class StrictJson
 {
     private const int MAX_SAFE = 9007199254740991;
@@ -51,7 +54,7 @@ final class StrictJson
                     if (is_string($decoded)) {
                         return $decoded;
                     }
-                } catch (\JsonException) {
+                } catch (JsonException) {
                     $this->fail('invalid string escape');
                 }
                 break;
@@ -73,7 +76,7 @@ final class StrictJson
         $c = $this->s[$this->i] ?? '';
         if ($c === '{') {
             $this->i++;
-            $out = new \stdClass;
+            $out = new stdClass;
             $seen = [];
             $this->ws();
             if (($this->s[$this->i] ?? '') === '}') {

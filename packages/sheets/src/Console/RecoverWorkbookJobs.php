@@ -104,12 +104,12 @@ final class RecoverWorkbookJobs extends Command
                 $database->afterCommit(static function () use ($commandIds, $exchangeIds): void {
                     foreach ($commandIds as $id) {
                         if (is_string($id)) {
-                            RunWorkbookCommand::dispatch($id);
+                            dispatch(new RunWorkbookCommand($id));
                         }
                     }
                     foreach ($exchangeIds as $id) {
                         if (is_string($id)) {
-                            RunWorkbookExchange::dispatch($id);
+                            dispatch(new RunWorkbookExchange($id));
                         }
                     }
                 });

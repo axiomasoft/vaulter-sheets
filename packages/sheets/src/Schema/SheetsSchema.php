@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Vaulter\Sheets\Schema;
 
+use InvalidArgumentException;
+use LogicException;
+use RuntimeException;
 use Vaulter\Schema\ModuleSchema;
 use Vaulter\Schema\SchemaHelpers;
 use Vaulter\Schema\ValueObjects\KeyColumnExpectation;
@@ -37,12 +40,12 @@ final readonly class SheetsSchema implements ModuleSchema
     public function create(string $entity): void
     {
         if ($entity !== 'sheets_realtime_links' && !in_array($entity, $this->entities(), true)) {
-            throw new \InvalidArgumentException('Unknown Sheets table '.$entity);
+            throw new InvalidArgumentException('Unknown Sheets table '.$entity);
         }
         $db = $this->schema->dbConnection();
         $rawSql = file_get_contents(dirname(__DIR__, 2).'/database/sql/'.$entity.'.sql');
         if ($rawSql === false) {
-            throw new \RuntimeException('Missing Sheets SQL definition '.$entity);
+            throw new RuntimeException('Missing Sheets SQL definition '.$entity);
         }
         $sql = $rawSql;
         $postgres = $db->getDriverName() === 'pgsql';
@@ -62,7 +65,7 @@ final readonly class SheetsSchema implements ModuleSchema
                     ]);
                     $type = $column !== null && isset($column->type) && is_string($column->type) ? $column->type : '';
                     if (preg_match('/^(?:uuid|bigint|character(?: varying)?\(\d+\))$/D', $type) !== 1) {
-                        throw new \LogicException('Unsupported Vaulter owner key type '.$type);
+                        throw new LogicException('Unsupported Vaulter owner key type '.$type);
                     }
                     $sql = str_replace($field.' uuid', $field.' '.$type, $sql);
                 }
@@ -79,11 +82,11 @@ final readonly class SheetsSchema implements ModuleSchema
                 $sql,
             );
         } else {
-            throw new \LogicException('Sheets requires PostgreSQL or SQLite.');
+            throw new LogicException('Sheets requires PostgreSQL or SQLite.');
         }
         $replaced = preg_replace_callback('/\bv_(\w+)/', fn (array $match): string => $this->schema->table($match[1]), $sql);
         $sql = is_string($replaced) ? $replaced : $sql;
-        foreach (array_filter(array_map('trim', explode(';', $sql))) as $statement) {
+        foreach (array_filter(array_map(trim(...), explode(';', $sql))) as $statement) {
             $db->statement($statement);
         }
     }

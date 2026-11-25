@@ -354,7 +354,7 @@ final readonly class AppendWorkbookMutation
         if (get_object_vars($changedStyles) !== []) {
             $delta->styles = $changedStyles;
         }
-        $removedStyles = array_values(array_map('strval', array_diff(array_keys($beforeStyles), array_keys($afterStyles))));
+        $removedStyles = array_values(array_map(strval(...), array_diff(array_keys($beforeStyles), array_keys($afterStyles))));
         if ($removedStyles !== []) {
             $delta->removed_styles = $removedStyles;
         }

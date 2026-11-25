@@ -6,6 +6,7 @@ namespace Vaulter\Sheets\Content;
 
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
+use InvalidArgumentException;
 use stdClass;
 use Vaulter\Documents\Contracts\DocumentContent;
 use Vaulter\Documents\Contracts\ManagedDocumentCodec;
@@ -51,7 +52,7 @@ final class WorkbookCodec implements ManagedDocumentCodec
     }
 
     /** @var list<string> */
-    private const SUPPORTED_LOCALES = [
+    private const array SUPPORTED_LOCALES = [
         'enUS', 'frFR', 'zhCN', 'ruRU', 'zhTW', 'zhHK', 'viVN', 'faIR', 'jaJP',
         'koKR', 'esES', 'caES', 'skSK', 'ptBR', 'deDE', 'itIT', 'idID', 'plPL', 'arSA',
     ];
@@ -61,7 +62,7 @@ final class WorkbookCodec implements ManagedDocumentCodec
         $configured = function_exists('config') ? config('vaulter-sheets.locale', 'enUS') : 'enUS';
         $resolvedLocale = $locale ?? (is_string($configured) && $configured !== '' ? $configured : 'enUS');
         if (!in_array($resolvedLocale, self::SUPPORTED_LOCALES, true)) {
-            throw new \InvalidArgumentException("Unsupported workbook locale: {$resolvedLocale}");
+            throw new InvalidArgumentException("Unsupported workbook locale: {$resolvedLocale}");
         }
         $id = (string) Str::uuid();
         $sheet = (string) Str::uuid();

@@ -165,16 +165,11 @@ final readonly class WorkbookCommand
                 return false;
             }
             $width = count($values[0]);
-            foreach ($values as $index => $row) {
-                if (!is_array($row) || !is_array($expected[$index]) || count($row) !== $width
-                    || count($expected[$index]) !== $width
-                    || !array_all($row, static fn (mixed $cell): bool => self::validContent($cell, literal: true))
-                    || !array_all($expected[$index], static fn (mixed $cell): bool => self::validContent($cell))) {
-                    return false;
-                }
-            }
 
-            return true;
+            return array_all($values, static fn (mixed $row, int|string $index): bool => is_array($row) && is_array($expected[$index])
+                && count($row) === $width && count($expected[$index]) === $width
+                && array_all($row, static fn (mixed $cell): bool => self::validContent($cell, literal: true))
+                && array_all($expected[$index], static fn (mixed $cell): bool => self::validContent($cell)));
         }
 
         return self::validContent($command->expected) && match ($command->kind) {
@@ -287,7 +282,7 @@ final readonly class WorkbookCommand
                 || array_diff(array_keys(get_object_vars($font)), ['bold', 'italic', 'size', 'color']) !== []
                 || (property_exists($font, 'bold') && !is_bool($font->bold))
                 || (property_exists($font, 'italic') && !is_bool($font->italic))
-                || (property_exists($font, 'size') && (!(is_int($font->size) || is_float($font->size)) || $font->size < 1 || $font->size > 409))
+                || (property_exists($font, 'size') && (!is_int($font->size) && !is_float($font->size) || $font->size < 1 || $font->size > 409))
                 || (property_exists($font, 'color') && $font->color !== null && !$hex($font->color))) {
                 return false;
             }
