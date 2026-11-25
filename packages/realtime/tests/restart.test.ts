@@ -13,7 +13,7 @@ import {WebSocket, WebSocketServer} from 'ws';
 import {replay} from '../src/replay.ts';
 import {connectNativeWorkbook, shiftDraftRow} from '../src/native-adapter.ts';
 import {WEBSOCKET_SUBPROTOCOL, type ClientMessage, type WorkbookRoomState} from '../src/protocol.ts';
-import {createRealtimeServer} from '../src/server.ts';
+import {createRealtimeServer, proxyList} from '../src/server.ts';
 
 const {workbook} = JSON.parse(readFileSync(new URL('../../runtime/tests/fixtures/apply-request.json', import.meta.url), 'utf8'));
 const marker = {generation: 2, position: 9, sha256: 'a'.repeat(64)};
@@ -528,14 +528,14 @@ test('captures format, freeze, and merge mutations in connectNativeWorkbook', {t
 });
 
 /** A socket on the guarded room of `startRoomServer`'s process that never presents a credential. */
-async function squat(t: TestContext, port: number, room: string): Promise<WebSocket> {
-    const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/rooms/${room}`, WEBSOCKET_SUBPROTOCOL);
+async function squat(t: TestContext, port: number, room: string, headers: Record<string, string> = {}): Promise<WebSocket> {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/rooms/${room}`, WEBSOCKET_SUBPROTOCOL, {headers});
     t.after(() => socket.terminate());
     await once(socket, 'open');
     return socket;
 }
 
-async function startOpenRoomServer(t: TestContext) {
+async function startOpenRoomServer(t: TestContext, limits: {pendingPerAddress?: number; trustedProxies?: string[]} = {}) {
     const owner = createServer((request, response) => {
         response.writeHead(request.url === '/read' ? 200 : 404, {'Content-Type': 'application/json'}).end(JSON.stringify(request.url === '/read' ? roomLog() : {}));
     });
@@ -544,14 +544,14 @@ async function startOpenRoomServer(t: TestContext) {
     await once(owner, 'listening');
     const ownerAddress = owner.address();
     assert.ok(ownerAddress && typeof ownerAddress !== 'string');
-    const app = createRealtimeServer({ownerUrl: `http://127.0.0.1:${ownerAddress.port}`, ownerToken: 'x'.repeat(32)});
+    const app = createRealtimeServer({ownerUrl: `http://127.0.0.1:${ownerAddress.port}`, ownerToken: 'x'.repeat(32), ...limits});
     app.server.listen(0, '127.0.0.1');
     t.after(app.close);
     await once(app.server, 'listening');
     const address = app.server.address();
     assert.ok(address && typeof address !== 'string');
-    const open = async (room: string, token: string) => {
-        const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/rooms/${room}`, WEBSOCKET_SUBPROTOCOL);
+    const open = async (room: string, token: string, headers: Record<string, string> = {}) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/rooms/${room}`, WEBSOCKET_SUBPROTOCOL, {headers});
         const messages: {type: string; peers?: {selection?: {end_row: number}}[]}[] = [];
         let closeCode: number | null = null;
         let refused = false;
@@ -572,7 +572,7 @@ async function startOpenRoomServer(t: TestContext) {
 }
 
 test('sockets without a credential do not take a room\'s peer slots', {timeout: 8000}, async t => {
-    const {port, open} = await startOpenRoomServer(t);
+    const {port, open} = await startOpenRoomServer(t, {pendingPerAddress: 64});
     for (let i = 0; i < 32; i++) await squat(t, port, 'squatted');
 
     const peer = await open('squatted', 'valid');
@@ -608,4 +608,43 @@ test('presence changes are sent on once per interval, the latest one included', 
     const broadcasts = watcher.messages.filter(m => m.type === 'awareness').length;
     assert.ok(broadcasts <= 10, `200 changes were sent on as ${broadcasts} broadcasts`);
     assert.equal(latest(), 200);
+});
+
+test('one client address holds at most its pending sockets; admitted peers and other addresses are not limited', {timeout: 8000}, async t => {
+    const {port, open} = await startOpenRoomServer(t, {pendingPerAddress: 4});
+    for (let i = 0; i < 4; i++) await squat(t, port, `idle-${i}`);
+
+    const refused = await open('work', 'valid');
+    assert.equal(refused.refused(), true, 'a fifth pending socket from the address is refused');
+
+    const {port: proxied, open: openProxied} = await startOpenRoomServer(t, {pendingPerAddress: 4, trustedProxies: ['127.0.0.0/8']});
+    for (let i = 0; i < 4; i++) await squat(t, proxied, `idle-${i}`, {'X-Forwarded-For': '198.51.100.7'});
+    const blocked = await openProxied('work', 'valid', {'X-Forwarded-For': '198.51.100.7'});
+    assert.equal(blocked.refused(), true, 'the forwarded client is the one limited');
+    // A spoofed left-most hop does not move the client to a fresh address.
+    const spoofed = await openProxied('work', 'valid', {'X-Forwarded-For': '203.0.113.9, 198.51.100.7'});
+    assert.equal(spoofed.refused(), true);
+    const other = await openProxied('work', 'valid', {'X-Forwarded-For': '198.51.100.8'});
+    await waitFor(() => other.has('state') || other.refused());
+    assert.ok(other.has('state'), 'another client behind the same proxy is served');
+
+    // Admitted peers release their slot: one address may hold more peers than pending sockets.
+    const {open: openPlain} = await startOpenRoomServer(t, {pendingPerAddress: 2});
+    const peers = [];
+    for (let i = 0; i < 6; i++) {
+        const peer = await openPlain('tabs', `tab-${i}`);
+        await waitFor(() => peer.has('state') || peer.refused() || peer.closeCode() !== null);
+        peers.push(peer);
+    }
+    assert.ok(peers.every(peer => peer.has('state')));
+});
+
+test('trusted proxies accept addresses and CIDR subnets and refuse anything else', () => {
+    const list = proxyList(['10.0.0.0/8', '::1', 'fd00::/8']);
+    assert.equal(list.check('10.2.3.4', 'ipv4'), true);
+    assert.equal(list.check('11.0.0.1', 'ipv4'), false);
+    assert.equal(list.check('fd00::5', 'ipv6'), true);
+    for (const bad of ['proxy.local', '10.0.0.0/33', '10.0.0.0/8/1', '::/129', '10.0.0.0/x']) {
+        assert.throws(() => proxyList([bad]), /Invalid trusted proxy/, bad);
+    }
 });

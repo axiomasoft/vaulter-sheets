@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {readFileSync} from 'node:fs';
-import {createServer} from 'node:http';
+import {createServer, type IncomingMessage} from 'node:http';
+import {BlockList, isIP} from 'node:net';
 import {pathToFileURL} from 'node:url';
 import {WebSocket, WebSocketServer} from 'ws';
 import {PROTOCOL, WEBSOCKET_SUBPROTOCOL, position, record, type ServerMessage, type WorkbookDeltaPayload, type WorkbookDeltaUpdate, type WorkbookPresence, type WorkbookPresenceSelection, type WorkbookReceipt, type WorkbookRoomMarker, type WorkbookRoomState} from './protocol.ts';
@@ -29,6 +30,12 @@ const SOCKET_LIMIT = 1024;
  * awareness messages as fast as it can, must not set the rate of that fan-out.
  */
 const AWARENESS_INTERVAL_MS = 50;
+/**
+ * The sockets one client address may hold before the owner accepted their credential. Such a socket costs an
+ * owner read and up to 5 s of a SOCKET_LIMIT slot, so without a per-address bound one client could fill the
+ * process; admitted peers do not count, so a user with many tabs is not limited.
+ */
+export const DEFAULT_PENDING_PER_ADDRESS = 32;
 
 class OwnerProblem extends Error {
     readonly status: number;
@@ -41,7 +48,59 @@ class OwnerProblem extends Error {
     }
 }
 
-interface Options {ownerUrl: string; ownerToken: string; refreshMs?: number; revalidateMs?: number}
+interface Options {
+    ownerUrl: string;
+    ownerToken: string;
+    refreshMs?: number;
+    revalidateMs?: number;
+    /** See DEFAULT_PENDING_PER_ADDRESS. */
+    pendingPerAddress?: number;
+    /** Proxies (addresses or CIDR subnets) whose X-Forwarded-For names the client; others are the client. */
+    trustedProxies?: readonly string[];
+}
+
+/** A BlockList of addresses and CIDR subnets (`10.0.0.0/8`, `fd00::/8`); throws on an entry that is neither. */
+export function proxyList(entries: readonly string[]): BlockList {
+    const list = new BlockList();
+    for (const entry of entries) {
+        const [address, prefix, extra] = entry.split('/');
+        const family = isIP(address ?? '');
+        const bits = prefix === undefined ? null : Number(prefix);
+        if (family === 0 || extra !== undefined || (bits !== null && (!/^\d{1,3}$/.test(prefix!) || bits > (family === 4 ? 32 : 128)))) {
+            throw new Error(`Invalid trusted proxy: ${entry}`);
+        }
+        const type = family === 4 ? 'ipv4' : 'ipv6';
+        if (bits === null) list.addAddress(address!, type);
+        else list.addSubnet(address!, bits, type);
+    }
+    return list;
+}
+
+function plainAddress(address: string): string {
+    return address.startsWith('::ffff:') && isIP(address.slice(7)) === 4 ? address.slice(7) : address;
+}
+
+function trusted(proxies: BlockList, address: string): boolean {
+    const family = isIP(address);
+    return family !== 0 && proxies.check(address, family === 4 ? 'ipv4' : 'ipv6');
+}
+
+/**
+ * The client address of an upgrade: the peer address, or, when that is a trusted proxy, the right-most
+ * X-Forwarded-For entry that is not one (the left part of the header is whatever the client sent).
+ */
+export function clientAddress(request: IncomingMessage, proxies: BlockList): string {
+    let address = plainAddress(request.socket.remoteAddress ?? '');
+    if (!trusted(proxies, address)) return address;
+    const header = request.headers['x-forwarded-for'];
+    const hops = (Array.isArray(header) ? header.join(',') : header ?? '').split(',').map(hop => plainAddress(hop.trim()));
+    for (let i = hops.length - 1; i >= 0; i--) {
+        if (isIP(hops[i]!) === 0) return address;
+        address = hops[i]!;
+        if (!trusted(proxies, address)) return address;
+    }
+    return address;
+}
 interface Peer {socket: WebSocket; token: string; seq: number; opening: boolean; presence?: WorkbookPresence; expiry?: NodeJS.Timeout; checkedAt: number}
 
 /**
@@ -101,6 +160,11 @@ export function createRealtimeServer(options: Options) {
         || options.ownerToken.length < 32 || options.ownerToken.length > 4096) throw new Error('Invalid PHP owner configuration');
     const ownerId = randomUUID();
     const rooms = new Map<string, Room>();
+    const pendingPerAddress = options.pendingPerAddress ?? DEFAULT_PENDING_PER_ADDRESS;
+    if (!Number.isSafeInteger(pendingPerAddress) || pendingPerAddress < 1) throw new Error('Invalid pending connection limit');
+    const proxies = proxyList(options.trustedProxies ?? []);
+    /** Sockets per client address whose credential the owner has not accepted yet. */
+    const pending = new Map<string, number>();
     const sockets = new WebSocketServer({noServer: true, maxPayload: REQUEST_LIMIT, perMessageDeflate: false, handleProtocols: protocols => protocols.has(WEBSOCKET_SUBPROTOCOL) ? WEBSOCKET_SUBPROTOCOL : false});
 
     async function call(action: string, room = '', token = '', body: Record<string, unknown> = {}, traceparent?: string): Promise<unknown> {
@@ -455,7 +519,12 @@ export function createRealtimeServer(options: Options) {
             socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
             return;
         }
-        sockets.handleUpgrade(request, socket, head, ws => attach(match[1], ws));
+        const address = clientAddress(request, proxies);
+        if ((pending.get(address) ?? 0) >= pendingPerAddress) {
+            socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\n\r\n');
+            return;
+        }
+        sockets.handleUpgrade(request, socket, head, ws => attach(match[1], ws, address));
     });
 
     /** Close the peer when its token expires, so no fan-out reaches it on a dead credential. */
@@ -474,15 +543,25 @@ export function createRealtimeServer(options: Options) {
         fire();
     }
 
-    function attach(roomId: string, socket: WebSocket): void {
+    function attach(roomId: string, socket: WebSocket, address: string): void {
         const room = rooms.get(roomId) ?? {peers: new Set<Peer>(), work: Promise.resolve(), queued: 0, history: new Map<number, WorkbookDeltaUpdate>(), idleStreak: 0, nextPollAt: Date.now() + baseRefreshMs};
         rooms.set(roomId, room);
         const peer: Peer = {socket, token: '', seq: -1, opening: true, checkedAt: 0};
         room.peers.add(peer);
         const timer = setTimeout(() => socket.close(4403, 'Room credential required'), 5000);
+        pending.set(address, (pending.get(address) ?? 0) + 1);
+        let counted = true;
+        const settle = (): void => {
+            if (!counted) return;
+            counted = false;
+            const left = (pending.get(address) ?? 1) - 1;
+            if (left > 0) pending.set(address, left);
+            else pending.delete(address);
+        };
 
         socket.on('error', () => socket.terminate());
         socket.on('close', () => {
+            settle();
             clearTimeout(timer);
             clearTimeout(peer.expiry);
             const hadPresence = Boolean(peer.presence);
@@ -515,6 +594,7 @@ export function createRealtimeServer(options: Options) {
                     }
                     sendPeerState(room, peer, resume);
                     peer.opening = false;
+                    settle();
                     clearTimeout(timer);
                     const activePeers = Array.from(room.peers)
                         .filter(other => other !== peer && other.presence && !other.opening && other.socket.readyState === WebSocket.OPEN)
@@ -635,8 +715,10 @@ if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) 
     const ownerUrl = process.env.SHEETS_REALTIME_OWNER_URL;
     const tokenFile = process.env.SHEETS_REALTIME_OWNER_TOKEN_FILE;
     const port = Number(process.env.PORT ?? 3101);
+    const pendingPerAddress = Number(process.env.SHEETS_REALTIME_PENDING_PER_ADDRESS ?? DEFAULT_PENDING_PER_ADDRESS);
+    const trustedProxies = (process.env.SHEETS_REALTIME_TRUSTED_PROXIES ?? '').split(',').map(entry => entry.trim()).filter(entry => entry !== '');
     if (!ownerUrl || !tokenFile || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid realtime configuration');
-    const application = createRealtimeServer({ownerUrl, ownerToken: readFileSync(tokenFile, 'utf8').trim()});
+    const application = createRealtimeServer({ownerUrl, ownerToken: readFileSync(tokenFile, 'utf8').trim(), pendingPerAddress, trustedProxies});
     application.server.listen(port, '0.0.0.0');
     process.once('SIGTERM', application.close);
     process.once('SIGINT', application.close);

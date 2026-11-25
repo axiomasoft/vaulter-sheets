@@ -107,3 +107,5 @@ Invalid integers fall back to the default.
 | `SHEETS_REALTIME_OWNER_URL` | *(required)* | PHP owner endpoint ending in `/api/vaulter-sheets/v1/realtime/owner`; keep it on the private network |
 | `SHEETS_REALTIME_OWNER_TOKEN_FILE` | *(required)* | Same token file as the PHP `realtime.owner_token_file` |
 | `PORT` | 3101 | `/livez`, `/readyz` and the room WebSocket (subprotocol `univer-sheets.v1`) |
+| `SHEETS_REALTIME_PENDING_PER_ADDRESS` | 32 | Sockets one client address may hold before the owner accepted their credential; the next upgrade is answered 429. Admitted peers do not count |
+| `SHEETS_REALTIME_TRUSTED_PROXIES` | *(empty)* | Comma-separated addresses or CIDR subnets of the reverse proxies in front of the process; for a connection from one, the right-most `X-Forwarded-For` entry that is not a trusted proxy is the client. Set it behind a proxy, or every client shares the proxy's address and its limit |

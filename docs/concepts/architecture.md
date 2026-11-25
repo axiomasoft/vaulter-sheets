@@ -122,6 +122,10 @@ expiry, revocation and access each time. The room process only decides when to a
   owner admitted count against the room limit, so sockets that never present a credential cannot
   lock a room; they are closed after 5 seconds. A peer admitted into a full room is closed
   `1013 Room full`.
+- **Clients.** One client address holds at most 32 sockets the owner has not admitted yet
+  (`SHEETS_REALTIME_PENDING_PER_ADDRESS`); the next upgrade is refused 429, so one client cannot
+  fill the process's 1024 sockets with connections that never authenticate. Behind a reverse
+  proxy, list it in `SHEETS_REALTIME_TRUSTED_PROXIES` so the limit applies to the forwarded client.
 - **Presence.** Awareness changes are sent on at most once every 50 ms per room, the latest
   presence of every peer included. Each broadcast is a list of every other peer's presence for
   every peer, so the interval, not the senders, sets the cost of presence.
