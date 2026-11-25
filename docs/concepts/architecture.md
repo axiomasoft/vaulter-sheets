@@ -92,3 +92,19 @@ command, appends it to the collaboration journal and links it in `sheets_realtim
 `realtime.checkpoint_interval` updates (default 20) a full snapshot checkpoint is stored. The room
 process holds no authority: if it restarts, clients replay from the journal, and pending intents
 are re-rendered against the confirmed state.
+
+### Room credentials
+
+The room process never verifies a token itself; the PHP owner does, on every call, and checks
+expiry, revocation and access each time. The room process only decides when to ask:
+
+- **Open.** A joining peer's token is sent to the owner in a read of its own, even when another
+  peer's read is already in flight, and the peer gets no state until that read succeeds.
+- **Expiry.** The token's `exp` claim (read unverified) arms a timer; when it passes, the peer is
+  closed with `4001 Room credential expired`, the code the collaboration hub uses.
+  `WorkbookRoomClient` reconnects on any close with a fresh session.
+- **Revalidation.** Every peer's token goes to the owner again at least every 60 seconds
+  (`revalidateMs` of `createRealtimeServer`). The room poll goes stalest peer first and then re-reads
+  with each peer that is due, so a read another peer's token passed never counts for someone else.
+  A refused token (401/403/404) closes only that peer: `4403 Room access ended` for 401/404, `1013`
+  for 403. A revoked token or lost access therefore stops fan-out within about a minute.
