@@ -44,6 +44,21 @@ function relationship(string $type, string $target, string $mode = 'External'): 
         .'<Relationship Id="r1" Type="'.$type.'" Target="'.$target.'" TargetMode="'.$mode.'"/></Relationships>';
 }
 
+/**
+ * Rewrites the uncompressed size every local and central header declares, so an
+ * archive can claim sizes its few real bytes do not have.
+ */
+function declaredSize(string $bytes, int $size): string
+{
+    foreach (["PK\x03\x04" => 22, "PK\x01\x02" => 24] as $signature => $field) {
+        for ($at = strpos($bytes, $signature); $at !== false; $at = strpos($bytes, $signature, $at + 4)) {
+            $bytes = substr_replace($bytes, pack('V', $size), $at + $field, 4);
+        }
+    }
+
+    return $bytes;
+}
+
 function guardProblem(string $bytes): ?WorkbookProblem
 {
     try {
@@ -82,6 +97,14 @@ it('rejects an unsafe archive with the reason that names the broken rule', funct
     'unterminated relationships part' => fn (): array => [guardZip([['name' => '_rels/.rels', 'data' => '<Relationships xmlns="'.RELS_NS.'">']]), 'unsafe_archive', 422, 'malformed_rels'],
     'external template relationship' => fn (): array => [guardZip([['name' => 'xl/_rels/workbook.xml.rels', 'data' => relationship('http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate', 'https://evil.invalid/a.dotm')]]), 'unsafe_archive', 422, 'disallowed_external_relationship'],
     'external hyperlink to a file URL' => fn (): array => [guardZip([['name' => 'xl/worksheets/_rels/sheet1.xml.rels', 'data' => relationship(HYPERLINK_REL, 'file:///etc/passwd')]]), 'unsafe_archive', 422, 'disallowed_external_relationship'],
+    'entry name that is not UTF-8' => fn (): array => [guardZip([['name' => "xl/\xFF.xml", 'data' => '<a/>']]), 'unsafe_archive', 422, 'invalid_entry_name'],
+    'more than 2000 entries' => fn (): array => [guardZip(array_map(static fn (int $i): array => ['name' => "e{$i}", 'data' => ''], range(0, ZipArchiveGuard::MAX_ENTRIES))), 'limit_exceeded', 413, 'too_many_entries'],
+    'entry declared above 50 MiB' => fn (): array => [declaredSize(guardZip([['name' => 'xl/a.bin', 'data' => random_bytes(600 * 1024)]]), ZipArchiveGuard::MAX_ENTRY_BYTES + 1), 'limit_exceeded', 413, 'entry_size_limit'],
+    'entries declared above 150 MiB in total' => fn (): array => [declaredSize(guardZip(array_map(static fn (int $i): array => ['name' => "xl/{$i}.bin", 'data' => random_bytes(600 * 1024)], range(1, 4))), 40 * 1024 * 1024), 'limit_exceeded', 413, 'total_size_limit'],
+    'entry inflating past its declared size' => fn (): array => [declaredSize(guardZip([['name' => 'xl/a.bin', 'data' => random_bytes(128 * 1024)]]), 1000), 'limit_exceeded', 413, 'zip_bomb_overflow'],
+    'entry shorter than its declared size' => fn (): array => [declaredSize(guardZip([['name' => 'xl/a.bin', 'data' => random_bytes(128 * 1024)]]), 256 * 1024), 'unsafe_archive', 422, 'size_mismatch'],
+    'XInclude namespace spelled with a character reference in relationships' => fn (): array => [guardZip([['name' => '_rels/.rels', 'data' => '<Relationships xmlns="'.RELS_NS.'"><x:include xmlns:x="http&#58;//www.w3.org/2001/XInclude" href="/etc/passwd"/></Relationships>']]), 'unsafe_archive', 422, 'xxe_xinclude'],
+    'lower-case external target mode' => fn (): array => [guardZip([['name' => 'xl/_rels/workbook.xml.rels', 'data' => relationship('http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate', 'https://evil.invalid/a.dotm', 'external')]]), 'unsafe_archive', 422, 'disallowed_external_relationship'],
     'external hyperlink with a javascript URL' => fn (): array => [guardZip([['name' => 'xl/worksheets/_rels/sheet1.xml.rels', 'data' => relationship(HYPERLINK_REL, 'javascript:alert(1)')]]), 'unsafe_archive', 422, 'disallowed_external_relationship'],
 ]);
 
