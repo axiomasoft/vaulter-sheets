@@ -397,7 +397,7 @@ function roomToken(claims: Record<string, unknown>): string {
     return `${part({alg: 'HS256', typ: 'JWT'})}.${part(claims)}.signature`;
 }
 
-async function startRoomServer(t: TestContext, handle: (bearer: string) => {status: number; body: object}, refreshMs?: number) {
+async function startRoomServer(t: TestContext, handle: (bearer: string) => {status: number; body: object}, timing: {refreshMs?: number; revalidateMs?: number} = {}) {
     const owner = createServer((request, response) => {
         const {status, body} = request.url === '/read' ? handle(request.headers.authorization ?? '') : {status: 404, body: {}};
         response.writeHead(status, {'Content-Type': 'application/json'}).end(JSON.stringify(body));
@@ -407,7 +407,7 @@ async function startRoomServer(t: TestContext, handle: (bearer: string) => {stat
     await once(owner, 'listening');
     const ownerAddress = owner.address();
     assert.ok(ownerAddress && typeof ownerAddress !== 'string');
-    const app = createRealtimeServer({ownerUrl: `http://127.0.0.1:${ownerAddress.port}`, ownerToken: 'x'.repeat(32), refreshMs});
+    const app = createRealtimeServer({ownerUrl: `http://127.0.0.1:${ownerAddress.port}`, ownerToken: 'x'.repeat(32), ...timing});
     app.server.listen(0, '127.0.0.1');
     t.after(app.close);
     await once(app.server, 'listening');
@@ -440,6 +440,27 @@ test('closes a peer with 4001 when its room token expires', {timeout: 5000}, asy
         await new Promise<void>(resolve => setTimeout(resolve, 20));
     }
     assert.equal(peer.closeCode(), 4001);
+});
+
+test('re-checks every peer with its own token and drops a revoked one, not only the first peer', {timeout: 8000}, async t => {
+    const revoked = new Set<string>();
+    const reads = new Map<string, number>();
+    const open = await startRoomServer(t, bearer => {
+        reads.set(bearer, (reads.get(bearer) ?? 0) + 1);
+        return revoked.has(bearer) ? {status: 401, body: {code: 'room_credential_invalid'}} : {status: 200, body: roomLog()};
+    }, {refreshMs: 100, revalidateMs: 300});
+
+    const first = await open('first');
+    await waitFor(() => first.types.includes('state'));
+    const second = await open('second');
+    await waitFor(() => second.types.includes('state'));
+    revoked.add('Bearer second');
+    const before = reads.get('Bearer second') ?? 0;
+
+    await waitFor(() => second.closeCode() !== null);
+    assert.equal(second.closeCode(), 4403, 'the revoked peer is closed as "Room access ended"');
+    assert.ok((reads.get('Bearer second') ?? 0) > before, 'its own token was sent to the owner again');
+    assert.equal(first.closeCode(), null, 'the peer whose token is still valid stays');
 });
 
 test('captures format, freeze, and merge mutations in connectNativeWorkbook', {timeout: 5000}, async t => {

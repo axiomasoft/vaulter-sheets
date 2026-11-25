@@ -17,6 +17,8 @@ const TERMINAL_ROOM_CODES = new Set(['generation_changed', 'room_not_active', 's
 const TOKEN_EXPIRED = {code: 4001, reason: 'Room credential expired'} as const;
 /** setTimeout() fires at once for a delay above 2^31 - 1 ms; a later expiry is re-armed from there. */
 const MAX_TIMER_MS = 2_147_483_647;
+/** How long a peer's token may go without an owner read made with it; bounds how long a revoked token keeps fan-out. */
+const REVALIDATE_MS = 60_000;
 
 class OwnerProblem extends Error {
     readonly status: number;
@@ -29,8 +31,8 @@ class OwnerProblem extends Error {
     }
 }
 
-interface Options {ownerUrl: string; ownerToken: string; refreshMs?: number}
-interface Peer {socket: WebSocket; token: string; seq: number; opening: boolean; presence?: WorkbookPresence; expiry?: NodeJS.Timeout}
+interface Options {ownerUrl: string; ownerToken: string; refreshMs?: number; revalidateMs?: number}
+interface Peer {socket: WebSocket; token: string; seq: number; opening: boolean; presence?: WorkbookPresence; expiry?: NodeJS.Timeout; checkedAt: number}
 
 /**
  * The `exp` claim (unix seconds) of a room JWT, read WITHOUT verifying the signature: the owner verifies
@@ -56,6 +58,8 @@ interface Room {
     history: Map<number, WorkbookDeltaUpdate>;
     lease?: RoomLease;
     refreshInFlight?: Promise<void>;
+    /** A pollRoom() pass is running; its reads are sequential, so the timer must not start a second one between them. */
+    polling?: boolean;
     idleStreak: number;
     nextPollAt: number;
 }
@@ -101,6 +105,7 @@ export function createRealtimeServer(options: Options) {
     }
 
     const baseRefreshMs = options.refreshMs ?? 5_000;
+    const revalidateMs = options.revalidateMs ?? REVALIDATE_MS;
     const maxIdleRefreshMs = options.refreshMs !== undefined ? Math.max(options.refreshMs * 4, 2_000) : 30_000;
 
     function leaseExpiry(raw: unknown): number {
@@ -317,9 +322,10 @@ export function createRealtimeServer(options: Options) {
     }
 
     /**
-     * Refresh the room from the PHP owner with `token`. A poll joins a refresh already in flight. A peer
-     * that is opening (`admit`) must not: the owner checks the bearer of each read, so riding on another
-     * peer's read would hand the room to a token nobody verified. It waits for that read and makes its own.
+     * Refresh the room from the PHP owner with `token`. A caller that only needs fresh state joins a refresh
+     * already in flight. A caller that needs `token` itself checked (`admit`: an opening peer, a poll that
+     * revalidates a peer) must not: the owner checks the bearer of each read, so riding on another peer's
+     * read would pass a token nobody verified. It waits for that read and makes its own.
      */
     async function syncRoom(roomId: string, room: Room, token: string, forceFull = false, admit = false): Promise<void> {
         while (room.refreshInFlight) {
@@ -372,21 +378,43 @@ export function createRealtimeServer(options: Options) {
         }
     }
 
+    function stale(peer: Peer, now: number): boolean {
+        return now - peer.checkedAt >= revalidateMs;
+    }
+
+    /**
+     * Refresh the room, then re-check every peer whose token has gone `revalidateMs` without an owner read.
+     * Each read is made with one peer's own token (the owner checks expiry, revocation and access on every
+     * read) and counts only for that peer: a refresh another peer's token passed authorizes nobody else.
+     * The stalest peer goes first, so the refresh itself rotates through the room.
+     */
     async function pollRoom(roomId: string, room: Room): Promise<void> {
-        const candidates = Array.from(room.peers).filter(p => p.token && !p.opening && p.socket.readyState === WebSocket.OPEN);
-        if (candidates.length === 0) return;
-        for (const peer of candidates) {
-            try {
-                await syncRoom(roomId, room, peer.token);
-                return;
-            } catch (cause) {
-                if (cause instanceof OwnerProblem && (cause.status === 401 || cause.status === 403 || cause.status === 404)) {
-                    error(peer, cause);
-                    continue;
+        const candidates = Array.from(room.peers)
+            .filter(p => p.token && !p.opening && p.socket.readyState === WebSocket.OPEN)
+            .sort((left, right) => left.checkedAt - right.checkedAt);
+        room.polling = true;
+        try {
+            let refreshed = false;
+            for (const peer of candidates) {
+                if (peer.socket.readyState !== WebSocket.OPEN || (refreshed && !stale(peer, Date.now()))) continue;
+                try {
+                    await syncRoom(roomId, room, peer.token, false, true);
+                    peer.checkedAt = Date.now();
+                    refreshed = true;
+                } catch (cause) {
+                    if (cause instanceof OwnerProblem && (cause.status === 401 || cause.status === 403 || cause.status === 404)) {
+                        error(peer, cause);
+                        continue;
+                    }
+                    // After the refresh, a transient failure of one revalidation read leaves that peer stale
+                    // for the next tick; it says nothing about the room or the other peers.
+                    if (refreshed) continue;
+                    for (const p of candidates) error(p, cause);
+                    return;
                 }
-                for (const p of candidates) error(p, cause);
-                return;
             }
+        } finally {
+            room.polling = false;
         }
     }
 
@@ -420,7 +448,7 @@ export function createRealtimeServer(options: Options) {
     function attach(roomId: string, socket: WebSocket): void {
         const room = rooms.get(roomId) ?? {peers: new Set<Peer>(), work: Promise.resolve(), queued: 0, history: new Map<number, WorkbookDeltaUpdate>(), idleStreak: 0, nextPollAt: Date.now() + baseRefreshMs};
         rooms.set(roomId, room);
-        const peer: Peer = {socket, token: '', seq: -1, opening: true};
+        const peer: Peer = {socket, token: '', seq: -1, opening: true, checkedAt: 0};
         room.peers.add(peer);
         const timer = setTimeout(() => socket.close(4403, 'Room credential required'), 5000);
 
@@ -446,6 +474,7 @@ export function createRealtimeServer(options: Options) {
                 armExpiry(peer);
                 const resume = position(message.after_seq) ? message.after_seq : null;
                 void syncRoom(roomId, room, peer.token, false, true).then(() => {
+                    peer.checkedAt = Date.now();
                     if (socket.readyState !== WebSocket.OPEN) return;
                     sendPeerState(room, peer, resume);
                     peer.opening = false;
@@ -556,7 +585,8 @@ export function createRealtimeServer(options: Options) {
     const timer = setInterval(() => {
         const now = Date.now();
         for (const [id, room] of rooms) {
-            if (!room.queued && !room.refreshInFlight && now >= room.nextPollAt) void pollRoom(id, room);
+            if (room.queued || room.refreshInFlight || room.polling) continue;
+            if (now >= room.nextPollAt || Array.from(room.peers).some(peer => !peer.opening && stale(peer, now))) void pollRoom(id, room);
         }
     }, Math.min(baseRefreshMs, 1_000));
     timer.unref();
