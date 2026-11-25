@@ -214,3 +214,36 @@ test('a new generation reaches every peer and drops the cached owner lease, so t
     assert.equal(acquires, 2, 'the lease of generation 2 is not reused for generation 3');
     assert.equal(peer.messages.filter(m => m.type === 'state').at(-1)?.state?.generation, 3, 'the peer is sent the new generation even at the same seq');
 });
+
+test('a peer whose socket has more than 24 MiB queued is closed as slow instead of sent more', {timeout: 8000}, async t => {
+    const limit = 24 * 1024 * 1024;
+    const original = Object.getOwnPropertyDescriptor(WebSocket.prototype, 'bufferedAmount');
+    assert.ok(original?.get);
+    const read = original.get;
+    // Server-side sockets report a fake backlog; the client sockets of the test keep their real one.
+    let backlog: number | null = null;
+    Object.defineProperty(WebSocket.prototype, 'bufferedAmount', {
+        configurable: true,
+        get(this: WebSocket & {_isServer?: boolean}) { return backlog !== null && this._isServer ? backlog : read.call(this); },
+    });
+    t.after(() => Object.defineProperty(WebSocket.prototype, 'bufferedAmount', original));
+
+    const {join} = await startRoom(t);
+    const presence = (sender: Awaited<ReturnType<typeof join>>, clientId: string) => sender.send({type: 'awareness', client_id: clientId});
+
+    const sender = await join('slow');
+    const watcher = await join('slow');
+    backlog = limit;
+    presence(sender, 'at-limit');
+    await waitFor(() => watcher.has('awareness'));
+    assert.equal(watcher.closed(), null, 'a backlog of exactly 24 MiB is still sent to');
+
+    const reason = new Promise<string>(resolve => watcher.socket.once('close', (_code, why) => resolve(why.toString())));
+    backlog = limit + 1;
+    const received = watcher.messages.length;
+    presence(sender, 'over-limit');
+    await waitFor(() => watcher.closed() !== null);
+    assert.equal(watcher.closed(), 1013);
+    assert.equal(await reason, 'Slow connection');
+    assert.equal(watcher.messages.length, received, 'nothing more is sent to a slow peer');
+});
