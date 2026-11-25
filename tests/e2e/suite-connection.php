@@ -1,6 +1,7 @@
 <?php
 
 declare(strict_types=1);
+use Vaulter\Testing\Support\SuiteDatabaseConnection;
 
 /**
  * Process-environment coordinates for the suite database.
@@ -29,7 +30,7 @@ function vaulter_sheets_capture_suite_database_env(): array
 }
 
 /**
- * @param  array<string, string> $captured
+ * @param  array<string, string>           $captured
  * @return array<string, string|bool|null>
  */
 function vaulter_sheets_suite_database_connection(array $captured): array
@@ -40,7 +41,7 @@ function vaulter_sheets_suite_database_connection(array $captured): array
         putenv($key.'='.$value);
     }
 
-    $resolved = Vaulter\Testing\Support\SuiteDatabaseConnection::resolve();
+    $resolved = SuiteDatabaseConnection::resolve();
     $wanted = $captured['DB_CONNECTION'] ?? '';
     if ($wanted !== '' && $wanted !== 'sqlite' && ($resolved['driver'] ?? '') === 'sqlite') {
         return vaulter_sheets_suite_database_connection_from_env($captured);
@@ -50,7 +51,7 @@ function vaulter_sheets_suite_database_connection(array $captured): array
 }
 
 /**
- * @param  array<string, string> $captured
+ * @param  array<string, string>           $captured
  * @return array<string, string|bool|null>
  */
 function vaulter_sheets_suite_database_connection_from_env(array $captured): array
