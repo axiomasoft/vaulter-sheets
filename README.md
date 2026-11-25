@@ -38,6 +38,9 @@ Build the room image with `docker build -f packages/realtime/Dockerfile .`. Run 
 - Node.js `>=26.13.1` (`package.json` `engines.node`)
 - PostgreSQL CI matrix: 18.7 and 19.0
 
+The full documentation (installation, architecture, configuration and error reference, testing
+and CI) is in [docs/](docs/README.md).
+
 Setup, the local checks (`composer test`, `composer analyse`, `composer lint:check`,
 `composer refactor:check`, the npm workspaces and the `scripts/ci/` lanes) and the commit
 conventions are in [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities as described in

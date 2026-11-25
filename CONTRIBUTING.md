@@ -29,8 +29,8 @@ writes it to a URL or git config.
 - Node.js `>=26.13.1` with npm (`package.json` `engines.node`; older Node.js cannot run the
   TypeScript sources the PHP suite executes)
 - Docker for the `scripts/ci/*.sh` lanes, which start their own PostgreSQL containers
-- PostgreSQL 18 or 19 only if you want to run the PHP suite on a server database (SQLite is the
-  default)
+- PostgreSQL 18 or newer only if you want to run the PHP suite on a server database (the schema
+  uses `uuidv7()`; SQLite is the default)
 
 ## Setup
 
@@ -98,11 +98,9 @@ The browser lanes need Playwright Chromium: `npx playwright install --with-deps 
 
 ## CI
 
-`.github/workflows/ci.yml` runs the stop-cranes, the PHP suite on PHP 8.4 and 8.5 against
-PostgreSQL 18.7 and 19.0, a static job (PHPStan, Pint, Rector, type coverage) per PHP version,
-the npm workspaces with the end-to-end lanes, and the runtime and realtime image builds. The
-`CI gate` job fails unless every other job succeeded; it is the one check a branch rule should
-require.
+The jobs, what each test layer covers and what a mirror needs to run the workflow are described in
+[docs/guides/testing-and-ci.md](docs/guides/testing-and-ci.md). The `CI gate` job is the one check
+a branch rule should require.
 
 ## Commits and branches
 
