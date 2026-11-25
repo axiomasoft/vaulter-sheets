@@ -38,9 +38,14 @@ Build the room image with `docker build -f packages/realtime/Dockerfile .`. Run 
 - Node.js `>=26.13.1` (`package.json` `engines.node`)
 - PostgreSQL CI matrix: 18.7 and 19.0
 
+Setup, the local checks (`composer test`, `composer analyse`, `composer lint:check`,
+`composer refactor:check`, the npm workspaces and the `scripts/ci/` lanes) and the commit
+conventions are in [CONTRIBUTING.md](CONTRIBUTING.md). Report vulnerabilities as described in
+[SECURITY.md](SECURITY.md).
+
 ## CI
 
-`.github/workflows/ci.yml` validates `composer.json`, asserts Node.js 26.13.1, runs PostgreSQL 18.7 and 19.0, applies the unindexed-foreign-key gate, and fails when a dependency or a source file hits a stop-crane. The workflow's negative fixture must fail on a forbidden package or a banned call.
+`.github/workflows/ci.yml` validates `composer.json`, asserts Node.js 26.13.1, runs the stop-cranes in `scripts/ci/engineering-rails.py` (with a negative self-test that must fail on a forbidden package or a banned call), runs Pest on PHP 8.4 and 8.5 against PostgreSQL 18.7 and 19.0 after the unindexed-foreign-key gate, runs PHPStan, Pint, Rector and type coverage per PHP version, tests, type-checks and builds the npm workspaces with the end-to-end lanes, and builds the runtime and realtime images. `CI gate` is the one check a branch rule should require.
 
 ## Node image
 
