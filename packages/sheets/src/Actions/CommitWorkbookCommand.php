@@ -45,7 +45,7 @@ final readonly class CommitWorkbookCommand
      */
     public function execute(DriveContext $context, string $node, WorkbookCommand $command): array
     {
-        if (!config('vaulter-sheets.commands', true)) {
+        if (!config()->boolean('vaulter-sheets.commands', true)) {
             throw new WorkbookProblem('unsupported_content', 422);
         }
         $fingerprint = $command->fingerprint();

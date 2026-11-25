@@ -65,7 +65,7 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
         return [
             'marker' => $marker, 'etag' => $marker->etag($node), 'profile' => WorkbookCodec::profile(),
             'workbook' => $this->codec->snapshot($state->content),
-            'commands' => config('vaulter-sheets.commands') && $this->access->canEdit($context, $node) && $state->editable && $state->collabProtocol === null
+            'commands' => config()->boolean('vaulter-sheets.commands', true) && $this->access->canEdit($context, $node) && $state->editable && $state->collabProtocol === null
                 ? [
                     'set_number', 'set_text', 'set_boolean', 'set_formula', 'set_values',
                     'insert_row_before', 'delete_row', 'insert_column_before', 'delete_column',

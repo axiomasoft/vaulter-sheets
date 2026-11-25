@@ -51,7 +51,7 @@ final readonly class AppendWorkbookMutation
     /** @return array<string, mixed> */
     public function execute(DriveContext $context, string $node, string $owner, int $fence, int $base, WorkbookCommand $command, ?CollaborationCall $call = null): array
     {
-        if (!config('vaulter-sheets.commands', true)) {
+        if (!config()->boolean('vaulter-sheets.commands', true)) {
             throw new WorkbookProblem('room_unavailable', 503);
         }
         $id = (string) Str::uuid7();
