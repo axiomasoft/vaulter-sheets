@@ -335,7 +335,8 @@ test('broadcasts awareness presence between peers and removes on disconnect', {t
 
     clientA.updateAwareness({client_id: 'c-a', user: {name: 'Alice', color: '#2563eb'}, selection: {sheet_id: 'detail', start_row: 2, start_column: 2, end_row: 3, end_column: 4}});
     await waitFor(() => peersB.some(list => Array.isArray(list) && list.length === 1));
-    assert.equal((peersB.at(-1) as {client_id: string}[])[0].client_id, 'c-a');
+    // The room names the socket; the client's own client_id is not passed on.
+    assert.match((peersB.at(-1) as {client_id: string}[])[0].client_id, /^[0-9a-f-]{36}$/);
 
     clientA.close();
     await waitFor(() => Array.isArray(peersB.at(-1)) && (peersB.at(-1) as unknown[]).length === 0);
@@ -647,4 +648,26 @@ test('trusted proxies accept addresses and CIDR subnets and refuse anything else
     for (const bad of ['proxy.local', '10.0.0.0/33', '10.0.0.0/8/1', '::/129', '10.0.0.0/x']) {
         assert.throws(() => proxyList([bad]), /Invalid trusted proxy/, bad);
     }
+});
+
+test('presence carries the admitted token\'s subject and a room-given client id, not what the client claims', {timeout: 8000}, async t => {
+    const {open} = await startOpenRoomServer(t);
+    const alice = await open('identity', roomToken({sub: '7', sub_type: 'user'}));
+    const bob = await open('identity', roomToken({sub: '8', sub_type: 'user'}));
+    await waitFor(() => alice.has('state') && bob.has('state'));
+    const selection = {sheet_id: 'detail', start_row: 1, start_column: 1, end_row: 1, end_column: 1};
+
+    bob.socket.send(JSON.stringify({type: 'awareness', client_id: 'shared', user: {name: 'Bob'}, selection}));
+    // Alice claims Bob's id and his client id.
+    alice.socket.send(JSON.stringify({type: 'awareness', client_id: 'shared', user: {id: '8', type: 'admin', name: 'Bob', color: '#000'}, selection}));
+    type Seen = {client_id: string; user?: Record<string, unknown>};
+    const seenBy = (peer: typeof alice): Seen[] => (peer.messages.filter(m => m.type === 'awareness').at(-1)?.peers ?? []) as Seen[];
+    await waitFor(() => seenBy(bob).length === 1 && seenBy(alice).length === 1);
+
+    const aliceAsSeen = seenBy(bob)[0];
+    const bobAsSeen = seenBy(alice)[0];
+    assert.deepEqual(aliceAsSeen.user, {id: '7', type: 'user', name: 'Bob', color: '#000'});
+    assert.deepEqual(bobAsSeen.user, {id: '8', type: 'user', name: 'Bob'});
+    assert.notEqual(aliceAsSeen.client_id, 'shared');
+    assert.notEqual(aliceAsSeen.client_id, bobAsSeen.client_id);
 });

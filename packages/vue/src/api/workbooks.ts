@@ -184,7 +184,8 @@ export interface WorkbookPresenceSelection {
 
 export interface WorkbookPresence {
   client_id: string
-  user?: { id?: string | number; name?: string; color?: string }
+  /** `id` and `type` come from the peer's verified room token; name and colour are the peer's own. */
+  user?: { id?: string | number; type?: string; name?: string; color?: string }
   selection?: WorkbookPresenceSelection | null
   updated_at: number
 }

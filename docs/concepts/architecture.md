@@ -129,4 +129,7 @@ expiry, revocation and access each time. The room process only decides when to a
 - **Presence.** Awareness changes are sent on at most once every 50 ms per room, the latest
   presence of every peer included. Each broadcast is a list of every other peer's presence for
   every peer, so the interval, not the senders, sets the cost of presence.
+  Identity in a presence is the room's: `client_id` is an id the room gives each socket, and
+  `user.id` / `user.type` are the subject (`sub`, `sub_type`) of the room token the owner accepted.
+  A client's own `client_id` and `user.id` are not passed on; its name and colour are, display only.
 - **Commands.** A room queues at most 64 intents; the next is answered `room_busy` (retryable).

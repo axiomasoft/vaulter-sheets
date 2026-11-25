@@ -101,7 +101,19 @@ export function clientAddress(request: IncomingMessage, proxies: BlockList): str
     }
     return address;
 }
-interface Peer {socket: WebSocket; token: string; seq: number; opening: boolean; presence?: WorkbookPresence; expiry?: NodeJS.Timeout; checkedAt: number}
+interface Peer {
+    socket: WebSocket;
+    token: string;
+    seq: number;
+    opening: boolean;
+    presence?: WorkbookPresence;
+    /** The presence `client_id` other peers see: the room's, one per socket, never the client's. */
+    presenceId: string;
+    /** The token's subject once the owner admitted the peer; its presence carries it as `user.id` / `user.type`. */
+    principal?: {id: string; type: string} | null;
+    expiry?: NodeJS.Timeout;
+    checkedAt: number;
+}
 
 /**
  * The `exp` claim (unix seconds) of a room JWT, read WITHOUT verifying the signature: the owner verifies
@@ -114,6 +126,21 @@ export function tokenExpiry(token: string): number | null {
     try {
         const claims: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
         return record(claims) && Number.isSafeInteger(claims.exp) ? claims.exp as number : null;
+    } catch {
+        return null;
+    }
+}
+/**
+ * The subject (`sub`, `sub_type`) of a room JWT, read without verifying the signature: it is read once the owner
+ * accepted the token, which verified it. Null when the token names no subject.
+ */
+export function tokenPrincipal(token: string): {id: string; type: string} | null {
+    const payload = token.split('.')[1];
+    if (payload === undefined) return null;
+    try {
+        const claims: unknown = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+        if (!record(claims) || typeof claims.sub !== 'string' || claims.sub === '' || typeof claims.sub_type !== 'string' || claims.sub_type === '') return null;
+        return {id: claims.sub, type: claims.sub_type};
     } catch {
         return null;
     }
@@ -343,16 +370,18 @@ export function createRealtimeServer(options: Options) {
         }
     }
 
-    function parseAwareness(message: Record<string, unknown>): WorkbookPresence | null {
+    /**
+     * A peer's presence as the room sends it on. Identity is the room's: `client_id` is the socket's own id and
+     * `user.id` / `user.type` the subject of the token the owner accepted; a client's `user.id` is never passed on.
+     * Name and colour are the client's, display only.
+     */
+    function parseAwareness(message: Record<string, unknown>, peer: Peer): WorkbookPresence | null {
         if (typeof message.client_id !== 'string' || message.client_id.length === 0 || message.client_id.length > 128) return null;
-        const presence: WorkbookPresence = {client_id: message.client_id, updated_at: Date.now()};
+        const presence: WorkbookPresence = {client_id: peer.presenceId, updated_at: Date.now()};
+        const user: NonNullable<WorkbookPresence['user']> = {};
         if (message.user !== undefined) {
             if (!record(message.user)) return null;
-            const user: NonNullable<WorkbookPresence['user']> = {};
-            if (message.user.id !== undefined) {
-                if (typeof message.user.id !== 'string' && typeof message.user.id !== 'number') return null;
-                user.id = message.user.id;
-            }
+            if (message.user.id !== undefined && typeof message.user.id !== 'string' && typeof message.user.id !== 'number') return null;
             if (message.user.name !== undefined) {
                 if (typeof message.user.name !== 'string' || message.user.name.length > 128) return null;
                 user.name = message.user.name;
@@ -361,8 +390,12 @@ export function createRealtimeServer(options: Options) {
                 if (typeof message.user.color !== 'string' || message.user.color.length > 32) return null;
                 user.color = message.user.color;
             }
-            presence.user = user;
         }
+        if (peer.principal) {
+            user.id = peer.principal.id;
+            user.type = peer.principal.type;
+        }
+        if (Object.keys(user).length > 0) presence.user = user;
         if (message.selection !== undefined) {
             if (message.selection === null) {
                 presence.selection = null;
@@ -546,7 +579,7 @@ export function createRealtimeServer(options: Options) {
     function attach(roomId: string, socket: WebSocket, address: string): void {
         const room = rooms.get(roomId) ?? {peers: new Set<Peer>(), work: Promise.resolve(), queued: 0, history: new Map<number, WorkbookDeltaUpdate>(), idleStreak: 0, nextPollAt: Date.now() + baseRefreshMs};
         rooms.set(roomId, room);
-        const peer: Peer = {socket, token: '', seq: -1, opening: true, checkedAt: 0};
+        const peer: Peer = {socket, token: '', seq: -1, opening: true, presenceId: randomUUID(), checkedAt: 0};
         room.peers.add(peer);
         const timer = setTimeout(() => socket.close(4403, 'Room credential required'), 5000);
         pending.set(address, (pending.get(address) ?? 0) + 1);
@@ -593,6 +626,7 @@ export function createRealtimeServer(options: Options) {
                         return;
                     }
                     sendPeerState(room, peer, resume);
+                    peer.principal = tokenPrincipal(peer.token);
                     peer.opening = false;
                     settle();
                     clearTimeout(timer);
@@ -604,7 +638,7 @@ export function createRealtimeServer(options: Options) {
                 return;
             }
             if (!peer.opening && message.type === 'awareness') {
-                const parsed = parseAwareness(message);
+                const parsed = parseAwareness(message, peer);
                 if (!parsed) {
                     socket.close(1007, 'Invalid awareness message');
                     return;
