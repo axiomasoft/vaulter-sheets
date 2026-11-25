@@ -20,6 +20,7 @@ use Vaulter\Sheets\Console\RecoverWorkbookJobs;
 use Vaulter\Sheets\Content\WorkbookCodec;
 use Vaulter\Sheets\Contracts\WorkbookExchangeRuntime;
 use Vaulter\Sheets\Data\WorkbookProblem;
+use Vaulter\Sheets\Exchange\ExchangeWire;
 use Vaulter\Sheets\Exchange\WorkbookExchange;
 use Vaulter\Sheets\Exchange\ZipArchiveGuard;
 use Vaulter\Sheets\Jobs\RunWorkbookExchange;
@@ -694,12 +695,12 @@ it('enforces ACL isolation and re-checks download ability on export status and d
 
 it('packs and unpacks > 5 MiB VX01 exchange frames and enforces ZipArchiveGuard::inspectStream', function (): void {
     $payload = str_repeat('A', 5 * 1024 * 1024 + 1024);
-    $frame = \Vaulter\Sheets\Exchange\ExchangeWire::streamRequest((object) [
+    $frame = ExchangeWire::streamRequest((object) [
         'version' => 1,
         'request_id' => 'big_php_1',
         'operation' => 'import',
         'format' => 'xlsx',
-        'profile_id' => \Vaulter\Sheets\Content\WorkbookCodec::PROFILE,
+        'profile_id' => WorkbookCodec::PROFILE,
         'input_b64' => base64_encode($payload),
         'input_sha256' => hash('sha256', $payload),
         'options' => (object) [],
@@ -711,7 +712,7 @@ it('packs and unpacks > 5 MiB VX01 exchange frames and enforces ZipArchiveGuard:
     expect($stream)->not->toBeFalse();
     fwrite($stream, str_repeat('B', 2048));
     rewind($stream);
-    expect(fn () => \Vaulter\Sheets\Exchange\ZipArchiveGuard::inspectStream($stream, 1024))
-        ->toThrow(\Vaulter\Sheets\Data\WorkbookProblem::class);
+    expect(fn () => ZipArchiveGuard::inspectStream($stream, 1024))
+        ->toThrow(WorkbookProblem::class);
     fclose($stream);
 });

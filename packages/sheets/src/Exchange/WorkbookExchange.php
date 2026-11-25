@@ -32,10 +32,10 @@ use Vaulter\Sheets\Contracts\WorkbookExchangeRuntime;
 use Vaulter\Sheets\Data\WorkbookMarker;
 use Vaulter\Sheets\Data\WorkbookProblem;
 use Vaulter\Sheets\Jobs\RunWorkbookExchange;
-use Vaulter\Sheets\Support\WorkbookClock;
 use Vaulter\Sheets\Runtime\CanonicalJson;
 use Vaulter\Sheets\Runtime\StrictJson;
 use Vaulter\Sheets\Runtime\WireException;
+use Vaulter\Sheets\Support\WorkbookClock;
 use Vaulter\Sheets\Types\SpreadsheetDocumentType;
 
 final readonly class WorkbookExchange
@@ -230,7 +230,7 @@ final readonly class WorkbookExchange
     }
 
     /**
-     * @param array<string, int|string> $scope
+     * @param  array<string, int|string>                            $scope
      * @return array{created: bool, job: array<string, mixed>}|null
      */
     private function findExportReplay(array $scope, string $format, stdClass $source, mixed $shaExpected, stdClass $options): ?array
@@ -592,6 +592,7 @@ final readonly class WorkbookExchange
         if (strlen($canonical) > $this->codec->maxSizeBytes()) {
             throw new WorkbookProblem('limit_exceeded', 413);
         }
+
         return [
             'generation' => $generation,
             'source_position' => $position,

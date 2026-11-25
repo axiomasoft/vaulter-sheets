@@ -47,7 +47,7 @@ final class ZipArchiveGuard
                 throw new WorkbookProblem('limit_exceeded', 413);
             }
         }
-        (new self())->assertSafe($bytes);
+        (new self)->assertSafe($bytes);
     }
 
     private const int S_IFREG = 0100000;

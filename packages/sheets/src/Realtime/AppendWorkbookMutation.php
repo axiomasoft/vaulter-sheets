@@ -29,6 +29,8 @@ use Vaulter\Sheets\Data\WorkbookMarker;
 use Vaulter\Sheets\Data\WorkbookProblem;
 use Vaulter\Sheets\Runtime\CanonicalJson;
 use Vaulter\Sheets\Runtime\StrictJson;
+use Vaulter\Sheets\Support\StrongEtag;
+use Vaulter\Sheets\Support\WorkbookClock;
 
 /** Owner port for a typed Sheets intent, shared by browser writes and in-process callers. */
 #[Spi(SpiKind::Call)]
@@ -151,13 +153,13 @@ final readonly class AppendWorkbookMutation
                 'changed_ranges' => $runtime->changed_ranges ?? [], 'checks' => $runtime->checks ?? new stdClass,
             ];
             // Use the DB clock for the receipt windows, including after a lock wait.
-            $now = \Vaulter\Sheets\Support\WorkbookClock::nowLiteral($db);
+            $now = WorkbookClock::nowLiteral($db);
             $this->commands($db)->insert($scope + [
                 'id' => $id, 'generation' => $command->generation, 'fingerprint' => $command->fingerprint(),
                 'base_position' => $marker->position, 'committed_position' => $position, 'state' => 'committed',
                 'receipt_id' => $receiptId, 'finished_at' => $db->raw($now),
-                'replay_until' => \Vaulter\Sheets\Support\WorkbookClock::deadlineTimestamp($db, 'replay_seconds'),
-                'evidence_until' => \Vaulter\Sheets\Support\WorkbookClock::deadlineTimestamp($db, 'evidence_seconds'),
+                'replay_until' => WorkbookClock::deadlineTimestamp($db, 'replay_seconds'),
+                'evidence_until' => WorkbookClock::deadlineTimestamp($db, 'evidence_seconds'),
                 'evidence' => json_encode($evidence, JSON_THROW_ON_ERROR),
             ]);
             $db->table($this->schema->table('sheets_realtime_links'))->insert([
@@ -201,7 +203,7 @@ final readonly class AppendWorkbookMutation
         if ($command->policy !== 'rebase_cells') {
             throw new WorkbookProblem('version_conflict', 409);
         }
-        $cursor = \Vaulter\Sheets\Support\StrongEtag::parsePosition($command->ifMatch, $document->nodeId, $marker->generation);
+        $cursor = StrongEtag::parsePosition($command->ifMatch, $document->nodeId, $marker->generation);
         if ($cursor === null || $cursor >= $marker->position) {
             throw new WorkbookProblem('version_conflict', 409);
         }
@@ -216,7 +218,7 @@ final readonly class AppendWorkbookMutation
             foreach ($evidence->insertions as $insertion) {
                 $this->shiftRows($items, $insertion);
             }
-            ++$cursor;
+            $cursor++;
         }
         if ($cursor !== $marker->position) {
             throw new WorkbookProblem('version_conflict', 409);
@@ -267,7 +269,7 @@ final readonly class AppendWorkbookMutation
             'id' => $id, 'generation' => $command->generation, 'fingerprint' => $command->fingerprint(),
             'base_position' => $marker->position, 'state' => 'rejected', 'error_code' => $problem->problem,
             'intent' => json_encode(['rejection' => ['code' => $problem->problem, 'status' => $problem->status, 'detail' => $problem->detail]], JSON_THROW_ON_ERROR),
-            'finished_at' => $db->raw(\Vaulter\Sheets\Support\WorkbookClock::nowLiteral($db)), 'replay_until' => \Vaulter\Sheets\Support\WorkbookClock::deadlineTimestamp($db, 'replay_seconds'),
+            'finished_at' => $db->raw(WorkbookClock::nowLiteral($db)), 'replay_until' => WorkbookClock::deadlineTimestamp($db, 'replay_seconds'),
         ]);
     }
 
@@ -283,7 +285,7 @@ final readonly class AppendWorkbookMutation
         if (!hash_equals(self::string($row->fingerprint ?? null), $command->fingerprint())) {
             throw new WorkbookProblem('idempotency_conflict', 409);
         }
-        $now = \Vaulter\Sheets\Support\WorkbookClock::nowLiteral($db);
+        $now = WorkbookClock::nowLiteral($db);
         if (($row->state ?? null) === 'expired' || !$this->commands($db)->where($scope)->where('replay_until', '>', $db->raw($now))->exists()) {
             throw new WorkbookProblem('idempotency_window_expired', 410);
         }
@@ -317,8 +319,6 @@ final readonly class AppendWorkbookMutation
     {
         return $db->table($this->schema->table('sheets_commands'));
     }
-
-
 
     private static function string(mixed $value): string
     {
@@ -431,7 +431,7 @@ final readonly class AppendWorkbookMutation
     }
 
     /**
-     * @param  list<stdClass>                       $commands
+     * @param  list<stdClass>                          $commands
      * @return array<int|string, array<string, mixed>>
      */
     private static function shiftCells(stdClass $cellData, string $sheetId, array $commands): array
