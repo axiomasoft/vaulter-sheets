@@ -18,7 +18,9 @@ runs:
 
     - name: actionlint
       shell: bash
-      run: actionlint -color
+      # actionlint 1.7.12 (latest) does not yet parse GitHub's 2026 self-repository
+      # form uses: $/..., which the hosted runner already accepts.
+      run: actionlint -color -ignore 'specifying action "\$/.+" in invalid format because ref is missing'
 
     - name: zizmor
       uses: zizmorcore/zizmor-action@1b4550e929643b8b26a62303c6bd64814271a4f1 # v0.9.2
