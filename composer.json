@@ -107,6 +107,7 @@
         "test": [
             "@node:deps",
             "@php vendor/bin/pest -c packages/sheets/phpunit.xml --test-directory=packages/sheets/tests"
-        ]
+        ],
+        "test:types": "@php -d memory_limit=1G vendor/bin/pest -c packages/sheets/phpunit.xml --test-directory=packages/sheets/tests --type-coverage --min=100"
     }
 }
