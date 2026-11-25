@@ -62,9 +62,12 @@ final class CanonicalJson
         }
         $sign = $value < 0 ? '-' : '';
         $abs = abs($value);
-        for ($precision = 1; $precision <= 17; $precision++) {
-            $repr = sprintf('%.'.($precision - 1).'e', $abs);
-            if ((float) $repr === $abs) {
+        // 17 significant digits always round-trip a double; look for the shortest form.
+        $repr = sprintf('%.16e', $abs);
+        for ($precision = 1; $precision < 17; $precision++) {
+            $candidate = sprintf('%.'.($precision - 1).'e', $abs);
+            if ((float) $candidate === $abs) {
+                $repr = $candidate;
                 break;
             }
         }
