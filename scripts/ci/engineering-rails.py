@@ -97,7 +97,10 @@ BANNED = (
     ("registry.tiptap.dev", re.compile(r"registry\.tiptap\.dev")),
 )
 SKIP_CALL = re.compile(r"->skip\s*\(")
-ELOQUENT = "Illuminate\\Database\\Eloquent\\Model"
+# The Model class itself, not ModelNotFoundException and friends.
+ELOQUENT_MODEL = re.compile(r"\bIlluminate\\Database\\Eloquent\\Model\b")
+# Both `#[Api]` and `#[Api(since: '1.0')]` are in use.
+API_ATTRIBUTE = re.compile(r"#\[Api\b")
 FORBIDDEN_DIR_NAMES = frozenset({"Helpers", "Utils", "Common", "Misc", "Traits"})
 COPYLEFT = re.compile(r"\b(?:AGPL|GPL|SSPL)(?:-|\b)", re.I)
 MANIFEST_NAMES = frozenset({"composer.json", "package.json"})
@@ -217,7 +220,7 @@ def scan(root: Path) -> list[str]:
                 add(hits, path, label)
         if is_test(path) and SKIP_CALL.search(text):
             add(hits, path, "->skip()")
-        if "#[Api]" in text and ELOQUENT in text:
+        if API_ATTRIBUTE.search(text) and ELOQUENT_MODEL.search(text):
             add(hits, path, "Eloquent Model on an #[Api] surface")
     return hits
 
@@ -314,6 +317,22 @@ def self_test() -> int:
             encoding="utf-8",
         )
         require_ok("proprietary license", ok_license)
+
+        bad_api = base / "api"
+        write_base(bad_api)
+        (bad_api / "Pin.php").write_text(
+            "<?php\nuse Illuminate\\Database\\Eloquent\\Model;\n#[Api(since: '1.0')]\nfinal class Pin extends Model {}\n",
+            encoding="utf-8",
+        )
+        require_fail("Eloquent Model on #[Api(since: ...)]", bad_api)
+
+        api_exception = base / "api-exception"
+        write_base(api_exception)
+        (api_exception / "Ops.php").write_text(
+            "<?php\nuse Illuminate\\Database\\Eloquent\\ModelNotFoundException;\n#[Api(since: '1.0')]\nfinal class Ops {}\n",
+            encoding="utf-8",
+        )
+        require_ok("ModelNotFoundException on an #[Api] surface", api_exception)
 
         for label, license_value in (
             ("UNLICENSED", "UNLICENSED"),
