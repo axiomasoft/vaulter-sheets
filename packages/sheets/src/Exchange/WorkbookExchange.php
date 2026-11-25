@@ -178,6 +178,7 @@ final readonly class WorkbookExchange
         $storedOptions->_node_id = $node;
 
         $keepSeconds = $this->intConfig('vaulter-sheets.exchange.keep_seconds', 7 * 86_400);
+        $maxActive = $this->intConfig('vaulter-sheets.exchange.max_active_per_actor', 8);
         $jobId = (string) Str::uuid7();
 
         /** @var array{created: bool, job: array<string, mixed>} $result */
@@ -188,8 +189,24 @@ final readonly class WorkbookExchange
             $prepared,
             $storedOptions,
             $keepSeconds,
+            $maxActive,
             $jobId,
         ): array {
+            // A new registration (not a replay of its own key) waits behind the actor's unfinished ones,
+            // so one caller cannot pin source files and fill the exchange queue without bound. The count
+            // reads the prefix of the unique scope key; two racing registrations may overshoot it by one.
+            if (!$this->records($db)->where($scope)->exists()) {
+                $active = $this->records($db)
+                    ->where('tenant_id', $scope['tenant_id'])
+                    ->where('project_scope', $scope['project_scope'])
+                    ->where('subject_type', $scope['subject_type'])
+                    ->where('subject_id', $scope['subject_id'])
+                    ->whereIn('state', ['queued', 'running'])
+                    ->count();
+                if ($active >= $maxActive) {
+                    throw new WorkbookProblem('too_many_exchanges', 429, ['limit' => $maxActive]);
+                }
+            }
             $insertedRows = $this->records($db)->insertOrIgnoreReturning($scope + [
                 'id' => $jobId,
                 'fingerprint' => $prepared['fingerprint'],

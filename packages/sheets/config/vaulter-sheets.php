@@ -27,6 +27,8 @@ return [
         'max_import_bytes' => (int) env('SHEETS_EXCHANGE_MAX_IMPORT_BYTES', 32 * 1024 * 1024),
         'max_export_bytes' => (int) env('SHEETS_EXCHANGE_MAX_EXPORT_BYTES', 32 * 1024 * 1024),
         'keep_seconds' => 7 * 86_400,
+        // Unfinished (queued or running) exchanges one actor may have in a project scope.
+        'max_active_per_actor' => (int) env('SHEETS_EXCHANGE_MAX_ACTIVE_PER_ACTOR', 8),
         'lease_seconds' => 60,
         'queue_connection' => env('SHEETS_EXCHANGE_QUEUE_CONNECTION', 'sheets-exchange'),
         'command' => ['vaulter-sheets-exchange'],

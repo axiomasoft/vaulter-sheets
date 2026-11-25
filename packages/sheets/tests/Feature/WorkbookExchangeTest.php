@@ -724,3 +724,21 @@ it('reads an exchange registration body of up to 256 KiB and refuses a larger on
     expect($post(str_pad('[]', 256 * 1024))->assertUnprocessable()->json('code'))->toBe('invalid_command')
         ->and($post(str_pad('[]', 256 * 1024 + 1))->assertStatus(413)->json('code'))->toBe('limit_exceeded');
 });
+
+it('holds a new exchange back while the actor has as many unfinished ones as allowed, but never a replay', function (): void {
+    config(['vaulter-sheets.exchange.max_active_per_actor' => 2]);
+    $url = createExchangeWorkbookUrl($this);
+    $head = $this->getJson($url)->assertOk();
+    $register = fn (string $key) => $this->postJson($url.'/exchanges', [
+        'request_key' => $key, 'kind' => 'export', 'format' => 'csv',
+        'source' => ['generation' => $head->json('data.marker.generation'), 'position' => $head->json('data.marker.position')],
+    ]);
+
+    $first = $register('active-1')->assertStatus(202)->json('data.exchange_id');
+    $register('active-2')->assertStatus(202);
+    $register('active-3')->assertStatus(429)->assertJsonPath('code', 'too_many_exchanges');
+    expect($register('active-1')->json('data.exchange_id'))->toBe($first);
+
+    app()->call([new RunWorkbookExchange($first), 'handle']);
+    $register('active-3')->assertStatus(202);
+});

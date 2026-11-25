@@ -46,6 +46,7 @@ environment value becomes `0` and therefore selects that fallback too.
 | `exchange.formats` | `SHEETS_EXCHANGE_FORMATS` | `[]` (comma list; only `csv`, `xlsx` are kept) | `[]` | Enabled import/export formats; empty disables exchange |
 | `exchange.max_import_bytes` | `SHEETS_EXCHANGE_MAX_IMPORT_BYTES` | 32 MiB | 32 MiB | Largest uploaded file |
 | `exchange.max_export_bytes` | `SHEETS_EXCHANGE_MAX_EXPORT_BYTES` | 32 MiB | 32 MiB | Largest produced file |
+| `exchange.max_active_per_actor` | `SHEETS_EXCHANGE_MAX_ACTIVE_PER_ACTOR` | 8 | 8 | Unfinished (queued or running) exchanges one actor may have in a project scope; one more is answered `429 too_many_exchanges` |
 | `exchange.keep_seconds` | — | 604 800 (7 days) | 604 800 | How long a finished job and its file are kept |
 | `exchange.lease_seconds` | — | 60 | 60 | Worker lease on a running exchange job |
 | `exchange.queue_connection` | `SHEETS_EXCHANGE_QUEUE_CONNECTION` | `sheets-exchange` | `sheets-exchange` | Queue connection of `RunWorkbookExchange` |

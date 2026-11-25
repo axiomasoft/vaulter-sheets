@@ -28,5 +28,9 @@ released on its own line (`release/packages.json`); an entry names the package i
 
 ### Changed
 
+- `axiomasoft/vaulter-sheets`: an actor may have at most `exchange.max_active_per_actor` (default
+  8, `SHEETS_EXCHANGE_MAX_ACTIVE_PER_ACTOR`) unfinished imports and exports in a project scope; a
+  new registration beyond that is answered `429 too_many_exchanges`. Replaying an existing
+  `request_key` is never held back.
 - Development: the family toolchain (Pint, Rector, PHPStan with the strict rule set, Pest type
   coverage) is declared in `composer.json`; `composer test` installs the npm workspace it needs.

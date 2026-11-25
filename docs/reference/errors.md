@@ -41,6 +41,7 @@ setup).
 | `scope_changed` | 409 | refresh | A `fill_formula` was computed for a set of table rows that changed (`detail.expected`, `detail.actual`) |
 | `generation_changed` | 409 | refresh | The document was replaced (new generation) while the command or exchange was in flight |
 | `idempotency_conflict` | 409 | no | The same command or exchange ID was reused with a different request |
+| `too_many_exchanges` | 429 | yes | The actor already has `exchange.max_active_per_actor` unfinished imports and exports (`detail.limit`); retry once one finishes |
 | `exchange_not_ready` | 409 | yes | Download requested while the exchange job is still queued or running |
 | `room_not_active` | 409 | no | A realtime call for a workbook that is not in journal mode |
 | `incompatible_binding` | 412 | refresh | The room credential was issued for another schema version, state format or protocol than the document now has |
