@@ -22,10 +22,11 @@ name: CI
 # vaulter-collaboration at main, Packman at the tag the root composer.json
 # pins. secrets.VAULTER_READ_TOKEN is sent as an HTTP header for the private
 # axiomasoft repositories. An existing sibling directory is reused.
+# `CI gate` needs every job and is the one check a branch rule should require.
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feat/**', 'fix/**']
   pull_request:
   workflow_dispatch:
 
@@ -334,3 +335,17 @@ jobs:
       - name: Build realtime image
         run: docker build --pull -f packages/realtime/Dockerfile -t vaulter-sheets-realtime:ci .
 
+  ci-gate:
+    name: CI gate
+    if: always()
+    needs: [stop-cranes, php, static, node, images]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # The one check a branch rule has to require: red unless every job (and every matrix cell) succeeded,
+      # so a failed, cancelled or skipped lane can never pass as green.
+      - name: Verdict
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -e -r 'to_entries | map(select(.value.result != "success") | "\(.key): \(.value.result)") | if length == 0 then "all jobs succeeded" else (join("\n") | halt_error(1)) end' <<< "$NEEDS"
