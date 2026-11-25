@@ -341,7 +341,7 @@ test('broadcasts awareness presence between peers and removes on disconnect', {t
     await waitFor(() => Array.isArray(peersB.at(-1)) && (peersB.at(-1) as unknown[]).length === 0);
 });
 
-test('captures F-09a format, freeze, and merge mutations in connectNativeWorkbook', {timeout: 5000}, async t => {
+test('captures format, freeze, and merge mutations in connectNativeWorkbook', {timeout: 5000}, async t => {
     const peer = new WebSocketServer({port: 0, host: '127.0.0.1'});
     await once(peer, 'listening');
     const address = peer.address();
@@ -380,9 +380,27 @@ test('captures F-09a format, freeze, and merge mutations in connectNativeWorkboo
         {id: SetFrozenMutation.id, type: CommandType.MUTATION, params: {unitId: 'wb', subUnitId: 'detail', startRow: 1, startColumn: 0, ySplit: 1, xSplit: 0}},
         {id: AddWorksheetMergeMutation.id, type: CommandType.MUTATION, params: {unitId: 'wb', subUnitId: 'detail', ranges: [{startRow: 0, startColumn: 0, endRow: 0, endColumn: 1}]}},
     ];
-    for (const m of mutations) { before?.(m); after?.(m); }
-    await waitFor(() => intents.length === 3);
-    assert.deepEqual(intents[0].commands, [{kind: 'set_format', sheet_id: 'detail', start_row: 2, start_column: 2, end_row: 2, end_column: 2, format: {font: {bold: true}}}]);
-    assert.deepEqual(intents[1].commands, [{kind: 'set_freeze', sheet_id: 'detail', row_count: 1, column_count: 0}]);
-    assert.deepEqual(intents[2].commands, [{kind: 'merge_cells', sheet_id: 'detail', start_row: 1, start_column: 1, end_row: 1, end_column: 2}]);
+    // The room client keeps one intent in flight until the peer acknowledges it, so the wire shows only
+    // the first intent; the translated commands are read where the adapter submits them. Each submit
+    // re-renders the pending view and the adapter cancels a mutation that arrives before that render
+    // lands, so the mutations are applied one settled render at a time.
+    const submitted: unknown[] = [];
+    const submit = binding.client.submit.bind(binding.client);
+    binding.client.submit = (...args: Parameters<typeof submit>) => {
+        submitted.push(args[0]);
+        return submit(...args);
+    };
+    for (const [index, m] of mutations.entries()) {
+        before?.(m);
+        after?.(m);
+        await waitFor(() => submitted.length === index + 1);
+        await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    await waitFor(() => intents.length === 1);
+    assert.deepEqual(submitted, [
+        [{kind: 'set_format', sheet_id: 'detail', start_row: 2, start_column: 2, end_row: 2, end_column: 2, format: {font: {bold: true}}}],
+        [{kind: 'set_freeze', sheet_id: 'detail', row_count: 1, column_count: 0}],
+        [{kind: 'merge_cells', sheet_id: 'detail', start_row: 1, start_column: 1, end_row: 1, end_column: 2}],
+    ]);
+    assert.deepEqual(intents[0].commands, submitted[0]);
 });
