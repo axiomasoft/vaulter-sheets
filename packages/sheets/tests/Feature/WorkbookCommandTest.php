@@ -486,3 +486,30 @@ it('expires a committed command and unpins its evidence blob', function (): void
         ->and($plainRow->evidence_blob_id)->toBeNull()
         ->and(app(BlobPins::class)->countByOwner()[RecoverWorkbookJobs::EVIDENCE_PIN_OWNER] ?? 0)->toBe(0);
 });
+
+it('bounds a command body and the range query, and answers a malformed range as the caller\'s error', function (): void {
+    $url = createWorkbookTestUrl($this);
+    $post = fn (string $body) => $this->call('POST', $url.'/commands', server: ['CONTENT_TYPE' => 'application/json'], content: $body);
+
+    // JSON whitespace pads a body to exactly the 1 MiB it may have; one byte more is refused unread.
+    $post(str_pad('{}', 1024 * 1024))->assertUnprocessable()->assertJsonPath('code', 'invalid_command');
+    $post(str_pad('{}', 1024 * 1024 + 1))->assertStatus(413)->assertJsonPath('code', 'limit_exceeded');
+
+    $this->getJson($url.'/ranges?sheet_id=summary&range=B2&limit=10000')->assertOk();
+    foreach ([
+        'range above 32 characters' => 'sheet_id=summary&range='.str_repeat('B', 32).'2',
+        'cell that is not A1' => 'sheet_id=summary&range=nonsense',
+        'row zero' => 'sheet_id=summary&range=A0',
+        'four column letters' => 'sheet_id=summary&range=ZZZZ1',
+        'reversed range' => 'sheet_id=summary&range=B2:A1',
+        'sheet id above 255 characters' => 'sheet_id='.str_repeat('s', 256).'&range=B2',
+        'limit in exponent notation' => 'sheet_id=summary&range=B2&limit=1e3',
+        'zero limit' => 'sheet_id=summary&range=B2&limit=0',
+        'limit above 10000' => 'sheet_id=summary&range=B2&limit=10001',
+        'unknown field' => 'sheet_id=summary&range=B2&fields=value,owner',
+        'fields as a list' => 'sheet_id=summary&range=B2&fields[]=value',
+    ] as $label => $query) {
+        $response = $this->getJson($url.'/ranges?'.$query);
+        expect([$response->status(), $response->json('code')])->toBe([422, 'invalid_command'], $label);
+    }
+});

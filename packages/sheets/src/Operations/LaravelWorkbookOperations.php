@@ -81,6 +81,9 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
      */
     public function readRange(DriveContext $context, string $node, string $sheet, string $range, int $limit): array
     {
+        if (!self::wellFormedRange($range)) {
+            throw new WorkbookProblem('invalid_command', 422);
+        }
         $catalog = $this->loadCatalog($context, $node);
 
         return $this->read($context, $node, $catalog, [(object) ['sheet_id' => $sheet, 'range' => $range]], $limit);
@@ -285,6 +288,30 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
         $this->authorizeDelivery($context, $node);
 
         return $result;
+    }
+
+    /**
+     * The A1 cell or range syntax the runtime reads. The runtime treats anything else as a malformed
+     * protocol message, which would surface as a runtime failure instead of the caller's error.
+     */
+    private static function wellFormedRange(string $range): bool
+    {
+        if (preg_match('/^([A-Z]{1,3})([1-9]\d{0,6})(?::([A-Z]{1,3})([1-9]\d{0,6}))?$/D', $range, $parts) !== 1) {
+            return false;
+        }
+
+        return !isset($parts[3], $parts[4])
+            || ((int) $parts[4] >= (int) $parts[2] && self::columnNumber($parts[3]) >= self::columnNumber($parts[1]));
+    }
+
+    private static function columnNumber(string $letters): int
+    {
+        $column = 0;
+        foreach (str_split($letters) as $letter) {
+            $column = $column * 26 + ord($letter) - 64;
+        }
+
+        return $column;
     }
 
     private function authorizeDelivery(DriveContext $context, string $node): void
