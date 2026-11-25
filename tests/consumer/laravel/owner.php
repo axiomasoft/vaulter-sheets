@@ -26,18 +26,21 @@ use Vaulter\Testing\Support\SuiteDatabaseConnection;
 use Vaulter\VaulterServiceProvider;
 
 require dirname(__DIR__, 3).'/vendor/autoload.php';
+require dirname(__DIR__, 2).'/e2e/suite-connection.php';
 
 if (getenv('APP_ENV') !== 'testing' || !in_array($_SERVER['REMOTE_ADDR'] ?? '127.0.0.1', ['127.0.0.1', '::1'], true)) {
     http_response_code(404);
     exit;
 }
 
-$configure = static function (Laravel $app): void {
+$suiteDatabaseEnv = vaulter_sheets_capture_suite_database_env();
+$configure = static function (Laravel $app) use ($suiteDatabaseEnv): void {
     $app['config']->set('app.key', 'base64:'.base64_encode(str_repeat('a', 32)));
     $app['config']->set('app.debug', false);
     $app['config']->set('cache.default', 'array');
     $app['config']->set('database.default', 'testing');
-    $app['config']->set('database.connections.testing', SuiteDatabaseConnection::resolve());
+    $app['config']->set('database.connections.testing', vaulter_sheets_suite_database_connection($suiteDatabaseEnv));
+    $app['config']->set('vaulter.database.write_guard', false);
     $app['config']->set('vaulter.ids.strategy', 'bigint');
     $app['config']->set('vaulter.routes.middleware.authenticated', []);
     $app['config']->set('vaulter-drive.access.permission_driver', 'database');
