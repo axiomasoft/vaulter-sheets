@@ -33,10 +33,12 @@ if (getenv('APP_ENV') !== 'testing' || !in_array($_SERVER['REMOTE_ADDR'] ?? '127
 
 $realtime = getenv('SHEETS_REALTIME_TEST') === '1';
 $configure = static function (Laravel $app) use ($realtime): void {
+    $app['config']->set('app.debug', true);
     $app['config']->set('app.key', 'base64:'.base64_encode(str_repeat('a', 32)));
     $app['config']->set('cache.default', 'array');
     $app['config']->set('database.default', 'testing');
     $app['config']->set('database.connections.testing', SuiteDatabaseConnection::resolve());
+    $app['config']->set('vaulter.database.write_guard', false);
     $app['config']->set('vaulter.ids.strategy', 'bigint');
     $app['config']->set('vaulter.routes.middleware.authenticated', []);
     $app['config']->set('vaulter-drive.access.permission_driver', 'null');

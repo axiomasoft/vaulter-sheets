@@ -22,6 +22,9 @@ after_workbook_cleanup() {
         cat "${work}/owner.log" >&2 2>/dev/null || true
         echo "======= vite.log =======" >&2
         cat "${work}/vite.log" >&2 2>/dev/null || true
+        echo "======= laravel.log =======" >&2
+        # Testbench writes here when the fixture does not isolate storage.
+        cat vendor/orchestra/testbench-core/laravel/storage/logs/laravel.log >&2 2>/dev/null || true
     fi
 }
 
