@@ -1,11 +1,16 @@
 includes:
+    - vendor/axiomasoft/packman-devtools/config/phpstan-base.neon
     - vendor/larastan/larastan/extension.neon
+    - vendor/phpstan/phpstan-strict-rules/rules.neon
+    - vendor/spaze/phpstan-disallowed-calls/extension.neon
 
 parameters:
     level: max
     tmpDir: build/phpstan
     paths:
         - packages/sheets/src
+        - packages/sheets/database
+        - packages/sheets/routes
     excludePaths:
         - vendor/*
         - node_modules/*
@@ -13,3 +18,42 @@ parameters:
         - release/*
         - build/*
     inferPrivatePropertyTypeFromConstructor: true
+
+    disallowedStaticCalls:
+        -
+            method: 'Illuminate\Support\Facades\DB::transaction()'
+            message: 'Use VaulterDatabase::transaction().'
+
+    disallowedMethodCalls:
+        -
+            method: 'Illuminate\Database\ConnectionInterface::transaction()'
+            message: 'Use VaulterDatabase::transaction().'
+        -
+            method: 'ZipArchive::extractTo()'
+            message: 'Inspect a bounded ZIP directory before reading entries.'
+
+    disallowedFunctionCalls:
+        -
+            function: 'parse_url()'
+            message: 'Use purpose-specific URL validation.'
+        -
+            function: 'env()'
+            message: 'Read environment variables from configuration files.'
+            allowIn:
+                - '*/config/*.php'
+
+    disallowedConstants:
+        -
+            constant: CURLOPT_RESOLVE
+            message: 'Pin connections explicitly without CURLOPT_RESOLVE.'
+
+    ignoreErrors:
+        # Vaulter\Documents\Contracts\ManagedDocumentCodec declares decodeStored() and
+        # replacePayloadReference() with a bare array, while DocumentCodec::decode()
+        # documents array<string, mixed>. Stored payloads are JSON objects, so the codec
+        # keeps the precise type; drop this once the base contract documents it too.
+        -
+            identifier: method.childParameterType
+            message: '#^Parameter \#\d+ \$(raw|previous|next) \(array<string, mixed>(\|null)?\) of method Vaulter\\Sheets\\Content\\WorkbookCodec::(decodeStored|replacePayloadReference)\(\) should be contravariant#'
+            path: packages/sheets/src/Content/WorkbookCodec.php
+            count: 3
