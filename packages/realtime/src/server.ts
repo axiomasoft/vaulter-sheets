@@ -19,6 +19,10 @@ const TOKEN_EXPIRED = {code: 4001, reason: 'Room credential expired'} as const;
 const MAX_TIMER_MS = 2_147_483_647;
 /** How long a peer's token may go without an owner read made with it; bounds how long a revoked token keeps fan-out. */
 const REVALIDATE_MS = 60_000;
+/** The peers one room serves; only peers whose credential the owner accepted count. */
+const ROOM_PEER_LIMIT = 32;
+/** The sockets one process holds, peers still presenting their credential included. */
+const SOCKET_LIMIT = 1024;
 
 class OwnerProblem extends Error {
     readonly status: number;
@@ -238,6 +242,13 @@ export function createRealtimeServer(options: Options) {
         }
     }
 
+    /** The peers of a room the owner admitted: those its peer limit counts. */
+    function admitted(room: Room | undefined): number {
+        let count = 0;
+        for (const peer of room?.peers ?? []) if (!peer.opening) count++;
+        return count;
+    }
+
     function broadcastAwareness(room: Room): void {
         for (const recipient of room.peers) {
             if (!recipient.token || recipient.opening || recipient.socket.readyState !== WebSocket.OPEN) continue;
@@ -422,7 +433,7 @@ export function createRealtimeServer(options: Options) {
         const match = /^\/v1\/rooms\/([A-Za-z0-9._-]{1,260})$/.exec(request.url ?? '');
         const requested = request.headers['sec-websocket-protocol'];
         if (!match || typeof requested !== 'string' || !requested.split(',').map(item => item.trim()).includes(WEBSOCKET_SUBPROTOCOL)
-            || sockets.clients.size >= 1024 || (rooms.get(match[1])?.peers.size ?? 0) >= 32) {
+            || sockets.clients.size >= SOCKET_LIMIT || admitted(rooms.get(match[1])) >= ROOM_PEER_LIMIT) {
             socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
             return;
         }
@@ -476,6 +487,11 @@ export function createRealtimeServer(options: Options) {
                 void syncRoom(roomId, room, peer.token, false, true).then(() => {
                     peer.checkedAt = Date.now();
                     if (socket.readyState !== WebSocket.OPEN) return;
+                    // Peers that opened together are counted here, once each is admitted.
+                    if (admitted(room) >= ROOM_PEER_LIMIT) {
+                        socket.close(1013, 'Room full');
+                        return;
+                    }
                     sendPeerState(room, peer, resume);
                     peer.opening = false;
                     clearTimeout(timer);

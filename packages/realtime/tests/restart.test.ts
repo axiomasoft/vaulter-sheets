@@ -526,3 +526,68 @@ test('captures format, freeze, and merge mutations in connectNativeWorkbook', {t
     ]);
     assert.deepEqual(intents[0].commands, submitted[0]);
 });
+
+/** A socket on the guarded room of `startRoomServer`'s process that never presents a credential. */
+async function squat(t: TestContext, port: number, room: string): Promise<WebSocket> {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/rooms/${room}`, WEBSOCKET_SUBPROTOCOL);
+    t.after(() => socket.terminate());
+    await once(socket, 'open');
+    return socket;
+}
+
+async function startOpenRoomServer(t: TestContext) {
+    const owner = createServer((request, response) => {
+        response.writeHead(request.url === '/read' ? 200 : 404, {'Content-Type': 'application/json'}).end(JSON.stringify(request.url === '/read' ? roomLog() : {}));
+    });
+    owner.listen(0, '127.0.0.1');
+    t.after(() => { owner.close(); owner.closeAllConnections(); });
+    await once(owner, 'listening');
+    const ownerAddress = owner.address();
+    assert.ok(ownerAddress && typeof ownerAddress !== 'string');
+    const app = createRealtimeServer({ownerUrl: `http://127.0.0.1:${ownerAddress.port}`, ownerToken: 'x'.repeat(32)});
+    app.server.listen(0, '127.0.0.1');
+    t.after(app.close);
+    await once(app.server, 'listening');
+    const address = app.server.address();
+    assert.ok(address && typeof address !== 'string');
+    const open = async (room: string, token: string) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${address.port}/v1/rooms/${room}`, WEBSOCKET_SUBPROTOCOL);
+        const messages: {type: string; peers?: {selection?: {end_row: number}}[]}[] = [];
+        let closeCode: number | null = null;
+        let refused = false;
+        socket.on('message', data => { messages.push(JSON.parse(data.toString())); });
+        socket.on('close', code => { closeCode = code; });
+        socket.on('error', () => { refused = true; });
+        t.after(() => socket.terminate());
+        await new Promise<void>(resolve => {
+            socket.once('open', () => resolve());
+            socket.once('close', () => resolve());
+            // A refused upgrade: ws emits only this event once a listener is attached.
+            socket.once('unexpected-response', request => { refused = true; request.destroy(); resolve(); });
+        });
+        if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({type: 'open', token}));
+        return {socket, messages, closeCode: () => closeCode, refused: () => refused, has: (type: string) => messages.some(m => m.type === type)};
+    };
+    return {port: address.port, open};
+}
+
+test('sockets without a credential do not take a room\'s peer slots', {timeout: 8000}, async t => {
+    const {port, open} = await startOpenRoomServer(t);
+    for (let i = 0; i < 32; i++) await squat(t, port, 'squatted');
+
+    const peer = await open('squatted', 'valid');
+    await waitFor(() => peer.has('state') || peer.refused());
+    assert.equal(peer.refused(), false, 'the upgrade was not refused');
+    assert.ok(peer.has('state'), 'the credentialed peer is served');
+});
+
+test('a room serves at most 32 admitted peers, also when they open together', {timeout: 8000}, async t => {
+    const {open} = await startOpenRoomServer(t);
+    const peers = await Promise.all(Array.from({length: 33}, (_, i) => open('crowded', `t${i}`)));
+    await waitFor(() => peers.every(p => p.has('state') || p.closeCode() !== null || p.refused()));
+
+    assert.equal(peers.filter(p => p.has('state')).length, 32);
+    const turnedAway = peers.filter(p => !p.has('state'));
+    assert.equal(turnedAway.length, 1);
+    assert.ok(turnedAway[0].refused() || turnedAway[0].closeCode() === 1013);
+});
