@@ -7,15 +7,22 @@ use Vaulter\Testing\Support\SuiteDatabaseConnection;
  * Process-environment coordinates for the suite database.
  *
  * php-cli-server often leaves $_ENV empty (variables_order without E), and
- * Laravel's Env repository then falls back to SQLite :memory:. HTTP requests
- * would miss the schema the CLI migrate wrote on the server engine.
+ * Laravel's Env repository then misses process variables: the database falls
+ * back to SQLite :memory:, and config keys such as SHEETS_EXCHANGE_FORMATS
+ * stay at their empty defaults.
  *
  * @return array<string, string>
  */
 function vaulter_sheets_capture_suite_database_env(): array
 {
     $captured = [];
-    foreach (['DB_CONNECTION', 'DB_HOST', 'DB_PORT', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD'] as $key) {
+    foreach ([
+        'APP_ENV',
+        'DB_CONNECTION', 'DB_HOST', 'DB_PORT', 'DB_DATABASE', 'DB_USERNAME', 'DB_PASSWORD',
+        'SHEETS_EXCHANGE_FORMATS', 'SHEETS_EXCHANGE_MAX_IMPORT_BYTES', 'SHEETS_EXCHANGE_MAX_EXPORT_BYTES',
+        'SHEETS_EXCHANGE_QUEUE_CONNECTION', 'SHEETS_MAX_SNAPSHOT_BYTES', 'SHEETS_MAX_MESSAGE_BYTES',
+        'SHEETS_RUNTIME_URL', 'SHEETS_RUNTIME_TOKEN_FILE', 'SHEETS_REALTIME_URL', 'SHEETS_REALTIME_OWNER_TOKEN_FILE',
+    ] as $key) {
         $value = getenv($key);
         if (!is_string($value) || $value === '') {
             continue;

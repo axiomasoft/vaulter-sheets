@@ -45,6 +45,10 @@ $configure = static function (Laravel $app) use ($realtime, $suiteDatabaseEnv): 
     $app['config']->set('vaulter.routes.middleware.authenticated', []);
     $app['config']->set('vaulter-drive.access.permission_driver', 'null');
     $app['config']->set('auth.providers.users.model', TestUser::class);
+    $formats = array_values(array_filter(array_map(trim(...), explode(',', (string) getenv('SHEETS_EXCHANGE_FORMATS')))));
+    if ($formats !== []) {
+        $app['config']->set('vaulter-sheets.exchange.formats', $formats);
+    }
     if ($realtime) {
         $app['config']->set('vaulter.modules.collaboration', true);
         $app['config']->set('vaulter.modules.sheets-realtime', true);
