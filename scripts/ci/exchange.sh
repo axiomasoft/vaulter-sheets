@@ -18,7 +18,10 @@ after_workbook_cleanup() {
         if [[ -n "${pid}" ]]; then kill "${pid}" 2>/dev/null || true; fi
     done
     if [[ ${result:-1} != 0 ]]; then
-        cat "${work}/owner.log" "${work}/vite.log" 2>/dev/null || true
+        echo "======= owner.log =======" >&2
+        cat "${work}/owner.log" >&2 2>/dev/null || true
+        echo "======= vite.log =======" >&2
+        cat "${work}/vite.log" >&2 2>/dev/null || true
     fi
 }
 
