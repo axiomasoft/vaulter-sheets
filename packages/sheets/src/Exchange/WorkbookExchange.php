@@ -16,6 +16,7 @@ use Vaulter\Documents\Data\Snapshots\DocumentSnapshot;
 use Vaulter\Documents\DocumentsManager;
 use Vaulter\Documents\Exceptions\InvalidDocumentContentException;
 use Vaulter\Drive\Contracts\DriveHandle;
+use Vaulter\Drive\Data\FileStream;
 use Vaulter\Drive\Enums\Access\Ability;
 use Vaulter\Drive\Exceptions\Access\PermissionDeniedException;
 use Vaulter\Drive\Exceptions\Nodes\NodeNotFoundException;
@@ -154,7 +155,40 @@ final readonly class WorkbookExchange
                 throw new WorkbookProblem('unsupported_content', 422);
             }
             $this->assertCapacity($this->database->connection(), $actor, $scope, $maxActive);
-            $prepared = $this->prepareImportSource($context, $wbState, $format, $source, $optionsRaw, $sourceContext);
+            $file = $this->openImportSource($context, $wbState, $source, $sourceContext);
+            try {
+                $maxBytes = $this->intConfig('vaulter-sheets.exchange.max_import_bytes', 32 * 1024 * 1024);
+                if ($file->size > $maxBytes) {
+                    throw new WorkbookProblem('limit_exceeded', 413);
+                }
+                $fingerprint = CanonicalJson::sha256((object) [
+                    'kind' => 'import', 'format' => $format,
+                    'source' => (object) [
+                        'node_id' => self::str($source->node_id),
+                        'revision_id' => isset($source->revision_id) ? self::str($source->revision_id) : $file->revision->id,
+                        'source_sha256' => $file->sha256,
+                    ],
+                    'options' => $optionsRaw,
+                ]);
+                $db = $this->database->connection();
+                $existing = $this->records($db)->where($scope)->first();
+                if ($existing instanceof stdClass) {
+                    return $this->replay($db, $existing, $fingerprint);
+                }
+                $bytes = stream_get_contents($file->stream, $maxBytes + 1);
+                if ($bytes === false) {
+                    throw new WorkbookProblem('runtime_failed', 503);
+                }
+                if (strlen($bytes) > $maxBytes) {
+                    throw new WorkbookProblem('limit_exceeded', 413);
+                }
+                if (!hash_equals($file->sha256, hash('sha256', $bytes))) {
+                    throw new WorkbookProblem('runtime_failed', 503);
+                }
+                $prepared = new ExchangeSource($wbState->epoch, $wbState->stateVersion, $bytes, $file->sha256, $fingerprint);
+            } finally {
+                fclose($file->stream);
+            }
         } else {
             $abilities = $this->driveHandle($context, $context->operation->scope->id)->nodes()->abilities($node)->flags;
             if (($abilities[Ability::Download->value] ?? false) !== true) {
@@ -180,12 +214,16 @@ final readonly class WorkbookExchange
 
         $storedOptions = clone $optionsRaw;
         $storedOptions->_node_id = $node;
+        if ($kind === 'export') {
+            $storedOptions->_source_sha256 = $prepared->sha256;
+        }
 
         $keepSeconds = $this->intConfig('vaulter-sheets.exchange.keep_seconds', 7 * 86_400);
         $jobId = (string) Str::uuid7();
 
         /** @var array{created: bool, job: array<string, mixed>} $result */
         $result = $this->database->transaction(function (Connection $db) use (
+            $context,
             $actor,
             $scope,
             $kind,
@@ -196,21 +234,31 @@ final readonly class WorkbookExchange
             $maxActive,
             $jobId,
         ): array {
-            // PostgreSQL serializes admission for this actor across workbooks. SQLite
-            // serializes writers and refuses to promote a stale snapshot to a writer.
-            $this->database->advisoryLock($actor->lockKey());
+            // An actual write fences stale snapshots at REPEATABLE READ before bytes reach Media.
+            // Link the admission to its retained job before committing; deletion then reclaims the actor row.
+            $actorColumns = $actor->columns();
+            $admissions = $db->table($this->schema->table('sheets_exchange_admissions'));
+            $admissions->upsert($actorColumns + ['job_id' => null], array_keys($actorColumns), ['job_id']);
+            $existing = $this->records($db)->where($scope)->lockForUpdate()->first();
+            if ($existing instanceof stdClass) {
+                $admissions->where($actorColumns)->update(['job_id' => $existing->id]);
+
+                return $this->replay($db, $existing, $prepared->fingerprint);
+            }
             $this->assertCapacity($db, $actor, $scope, $maxActive);
+
+            $blobId = $this->commitBlobBytes($context, $prepared->bytes);
             $insertedRows = $this->records($db)->insertOrIgnoreReturning($scope + [
                 'id' => $jobId,
-                'fingerprint' => $prepared['fingerprint'],
+                'fingerprint' => $prepared->fingerprint,
                 'kind' => $kind,
                 'format' => $format,
-                'generation' => $prepared['generation'],
-                'source_position' => $prepared['source_position'],
+                'generation' => $prepared->generation,
+                'source_position' => $prepared->position,
                 'options' => CanonicalJson::encode($storedOptions),
                 'state' => 'queued',
                 'result_receipt_id' => null,
-                'source_blob_id' => $prepared['source_blob_id'],
+                'source_blob_id' => $blobId,
                 'output_blob_id' => null,
                 'report' => null,
                 'error_code' => null,
@@ -218,17 +266,19 @@ final readonly class WorkbookExchange
                 'lease_until' => null,
                 'finished_at' => null,
                 'keep_until' => WorkbookClock::futureTimestamp($db, $keepSeconds),
-            ], ['*'], array_keys($scope));
+            ], uniqueBy: array_keys($scope));
             $inserted = $insertedRows[0] ?? null;
             if (!$inserted instanceof stdClass) {
                 $existing = $this->records($db)->where($scope)->lockForUpdate()->first();
                 if (!$existing instanceof stdClass) {
                     throw new WorkbookProblem('runtime_failed', 503);
                 }
+                $admissions->where($actorColumns)->update(['job_id' => $existing->id]);
 
-                return $this->replay($db, $existing, $prepared['fingerprint']);
+                return $this->replay($db, $existing, $prepared->fingerprint);
             }
-            $this->pins->pin($prepared['source_blob_id'], self::SOURCE_PIN_OWNER, $jobId);
+            $admissions->where($actorColumns)->update(['job_id' => $jobId]);
+            $this->pins->pin($blobId, self::SOURCE_PIN_OWNER, $jobId);
 
             $this->database->afterCommit(static function () use ($jobId): void {
                 dispatch(new RunWorkbookExchange($jobId));
@@ -255,7 +305,10 @@ final readonly class WorkbookExchange
                 throw new WorkbookProblem('idempotency_conflict', 409);
             }
             // The pinned snapshot also supplies the source digest for jobs registered before this change.
-            $sourceSha = hash('sha256', $this->readBlobBytes(self::str($job->source_blob_id), $this->codec->maxSizeBytes()));
+            $metadata = is_string($job->options) ? StrictJson::decode($job->options) : null;
+            $sourceSha = $metadata instanceof stdClass && is_string($metadata->_source_sha256 ?? null)
+                ? $metadata->_source_sha256
+                : hash('sha256', $this->readBlobBytes(self::str($job->source_blob_id), $this->codec->maxSizeBytes()));
             if (!isset($source->revision_id) && $shaExpected !== null
                 && (!is_string($shaExpected) || !hash_equals($sourceSha, $shaExpected))) {
                 throw new WorkbookProblem('idempotency_conflict', 409);
@@ -465,17 +518,12 @@ final readonly class WorkbookExchange
         ];
     }
 
-    /**
-     * @return array{generation: int, source_position: int, source_blob_id: string, fingerprint: string}
-     */
-    private function prepareImportSource(
+    private function openImportSource(
         DriveContext $context,
         DocumentSnapshot $wbState,
-        string $format,
         stdClass $source,
-        stdClass $optionsRaw,
         ?DriveContext $sourceContext,
-    ): array {
+    ): FileStream {
         $sourceNodeId = $source->node_id ?? null;
         if ((!is_string($sourceNodeId) && !is_int($sourceNodeId)) || (string) $sourceNodeId === '') {
             throw new WorkbookProblem('invalid_command', 422);
@@ -495,7 +543,7 @@ final readonly class WorkbookExchange
 
         $sourceDriveId = $sourceContext->operation->scope->id ?? $context->operation->scope->id;
         try {
-            $fileStream = $this->driveHandle($context, $sourceDriveId)->files()->read(
+            return $this->driveHandle($context, $sourceDriveId)->files()->read(
                 (string) $sourceNodeId,
                 $revisionRaw === null ? null : (string) $revisionRaw,
             );
@@ -504,46 +552,6 @@ final readonly class WorkbookExchange
         } catch (PermissionDeniedException|ProfileRestrictionException) {
             throw new WorkbookProblem('permission_denied', 403);
         }
-
-        $maxBytes = $this->intConfig('vaulter-sheets.exchange.max_import_bytes', 32 * 1024 * 1024);
-        $sourceBytes = '';
-        try {
-            while (!feof($fileStream->stream)) {
-                $chunk = fread($fileStream->stream, 65_536);
-                if ($chunk === false) {
-                    throw new WorkbookProblem('runtime_failed', 503);
-                }
-                if ($chunk === '') {
-                    continue;
-                }
-                $sourceBytes .= $chunk;
-                if (strlen($sourceBytes) > $maxBytes) {
-                    throw new WorkbookProblem('limit_exceeded', 413);
-                }
-            }
-        } finally {
-            fclose($fileStream->stream);
-        }
-
-        $sourceSha = hash('sha256', $sourceBytes);
-        $blobId = $this->commitBlobBytes($context, $sourceBytes);
-        $fingerprint = CanonicalJson::sha256((object) [
-            'kind' => 'import',
-            'format' => $format,
-            'source' => (object) [
-                'node_id' => (string) $sourceNodeId,
-                'revision_id' => $revisionRaw === null ? $fileStream->revision->id : (string) $revisionRaw,
-                'source_sha256' => $sourceSha,
-            ],
-            'options' => $optionsRaw,
-        ]);
-
-        return [
-            'generation' => $wbState->epoch,
-            'source_position' => $wbState->stateVersion,
-            'source_blob_id' => $blobId,
-            'fingerprint' => $fingerprint,
-        ];
     }
 
     private function exportSourceIdentity(stdClass $source): stdClass
@@ -565,9 +573,6 @@ final readonly class WorkbookExchange
         return (object) ['generation' => $generation, 'position' => $position];
     }
 
-    /**
-     * @return array{generation: int, source_position: int, source_blob_id: string, fingerprint: string}
-     */
     private function prepareExportSource(
         DriveContext $context,
         string $node,
@@ -576,7 +581,7 @@ final readonly class WorkbookExchange
         stdClass $sourceIdentity,
         mixed $shaExpected,
         stdClass $optionsRaw,
-    ): array {
+    ): ExchangeSource {
         if (isset($sourceIdentity->revision_id)) {
             $targetState = $this->loadWorkbook($context, $node, self::str($sourceIdentity->revision_id));
             $generation = $targetState->revision->epoch ?? $targetState->epoch;
@@ -604,12 +609,15 @@ final readonly class WorkbookExchange
             throw new WorkbookProblem('limit_exceeded', 413);
         }
 
-        return [
-            'generation' => $generation,
-            'source_position' => $position,
-            'source_blob_id' => $this->commitBlobBytes($context, $canonical),
-            'fingerprint' => $this->exportFingerprint($format, $generation, $position, hash('sha256', $canonical), $sourceIdentity, $optionsRaw),
-        ];
+        $digest = hash('sha256', $canonical);
+
+        return new ExchangeSource(
+            $generation,
+            $position,
+            $canonical,
+            $digest,
+            $this->exportFingerprint($format, $generation, $position, $digest, $sourceIdentity, $optionsRaw),
+        );
     }
 
     private function exportFingerprint(string $format, int $generation, int $position, string $sourceSha, stdClass $sourceIdentity, stdClass $options): string

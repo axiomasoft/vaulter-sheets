@@ -20,7 +20,7 @@ final readonly class SheetsSchema implements ModuleSchema
         return [
             'sheets_commands', 'sheets_projection_builds', 'sheets_projection_heads',
             'sheets_projection_sheets', 'sheets_projection_tables', 'sheets_projection_columns',
-            'sheets_projection_rows', 'sheets_projection_cells', 'sheets_exchange_jobs',
+            'sheets_projection_rows', 'sheets_projection_cells', 'sheets_exchange_jobs', 'sheets_exchange_admissions',
         ];
     }
 

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace Vaulter\Sheets\Exchange;
 
 use Vaulter\Drive\Operations\DriveContext;
-use Vaulter\Sheets\Runtime\CanonicalJson;
 
 /** Actor and project shared by exchange authorization, idempotency and admission. */
 final readonly class ExchangeActorScope
@@ -39,12 +38,5 @@ final readonly class ExchangeActorScope
             'subject_type' => $this->subjectType,
             'subject_id' => $this->subjectId,
         ];
-    }
-
-    public function lockKey(): string
-    {
-        return 'sheets.exchange:'.CanonicalJson::encode([
-            (string) $this->tenant, $this->project, $this->subjectType, (string) $this->subjectId,
-        ]);
     }
 }

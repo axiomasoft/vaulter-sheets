@@ -743,7 +743,7 @@ it('holds a new exchange back while the actor has as many unfinished ones as all
     $register('active-3')->assertStatus(202);
 });
 
-it('admits exactly one simultaneous export when the actor has one free slot across workbooks', function (): void {
+it('admits exactly one simultaneous export when the actor has one free slot across workbooks', function (string $isolation): void {
     ForkRace::skipUnlessSupported($this);
     config(['vaulter-sheets.exchange.max_active_per_actor' => 1]);
     $tasks = [];
@@ -751,11 +751,40 @@ it('admits exactly one simultaneous export when the actor has one free slot acro
         $url = createExchangeWorkbookUrl($this);
         $head = $this->getJson($url)->assertOk();
         $source = ['generation' => $head->json('data.marker.generation'), 'position' => $head->json('data.marker.position')];
-        $tasks[] = fn (): int => $this->postJson($url.'/exchanges', [
-            'request_key' => $key, 'kind' => 'export', 'format' => 'csv', 'source' => $source,
-        ])->getStatusCode();
+        $tasks[] = function () use ($isolation, $url, $key, $source): int {
+            DB::statement('SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL '.$isolation);
+
+            $response = $this->postJson($url.'/exchanges', [
+                'request_key' => $key, 'kind' => 'export', 'format' => 'csv', 'source' => $source,
+            ]);
+            if ($response->getStatusCode() === 500) {
+                throw new RuntimeException($response->exception?->getMessage() ?? $response->getContent());
+            }
+
+            return $response->getStatusCode();
+        };
     }
     $results = ForkRace::run($tasks);
-    expect(array_column($results, 'value'))->toEqualCanonicalizing([202, 429])
+    expect(array_column($results, 'message'))->toBe([null, null])
+        ->and(array_column($results, 'value'))->toEqualCanonicalizing([202, 429])
         ->and(DB::table('v_sheets_exchange_jobs')->count())->toBe(1);
+})->with(['read committed' => 'READ COMMITTED', 'repeatable read' => 'REPEATABLE READ']);
+
+it('counts existing unfinished jobs on the first admission after an upgrade', function (): void {
+    $migration = require dirname(__DIR__, 2).'/database/migrations/0001_01_01_000610_create_sheets_exchange_admissions.php';
+    $url = createExchangeWorkbookUrl($this);
+    $head = $this->getJson($url)->assertOk();
+    $body = [
+        'request_key' => 'first', 'kind' => 'export', 'format' => 'csv',
+        'source' => ['generation' => $head->json('data.marker.generation'), 'position' => $head->json('data.marker.position')],
+    ];
+    $job = $this->postJson($url.'/exchanges', $body)->assertStatus(202)->json('data.exchange_id');
+    $migration->down();
+    expect(Schema::hasTable('v_sheets_exchange_admissions'))->toBeFalse();
+    $migration->up();
+
+    config(['vaulter-sheets.exchange.max_active_per_actor' => 1]);
+    $this->postJson($url.'/exchanges', ['request_key' => 'second'] + $body)->assertStatus(429);
+    $this->postJson($url.'/exchanges', $body)->assertStatus(202)->assertJsonPath('data.exchange_id', $job);
+    expect(DB::table('v_sheets_exchange_jobs')->count())->toBe(1);
 });
