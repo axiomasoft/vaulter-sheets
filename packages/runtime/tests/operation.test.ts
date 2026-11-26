@@ -55,6 +55,39 @@ test('calculates the authoritative value and rejects a changed logical row set',
     assert.equal(conflict.ok ? null : conflict.error.code, 'scope_changed');
 });
 
+test('reads rich literal, formula error and spill fields from a sparse selector', async () => {
+    const input = request('apply');
+    input.operation = 'read';
+    delete input.commands;
+    const workbook = input.workbook as JsonObject;
+    const sheets = (workbook.native as JsonObject).sheets as Record<string, JsonObject>;
+    sheets.detail.cellData = {0: {
+        0: {v: 0.25, s: {n: {pattern: '0%'}}},
+        1: {f: '=1/0'},
+        2: {f: '="#DIV/0!"'},
+        3: {f: '=SEQUENCE(3)'},
+    }};
+    input.base = {generation: 0, position: 42, sha256: sha256Canonical(workbook)};
+    input.selector = {sparse: true, ranges: [{sheet_id: 'detail', range: 'A1:D10'}]};
+    const result = await processFrame(Buffer.from(JSON.stringify(input) + '\n'));
+    if (!result.ok || result.operation !== 'read') assert.fail(JSON.stringify(result));
+    const cells = new Map(result.data.ranges[0].cells.map(cell => [cell.a1, cell]));
+    assert.equal(cells.size, 6);
+    assert.equal(cells.get('A1')?.literal, 0.25);
+    assert.equal(cells.get('A1')?.display_text, '25%');
+    assert.equal(cells.get('A1')?.number_format, '0%');
+    assert.equal(cells.get('B1')?.calc_error, '#DIV/0!');
+    assert.equal(cells.get('B1')?.literal, null);
+    assert.equal(cells.get('C1')?.value, '#DIV/0!');
+    assert.equal(cells.get('C1')?.calc_error, null);
+    assert.equal(cells.get('D3')?.display_text, '3');
+    assert.equal(cells.get('D3')?.calculated_position, 42);
+
+    input.limits = {max_cells_per_command: 5};
+    const limited = await processFrame(Buffer.from(JSON.stringify(input) + '\n'));
+    assert.equal(limited.ok ? null : limited.error.code, 'limit_exceeded');
+});
+
 test('rejects duplicate keys, missing LF and lossy integer tokens', async () => {
     for (const bytes of ['{"version":1,"version":1}\n', '{}', '{"counter":9007199254740993}\n']) {
         const result = await processFrame(Buffer.from(bytes));

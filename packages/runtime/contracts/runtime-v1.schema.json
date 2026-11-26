@@ -351,7 +351,10 @@
       "type": "object", "additionalProperties": false, "required": ["sheet_id", "a1", "row", "column", "formula", "value"],
       "properties": {
         "sheet_id": {"$ref": "#/$defs/id"}, "a1": {"type": "string"}, "row": {"$ref": "#/$defs/oneBased"}, "column": {"$ref": "#/$defs/oneBased"},
-        "formula": {"type": ["string", "null"]}, "value": {"type": ["number", "string", "boolean", "null"]}
+        "formula": {"type": ["string", "null"]}, "value": {"type": ["number", "string", "boolean", "null"]},
+        "literal": {"type": ["number", "string", "boolean", "null"]},
+        "display_text": {"type": "string"}, "number_format": {"type": ["string", "null"]},
+        "calc_error": {"type": ["string", "null"]}, "calculated_position": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
       }
     },
     "calculation": {
@@ -377,11 +380,13 @@
         "base": {"$ref": "#/$defs/base"}, "profile_id": {"$ref": "#/$defs/id"}, "workbook": {"$ref": "#/$defs/workbook"},
         "selector": {
           "type": "object", "additionalProperties": false, "required": ["ranges"],
-          "properties": {"ranges": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/range"}}}
+          "properties": {"ranges": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/range"}}, "sparse": {"const": true}}
         },
         "limits": {"$ref": "#/$defs/limits"},
         "ironcalc_verify": {"type": "boolean"}
-      }
+      },
+      "if": {"properties": {"operation": {"const": "recalculate"}}},
+      "then": {"properties": {"selector": {"not": {"required": ["sparse"]}}}}
     },
     "ironcalcVerification": {
       "type": "object", "additionalProperties": false,

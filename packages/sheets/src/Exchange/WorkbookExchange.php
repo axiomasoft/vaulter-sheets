@@ -107,11 +107,17 @@ final readonly class WorkbookExchange
      */
     public function capabilitiesForState(DriveContext $context, string $node, DocumentSnapshot $state): array
     {
+        return $this->capabilitiesForAccess($context, $node, $state->editable, $state->collabProtocol);
+    }
+
+    /** @return array{formats: list<'csv'|'xlsx'>, import: list<'csv'|'xlsx'>, export: list<'csv'|'xlsx'>} */
+    public function capabilitiesForAccess(DriveContext $context, string $node, bool $editable, ?string $protocol): array
+    {
         $formats = $this->enabledFormats();
         if ($formats === []) {
             return ['formats' => [], 'import' => [], 'export' => []];
         }
-        $canImport = $this->access->canEdit($context, $node) && $state->editable && $state->collabProtocol === null;
+        $canImport = $this->access->canEdit($context, $node) && $editable && $protocol === null;
         $abilities = $this->driveHandle($context, $context->operation->scope->id)->nodes()->abilities($node)->flags;
         $canExport = ($abilities[Ability::Download->value] ?? false) === true;
 

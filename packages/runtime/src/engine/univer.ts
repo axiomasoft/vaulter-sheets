@@ -8,7 +8,7 @@
 import {BorderStyleTypes, CellValueType, HorizontalAlign, LocaleType, Univer, VerticalAlign, WrapStrategy, type IStyleData, type IWorkbookData} from '@univerjs/core';
 import {FUniver} from '@univerjs/core/facade';
 import {UniverDocsPlugin} from '@univerjs/docs';
-import {UniverFormulaEnginePlugin} from '@univerjs/engine-formula';
+import {ERROR_TYPE_SET, FormulaDataModel, UniverFormulaEnginePlugin, type ErrorType} from '@univerjs/engine-formula';
 import type {FFormula} from '@univerjs/engine-formula/facade';
 import {UniverRenderEnginePlugin} from '@univerjs/engine-render';
 import {UniverSheetsPlugin} from '@univerjs/sheets';
@@ -378,18 +378,46 @@ export class UniverWorkbookSession {
         }
     }
 
-    readback(sheetId: string, coord: CellCoord): CellReadback {
+    populatedCells(sheetId: string, start: CellCoord, end: CellCoord, limit: number): CellCoord[] {
+        const sheet = this.sheet(sheetId).getSheet();
+        const coords = new Map<string, CellCoord>();
+        const add = (row: number, column: number): void => {
+            if (row < start.row || row > end.row || column < start.column || column > end.column) return;
+            coords.set(`${row}:${column}`, {row, column});
+            if (coords.size > limit) throw new WireError('limit_exceeded', 'projection read exceeds the cell budget');
+        };
+        sheet.getCellMatrix().forValue((row, column, cell) => {
+            if (cell != null) add(row + 1, column + 1);
+        });
+        const spills = this.#univer.__getInjector().get(FormulaDataModel).getArrayFormulaCellData()[this.#book.getId()]?.[sheetId];
+        for (const [row, columns] of Object.entries(spills ?? {})) {
+            for (const [column, cell] of Object.entries(columns ?? {})) {
+                if (cell != null) add(Number(row) + 1, Number(column) + 1);
+            }
+        }
+        return [...coords.values()];
+    }
+
+    readback(sheetId: string, coord: CellCoord, calculatedPosition?: number): CellReadback {
         const range = this.cell(sheetId, coord);
         const formula = range.getFormula();
         const raw = range.getRawValue();
-        const isBool = range.getCellData()?.t === CellValueType.BOOLEAN || typeof raw === 'boolean';
+        const type = range.getCellData()?.t;
+        const isBool = type === CellValueType.BOOLEAN || typeof raw === 'boolean';
+        const value = raw == null ? null : isBool ? Boolean(raw) : raw;
         return {
             sheet_id: sheetId,
             a1: toA1(coord),
             row: coord.row,
             column: coord.column,
             formula: formula === '' ? null : formula,
-            value: raw === undefined || raw === null ? null : isBool ? Boolean(raw) : (raw as number | string | boolean),
+            value,
+            literal: formula === '' ? value : null,
+            display_text: range.getDisplayValue(),
+            number_format: range.getNumberFormat() || null,
+            calc_error: formula !== '' && type !== CellValueType.FORCE_STRING
+                && typeof value === 'string' && ERROR_TYPE_SET.has(value as ErrorType) ? value : null,
+            ...(calculatedPosition === undefined ? {} : {calculated_position: calculatedPosition}),
         };
     }
 

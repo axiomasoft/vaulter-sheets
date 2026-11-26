@@ -124,7 +124,8 @@ paths:
           name: fields
           style: form
           explode: false
-          schema: {type: array, items: {enum: [value, formula]}}
+          description: Select cell fields. Defaults to value and formula, with coordinates included in every response.
+          schema: {type: array, items: {enum: [value, formula, literal, display_text, number_format, calc_error, calculated_position]}}
       responses:
         '200': {description: Calculated bounded range}
         '404': {$ref: '#/components/responses/unavailable'}

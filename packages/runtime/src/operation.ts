@@ -3,7 +3,7 @@
  * engine commands -> calculation barrier -> full snapshot -> candidate digest.
  * Target: packages/runtime/src/operation.ts (called by src/cli.ts and src/server.ts).
  */
-import {assertOneBased, columnLetters, rangeCells, toA1, type CellCoord} from './coordinates.ts';
+import {assertOneBased, columnLetters, parseRange, rangeCells, toA1, type CellCoord} from './coordinates.ts';
 import {UniverWorkbookSession} from './engine/univer.ts';
 import {verifyWorkbookWithIronCalc} from './engine/ironcalc.ts';
 import {DEFAULT_LIMITS, WIRE_PROFILE, PROFILE_RESOURCES, CONDITIONAL_FORMATTING_RESOURCE, SUPPORTED_COMMANDS} from './profile.ts';
@@ -496,13 +496,14 @@ export function decodeRequest(value: Json): Request {
     if (raw.operation === 'read' || raw.operation === 'recalculate') {
         only(raw, ['version', 'request_id', 'operation', 'base', 'profile_id', 'workbook', 'selector', 'limits', 'ironcalc_verify'], 'message');
         const selector = object(raw.selector, 'selector');
-        only(selector, ['ranges'], 'selector');
+        only(selector, raw.operation === 'read' ? ['ranges', 'sparse'] : ['ranges'], 'selector');
+        if (selector.sparse !== undefined && selector.sparse !== true) throw new WireError('invalid_message', 'selector.sparse must be true');
         const ranges = array(selector.ranges, 'selector.ranges').map((item, index) => {
             const range = object(item, `selector.ranges[${index}]`);
             only(range, ['sheet_id', 'range'], `selector.ranges[${index}]`);
             return {sheet_id: string(range.sheet_id, 'sheet_id'), range: string(range.range, 'range')};
         });
-        return {...common, operation: raw.operation, selector: {ranges}, limits};
+        return {...common, operation: raw.operation, selector: {ranges, ...(selector.sparse ? {sparse: true} : {})}, limits};
     }
     throw new WireError('unsupported_command', `operation ${String(raw.operation)} is not supported`);
 }
@@ -788,8 +789,25 @@ function verifySettledOperandValues(session: UniverWorkbookSession, bindings: Ta
     });
 }
 
-function readRanges(session: UniverWorkbookSession, ranges: RangeSelector[], limit: number): {sheet_id: string; range: string; cells: CellReadback[]}[] {
-    return ranges.map(({sheet_id, range}) => ({sheet_id, range, cells: rangeCells(range, limit).map(coord => session.readback(sheet_id, coord))}));
+function readRanges(session: UniverWorkbookSession, ranges: RangeSelector[], limit: number, position?: number): {sheet_id: string; range: string; cells: CellReadback[]}[] {
+    return ranges.map(({sheet_id, range}) => ({sheet_id, range, cells: rangeCells(range, limit).map(coord => session.readback(sheet_id, coord, position))}));
+}
+
+function readSparseRanges(session: UniverWorkbookSession, ranges: RangeSelector[], limit: number, position: number): {sheet_id: string; range: string; cells: CellReadback[]}[] {
+    let cellsRemaining = limit;
+    // Leave room for the response envelope under the 8 MiB frame bound.
+    let bytesRemaining = 7 * 1024 * 1024;
+    return ranges.map(({sheet_id, range}) => {
+        const {start, end} = parseRange(range);
+        const cells = session.populatedCells(sheet_id, start, end, cellsRemaining).map(coord => {
+            const cell = session.readback(sheet_id, coord, position);
+            bytesRemaining -= Buffer.byteLength(JSON.stringify(cell)) + 1;
+            if (bytesRemaining < 0) throw new WireError('limit_exceeded', 'projection read exceeds the frame budget');
+            return cell;
+        });
+        cellsRemaining -= cells.length;
+        return {sheet_id, range, cells};
+    });
 }
 
 interface CfRange {startRow: number; endRow: number; startColumn: number; endColumn: number; rangeType?: number}
@@ -921,7 +939,9 @@ export async function runOperation(message: Json, profile: ProfileRef = WIRE_PRO
             return {
                 version: 1, request_id: request.request_id, ok: true, operation: 'read', base_sha256: baseSha,
                 calculation: {state: 'ready', source_sha256: baseSha},
-                data: {ranges: readRanges(session, request.selector.ranges, limits.max_cells_per_command)},
+                data: {ranges: (request.selector.sparse ? readSparseRanges : readRanges)(
+                    session, request.selector.ranges, limits.max_cells_per_command, request.base.position,
+                )},
             };
         }
         const checked: Written[] = [];

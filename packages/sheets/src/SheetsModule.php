@@ -12,12 +12,16 @@ use Packman\Plugins\Contracts\Registry\ExtensionPlugin;
 use Packman\Plugins\Data\Plugin\PluginManifest;
 use Packman\Plugins\Laravel\PluginRegistrar;
 use Vaulter\Documents\Contracts\DocumentType;
+use Vaulter\Documents\Events\Documents\DocumentContentUpdated;
+use Vaulter\Documents\Events\Revisions\DocumentRestored;
+use Vaulter\Events\Outbox\OutboxConsumer;
 use Vaulter\Modules\Activation;
 use Vaulter\Modules\ModuleId;
 use Vaulter\Modules\PluginModuleSpec;
 use Vaulter\Modules\WithModuleRuntime;
 use Vaulter\Sheets\Console\RecoverWorkbookJobs;
 use Vaulter\Sheets\Console\WorkbookSchedule;
+use Vaulter\Sheets\Projections\PublishCellProjection;
 use Vaulter\Sheets\Schema\SheetsSchema;
 use Vaulter\Sheets\Schema\SheetsSchemaSets;
 use Vaulter\Sheets\Types\SpreadsheetDocumentType;
@@ -49,6 +53,10 @@ final class SheetsModule implements ExtensionPlugin, WithModuleRuntime, WithSche
             requires: $this->requires(),
             routes: [dirname(__DIR__).'/routes/sheets.php'],
             commands: [RecoverWorkbookJobs::class],
+            listeners: [
+                ['event' => DocumentContentUpdated::class, 'listener' => PublishCellProjection::class],
+                ['event' => DocumentRestored::class, 'listener' => PublishCellProjection::class],
+            ],
             schedules: [WorkbookSchedule::class],
             bindings: [SheetsBindings::class],
         );
@@ -72,7 +80,7 @@ final class SheetsModule implements ExtensionPlugin, WithModuleRuntime, WithSche
     /** @return array<string, string> */
     public function requires(): array
     {
-        return ['documents' => '^1.0', 'media' => '^1.0'];
+        return ['core' => '^1.0', 'documents' => '^1.0', 'media' => '^1.0'];
     }
 
     public function migrationPath(): string
@@ -100,10 +108,11 @@ final class SheetsModule implements ExtensionPlugin, WithModuleRuntime, WithSche
         return [SheetsSchema::class];
     }
 
-    /** @return list<array{slot: class-string, id: string, implementation: class-string, key: string}> */
+    /** @return list<array{slot: class-string, id: string, implementation: class-string, key?: string}> */
     public function slotContributions(): array
     {
         return [
+            ['slot' => OutboxConsumer::class, 'id' => PublishCellProjection::ID, 'implementation' => PublishCellProjection::class],
             [
                 'slot' => DocumentType::class,
                 'id' => 'sheets.type.workbook',
