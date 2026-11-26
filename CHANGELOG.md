@@ -15,9 +15,9 @@ released on its own line (`release/packages.json`); an entry names the package i
   answered `422 invalid_command` before the workbook is loaded. It used to reach the runtime and
   come back as `503 runtime_failed`, which told clients to retry a request that cannot succeed;
   clients that retried every 503 now get the 422 at once.
-- `axiomasoft/vaulter-sheets`: the archive guard also refuses an XLSX part that declares the
-  XInclude namespace with character references (`http&#58;//www.w3.org/2001/XInclude`); the plain
-  substring check let it through in every part except relationships.
+- `axiomasoft/vaulter-sheets` and `@vaulter/sheets-runtime` parse all XLSX XML parts, including
+  worksheets, shared strings and relationships. Invalid XML and prohibited namespace declarations
+  return HTTP 422 `unsafe_archive`. Literal namespace URLs in cell text are accepted.
 - `axiomasoft/vaulter-sheets`: an XLSX upload whose relationships part is empty is rejected as
   `unsafe_archive` (HTTP 422, reason `malformed_rels`) instead of failing with HTTP 500.
 - `axiomasoft/vaulter-sheets`: `vaulter-sheets.commands` is read as a boolean with the
@@ -31,6 +31,7 @@ released on its own line (`release/packages.json`); an entry names the package i
 - `axiomasoft/vaulter-sheets`: an actor may have at most `exchange.max_active_per_actor` (default
   8, `SHEETS_EXCHANGE_MAX_ACTIVE_PER_ACTOR`) unfinished imports and exports in a project scope; a
   new registration beyond that is answered `429 too_many_exchanges`. Replaying an existing
-  `request_key` is never held back.
+  `request_key` remains available at capacity. Concurrent PostgreSQL admissions now serialize by actor and project.
+- The published Sheets package requires matching versions of Vaulter Core, Drive, Documents and Media.
 - Development: the family toolchain (Pint, Rector, PHPStan with the strict rule set, Pest type
   coverage) is declared in `composer.json`; `composer test` installs the npm workspace it needs.
