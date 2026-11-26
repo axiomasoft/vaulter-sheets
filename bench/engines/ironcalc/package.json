@@ -2,7 +2,7 @@
   "name": "@vaulter/sheets-bench-ironcalc",
   "version": "0.0.0",
   "private": true,
-  "description": "IronCalc 0.9.1 calculation cross-check for Decision Gate 4.1. Not a production package.",
+  "description": "IronCalc 0.9.1 calculation cross-check for the Sheets engine comparison.",
   "license": "proprietary",
   "type": "module",
   "engines": {
