@@ -8,7 +8,7 @@ name: CI
 # heavier lanes only start after it succeeds. Path filters skip unaffected lanes
 # on feature branches; a push to main, workflow_dispatch, or a change under
 # .github/ always runs every lane. `CI gate` is the single check a branch rule
-# should require (skipped lanes are allowed).
+# should require. It verifies the result of each planned job.
 #
 # Siblings (../vaulter, ../vaulter-collaboration, ../packman) come from
 # scripts/ci/checkout-ecosystem.sh. VAULTER_READ_TOKEN is optional now that those
@@ -40,11 +40,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      full: ${{ steps.plan.outputs.full }}
+      quality: ${{ steps.plan.outputs.quality }}
       php: ${{ steps.plan.outputs.php }}
       node: ${{ steps.plan.outputs.node }}
-      docker: ${{ steps.plan.outputs.docker }}
-      e2e: ${{ steps.plan.outputs.e2e }}
+      images: ${{ steps.plan.outputs.images }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -60,6 +59,7 @@ jobs:
           filters: |
             php:
               - "**/*.php"
+              - "packages/sheets/database/**/*.sql"
               - "**/composer.json"
               - "phpstan*"
               - "pint.json"
@@ -76,8 +76,11 @@ jobs:
             e2e:
               - "scripts/ci/*.sh"
               - "tests/e2e/**"
+              - "tests/consumer/**"
+              - "tests/fixtures/**"
             workflows:
               - ".github/**"
+              - "contracts/**"
               - "scripts/ci/**"
 
       - name: Plan lanes
@@ -93,27 +96,30 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$EVENT" == "workflow_dispatch" || "$REF" == "refs/heads/main" || "$FILTER_WORKFLOWS" == "true" || -z "$FILTER_PHP" ]]; then
-            full=true; php=true; node=true; docker=true; e2e=true
+            php=true; node=true; docker=true; e2e=true
           else
-            full=false
             php=${FILTER_PHP:-false}
             node=${FILTER_NODE:-false}
             docker=${FILTER_DOCKER:-false}
             e2e=${FILTER_E2E:-false}
           fi
+          required() {
+            for flag in "$@"; do
+              if [[ "$flag" == true ]]; then echo true; return; fi
+            done
+            echo false
+          }
           {
-            echo "full=$full"
+            echo "quality=$(required "$php" "$node" "$docker" "$e2e")"
             echo "php=$php"
-            echo "node=$node"
-            echo "docker=$docker"
-            echo "e2e=$e2e"
+            echo "node=$(required "$node" "$php" "$e2e")"
+            echo "images=$(required "$docker" "$node")"
           } >> "$GITHUB_OUTPUT"
-          echo "lanes full=$full php=$php node=$node docker=$docker e2e=$e2e"
 
   quality:
     name: Quality (stop-cranes, Pint, PHPStan, Rector, type coverage, workflow lint)
     needs: changes
-    if: needs.changes.outputs.full == 'true' || needs.changes.outputs.php == 'true' || needs.changes.outputs.node == 'true'
+    if: needs.changes.outputs.quality == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -178,7 +184,7 @@ jobs:
   php:
     name: PHP ${{ matrix.php }} / PG ${{ matrix.postgres }}
     needs: [changes, quality]
-    if: always() && needs.quality.result == 'success' && (needs.changes.outputs.full == 'true' || needs.changes.outputs.php == 'true')
+    if: needs.changes.outputs.php == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     permissions:
@@ -289,7 +295,7 @@ jobs:
   node:
     name: Node 26.13.1 workspaces
     needs: [changes, quality]
-    if: always() && needs.quality.result == 'success' && (needs.changes.outputs.full == 'true' || needs.changes.outputs.node == 'true' || needs.changes.outputs.php == 'true' || needs.changes.outputs.e2e == 'true')
+    if: needs.changes.outputs.node == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -362,7 +368,7 @@ jobs:
   images:
     name: Runtime and realtime images
     needs: [changes, quality]
-    if: always() && (needs.quality.result == 'success' || needs.quality.result == 'skipped') && (needs.changes.outputs.full == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.node == 'true')
+    if: needs.changes.outputs.images == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -392,17 +398,24 @@ jobs:
           import json, os, sys
           needs = json.loads(os.environ["NEEDS"])
           lines = [f"- `{name}`: {job['result']}" for name, job in sorted(needs.items())]
-          failed = {name: job["result"] for name, job in needs.items() if job["result"] not in ("success", "skipped")}
+          plan = needs["changes"]["outputs"]
+          expected = {"changes": "success"}
+          for job in ("quality", "php", "node", "images"):
+              if plan.get(job) not in ("true", "false"):
+                  sys.exit(f"::error::Missing or invalid change plan for {job}")
+              expected[job] = "success" if plan[job] == "true" else "skipped"
+          failed = {name: f"{needs[name]['result']} (expected {result})"
+                    for name, result in expected.items() if needs[name]["result"] != result}
           summary = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary:
               with open(summary, "a", encoding="utf-8") as fh:
                   fh.write("## CI gate\n\n")
                   fh.write("\n".join(lines) + "\n")
                   if failed:
-                      fh.write("\nA skipped lane is allowed when the path filter dropped it; failed or cancelled jobs are not.\n")
+                      fh.write("\nA job did not match the change plan.\n")
           for name, result in sorted(failed.items()):
               print(f"::error::{name}: {result}")
           if failed:
               sys.exit(1)
-          print("all required jobs succeeded or were skipped")
+          print("all planned jobs succeeded")
           PY
