@@ -76,7 +76,7 @@ final readonly class WorkbookController
             $range = $request->query('range');
             $fields = $request->query('fields');
             $limit = $request->query('limit', '10000');
-            if (!is_string($sheet) || !is_string($range) || strlen($range) > 32 || strlen($sheet) > 255
+            if (!is_string($sheet) || $sheet === '' || !is_string($range) || strlen($range) > 32 || strlen($sheet) > 255
                 || !is_string($limit) || !ctype_digit($limit) || (int) $limit < 1 || (int) $limit > 10_000
                 || ($fields !== null && !is_string($fields))) {
                 throw new WorkbookProblem('invalid_command', 422);

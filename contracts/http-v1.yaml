@@ -128,6 +128,7 @@ paths:
       responses:
         '200': {description: Calculated bounded range}
         '404': {$ref: '#/components/responses/unavailable'}
+        '422': {description: Invalid range or sheet identifier (invalid_command)}
         '503': {description: Calculation pending or unavailable}
   /workbooks/{node}/exchanges:
     parameters:
@@ -155,6 +156,7 @@ paths:
         '409': {description: Idempotency conflict or version mismatch}
         '413': {description: File or workbook limit exceeded}
         '422': {description: Invalid exchange payload or format disabled}
+        '429': {description: Active exchange quota reached for this actor and project (too_many_exchanges)}
   /workbooks/{node}/exchanges/{exchange}:
     parameters:
       - $ref: '#/components/parameters/node'

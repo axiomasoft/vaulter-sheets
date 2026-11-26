@@ -81,7 +81,7 @@ final readonly class LaravelWorkbookOperations implements WorkbookOperations
      */
     public function readRange(DriveContext $context, string $node, string $sheet, string $range, int $limit): array
     {
-        if (!self::wellFormedRange($range)) {
+        if ($sheet === '' || strlen($sheet) > 255 || !self::wellFormedRange($range)) {
             throw new WorkbookProblem('invalid_command', 422);
         }
         $catalog = $this->loadCatalog($context, $node);

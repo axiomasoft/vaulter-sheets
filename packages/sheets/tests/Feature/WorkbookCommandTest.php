@@ -221,15 +221,9 @@ it('publishes a single receipt and refuses a stale positional edit after inserti
 });
 
 it('leaves the workbook unchanged after an unavailable runtime and retries the same intent', function (): void {
-    $url = createWorkbookTestUrl($this);
-    $head = $this->getJson($url)->assertOk();
-    $etag = $head->headers->get('ETag');
-    $body = workbookTestPlan($head->json('data.marker.generation'), 'recover', [
-        'kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 3, 'column' => 3, 'expected' => ['number' => 5], 'value' => 7,
-    ]);
     $runtime = new class(app(NodeWorkbookRuntime::class)) implements WorkbookRuntime
     {
-        public bool $unavailable = true;
+        public bool $unavailable = false;
 
         public function __construct(private readonly NodeWorkbookRuntime $runtime) {}
 
@@ -243,6 +237,14 @@ it('leaves the workbook unchanged after an unavailable runtime and retries the s
         }
     };
     app()->instance(WorkbookRuntime::class, $runtime);
+    $url = createWorkbookTestUrl($this);
+    $head = $this->getJson($url)->assertOk();
+    $etag = $head->headers->get('ETag');
+    $body = workbookTestPlan($head->json('data.marker.generation'), 'recover', [
+        'kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 3, 'column' => 3, 'expected' => ['number' => 5], 'value' => 7,
+    ]);
+
+    $runtime->unavailable = true;
     $this->postJson($url.'/commands', $body, ['If-Match' => $etag])->assertStatus(503);
     $this->getJson($url)->assertHeader('ETag', $etag);
     $runtime->unavailable = false;
@@ -278,9 +280,6 @@ it('offloads large snapshots and retains a revision pin across a later write', f
 });
 
 it('records a no-op with its original ETag and rejects a tampered runtime digest', function (): void {
-    $url = createWorkbookTestUrl($this);
-    $head = $this->getJson($url)->assertOk();
-    $tag = $head->headers->get('ETag');
     $runtime = new class(app(WorkbookRuntime::class)) implements WorkbookRuntime
     {
         public bool $tamper = false;
@@ -298,6 +297,9 @@ it('records a no-op with its original ETag and rejects a tampered runtime digest
         }
     };
     app()->instance(WorkbookRuntime::class, $runtime);
+    $url = createWorkbookTestUrl($this);
+    $head = $this->getJson($url)->assertOk();
+    $tag = $head->headers->get('ETag');
     $change = ['kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 3, 'column' => 3, 'expected' => ['number' => 5], 'value' => 5];
     $receipt = $this->postJson($url.'/commands', workbookTestPlan($head->json('data.marker.generation'), 'noop', $change), ['If-Match' => $tag])
         ->assertOk()->assertHeader('ETag', $tag)->assertJsonPath('data.changed_ranges', []);
@@ -502,6 +504,7 @@ it('bounds a command body and the range query, and answers a malformed range as 
         'row zero' => 'sheet_id=summary&range=A0',
         'four column letters' => 'sheet_id=summary&range=ZZZZ1',
         'reversed range' => 'sheet_id=summary&range=B2:A1',
+        'empty sheet id' => 'sheet_id=&range=A1',
         'sheet id above 255 characters' => 'sheet_id='.str_repeat('s', 256).'&range=B2',
         'limit in exponent notation' => 'sheet_id=summary&range=B2&limit=1e3',
         'zero limit' => 'sheet_id=summary&range=B2&limit=0',
