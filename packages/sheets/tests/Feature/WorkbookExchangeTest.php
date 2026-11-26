@@ -774,7 +774,7 @@ it('enforces the configured capacity for simultaneous exports across workbooks',
 })->with([
     'one place, read committed' => ['READ COMMITTED', 1],
     'one place, repeatable read' => ['REPEATABLE READ', 1],
-    'four places, repeatable read' => ['REPEATABLE READ', 4],
+    'eight places, repeatable read' => ['REPEATABLE READ', 8],
 ]);
 
 it('returns retryable contention if exchange admission cannot obtain a fresh database snapshot', function (Throwable $conflict): void {
