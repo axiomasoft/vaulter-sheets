@@ -293,7 +293,7 @@ test('round-trips worksheet hyperlinks and preserves SHEET_HYPER_LINK_PLUGIN wit
     const rels = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
     const input = makeMinimalXlsx({
         'xl/worksheets/_rels/sheet1.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-            `<Relationship Id="rId1" Type="${rels}/hyperlink" Target="https://example.com/" TargetMode="External"/></Relationships>`,
+            `<Relationship xmlns:ext="urn:sheet-extension" ext:Target="display-only" Id="rId1" Type="${rels}/hyperlink" Target="https://example.com/" TargetMode="External"/></Relationships>`,
     }, '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"' +
         ` xmlns:r="${rels}"><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Example</t></is></c></row></sheetData><hyperlinks><hyperlink ref="A1" r:id="rId1" tooltip="Visit"/></hyperlinks></worksheet>`);
     const {workbook, report} = await importXlsx(input, {strict_profile: true});

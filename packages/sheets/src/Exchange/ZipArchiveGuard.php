@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Vaulter\Sheets\Exchange;
 
+use LibXMLError;
 use Vaulter\Sheets\Data\WorkbookProblem;
 use XMLReader;
 use ZipArchive;
@@ -231,10 +232,11 @@ final class ZipArchiveGuard
         if ($xml === '') {
             throw new WorkbookProblem('unsafe_archive', 422, ['reason' => $malformed, 'entry' => $entry]);
         }
-        $reader = XMLReader::fromString($xml, 'UTF-8', LIBXML_NONET | LIBXML_NOERROR | LIBXML_NOWARNING);
         $prevInternal = libxml_use_internal_errors(true);
         libxml_clear_errors();
+        $reader = null;
         try {
+            $reader = XMLReader::fromString($xml, 'UTF-8', LIBXML_NONET | LIBXML_NOERROR | LIBXML_NOWARNING);
             while ($reader->read()) {
                 if (in_array($reader->nodeType, [XMLReader::DOC_TYPE, XMLReader::ENTITY, XMLReader::ENTITY_REF], true)) {
                     throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'xxe_or_xinclude', 'entry' => $entry]);
@@ -267,11 +269,11 @@ final class ZipArchiveGuard
                     throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'disallowed_external_relationship', 'entry' => $entry]);
                 }
             }
-            if (libxml_get_last_error() !== false) {
+            if (array_any(libxml_get_errors(), static fn (LibXMLError $error): bool => $error->level >= LIBXML_ERR_ERROR)) {
                 throw new WorkbookProblem('unsafe_archive', 422, ['reason' => $malformed, 'entry' => $entry]);
             }
         } finally {
-            $reader->close();
+            $reader?->close();
             libxml_clear_errors();
             libxml_use_internal_errors($prevInternal);
         }

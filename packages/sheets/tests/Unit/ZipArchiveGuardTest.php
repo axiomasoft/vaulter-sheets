@@ -143,7 +143,7 @@ it('bounds the compressed size while reading an upload stream', function (): voi
 });
 
 it('distinguishes namespace declarations from literal workbook text', function (): void {
-    $text = '<sst><si><t>See http://www.w3.org/2001/XInclude for background</t></si></sst>';
+    $text = '<sst xmlns="legacy-workbook"><si><t>See http://www.w3.org/2001/XInclude for background</t></si></sst>';
     expect(guardProblem(guardZip([['name' => 'xl/sharedStrings.xml', 'data' => $text]])))->toBeNull();
 });
 

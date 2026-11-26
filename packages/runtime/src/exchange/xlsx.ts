@@ -363,10 +363,10 @@ function parseRelsXml(xmlText: string): Map<string, {type: string; target: strin
     const parser = new SaxesParser({xmlns: true, position: false});
     parser.on('opentag', tag => {
         if (tag.local !== 'Relationship') return;
-        const id = attrVal(tag, 'Id');
-        const type = attrVal(tag, 'Type') ?? '';
-        const target = attrVal(tag, 'Target') ?? '';
-        const targetMode = attrVal(tag, 'TargetMode') ?? '';
+        const id = tag.attributes.Id?.value;
+        const type = tag.attributes.Type?.value ?? '';
+        const target = tag.attributes.Target?.value ?? '';
+        const targetMode = tag.attributes.TargetMode?.value ?? '';
         if (id) rels.set(id, {type, target, targetMode});
     });
     parser.write(xmlText).close();
