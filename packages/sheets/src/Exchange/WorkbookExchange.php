@@ -28,6 +28,8 @@ use Vaulter\Drive\Vaulter;
 use Vaulter\Exceptions\Database\ConcurrentUpdateException;
 use Vaulter\Media\Contracts\Cas\BlobPins;
 use Vaulter\Media\Contracts\Cas\BlobStore;
+use Vaulter\Media\Contracts\Cas\ContentStore;
+use Vaulter\Media\Contracts\Cas\StagedObject;
 use Vaulter\Media\ValueObjects\Cas\BlobScope;
 use Vaulter\Schema\SchemaHelpers;
 use Vaulter\Sheets\Content\WorkbookCodec;
@@ -46,6 +48,8 @@ final readonly class WorkbookExchange
 {
     private const int DEFAULT_ACTIVE_LIMIT = 8;
 
+    private const int MAX_ADMISSION_RETRIES = 32;
+
     public const string SOURCE_PIN_OWNER = 'sheets.exchange_source';
 
     public const string OUTPUT_PIN_OWNER = 'sheets.exchange_output';
@@ -56,6 +60,7 @@ final readonly class WorkbookExchange
         private AtomicDocumentMutation $mutations,
         private Vaulter $vaulter,
         private BlobStore $blobs,
+        private ContentStore $contentStore,
         private BlobPins $pins,
         private WorkbookCodec $codec,
         private SchemaHelpers $schema,
@@ -225,9 +230,13 @@ final readonly class WorkbookExchange
         $keepSeconds = $this->intConfig('vaulter-sheets.exchange.keep_seconds', 7 * 86_400);
         $jobId = (string) Str::uuid7();
 
+        $blobScope = $this->blobScope($context);
+        $staged = $this->stageBlobBytes($prepared->bytes);
+
         /** @return array{created: bool, job: array<string, mixed>} */
         $admit = function (Connection $db) use (
-            $context,
+            $blobScope,
+            $staged,
             $actor,
             $scope,
             $kind,
@@ -238,20 +247,26 @@ final readonly class WorkbookExchange
             $maxActive,
             $jobId,
         ): array {
-            // An actual write fences stale snapshots at REPEATABLE READ before bytes reach Media.
-            // Link the admission to its retained job before committing; deletion then reclaims the actor row.
+            // A retry with a fresh snapshot can return a concurrent winner without touching the actor row.
+            $existing = $this->records($db)->where($scope)->first();
+            if ($existing instanceof stdClass) {
+                return $this->replay($db, $existing, $prepared->fingerprint);
+            }
+
+            // A write fences stale snapshots before promotion. Keep the last job reference until a new job commits.
             $actorColumns = $actor->columns();
             $admissions = $db->table($this->schema->table('sheets_exchange_admissions'));
-            $admissions->upsert($actorColumns + ['job_id' => null], array_keys($actorColumns), ['job_id']);
-            $existing = $this->records($db)->where($scope)->lockForUpdate()->first();
+            $admissions->upsert($actorColumns + ['job_id' => null], array_keys($actorColumns), ['subject_id']);
+            $existing = $this->records($db)->where($scope)->first();
             if ($existing instanceof stdClass) {
-                $admissions->where($actorColumns)->update(['job_id' => $existing->id]);
+                // A writer from before the migration may have inserted the job without an actor row.
+                $admissions->where($actorColumns)->whereNull('job_id')->delete();
 
                 return $this->replay($db, $existing, $prepared->fingerprint);
             }
             $this->assertCapacity($db, $actor, $scope, $maxActive);
 
-            $blobId = $this->commitBlobBytes($context, $prepared->bytes);
+            $blobId = $this->blobs->commitStaged($staged, $blobScope)->id;
             $insertedRows = $this->records($db)->insertOrIgnoreReturning($scope + [
                 'id' => $jobId,
                 'fingerprint' => $prepared->fingerprint,
@@ -273,11 +288,13 @@ final readonly class WorkbookExchange
             ], uniqueBy: array_keys($scope));
             $inserted = $insertedRows[0] ?? null;
             if (!$inserted instanceof stdClass) {
-                $existing = $this->records($db)->where($scope)->lockForUpdate()->first();
+                $existing = $this->records($db)->where($scope)->first();
                 if (!$existing instanceof stdClass) {
                     throw new WorkbookProblem('runtime_failed', 503);
                 }
-                $admissions->where($actorColumns)->update(['job_id' => $existing->id]);
+
+                // A writer from before the migration may have inserted the job without an actor row.
+                $admissions->where($actorColumns)->whereNull('job_id')->delete();
 
                 return $this->replay($db, $existing, $prepared->fingerprint);
             }
@@ -293,15 +310,17 @@ final readonly class WorkbookExchange
 
         try {
             // Each accepted writer can invalidate one concurrent PostgreSQL snapshot.
-            // Bound retries while allowing all default slots to fill before rejecting the next job.
-            return $this->database->transaction($admit, attempts: self::DEFAULT_ACTIVE_LIMIT + 1);
+            // Allow one retry per configured place, up to a bounded amount of work per request.
+            return $this->database->transaction($admit, attempts: 1 + min($maxActive, self::MAX_ADMISSION_RETRIES));
         } catch (ConcurrentUpdateException|PDOException $error) {
             if ($this->database->connection()->transactionLevel() !== 0
-                || ($error instanceof PDOException && (string) $error->getCode() !== '40001')) {
+                || ($error instanceof PDOException && !in_array($error->errorInfo[0] ?? (string) $error->getCode(), ['40001', '40P01'], true))) {
                 throw $error;
             }
 
             throw new WorkbookProblem('contention', 503);
+        } finally {
+            $staged->discard();
         }
     }
 
@@ -945,22 +964,33 @@ final readonly class WorkbookExchange
         return $handle->actingAs($user);
     }
 
+    private function blobScope(DriveContext $context): BlobScope
+    {
+        return BlobScope::forUpload('tenant', $context->operation->tenant->id, $context->operation->scope->id);
+    }
+
     private function commitBlobBytes(DriveContext $context, string $bytes): string
+    {
+        $staged = $this->stageBlobBytes($bytes);
+        try {
+            return $this->blobs->commitStaged($staged, $this->blobScope($context))->id;
+        } finally {
+            $staged->discard();
+        }
+    }
+
+    private function stageBlobBytes(string $bytes): StagedObject
     {
         $stream = fopen('php://temp', 'w+b');
         if (!is_resource($stream)) {
             throw new WorkbookProblem('runtime_failed', 503);
         }
         try {
-            fwrite($stream, $bytes);
-            rewind($stream);
-            $blob = $this->blobs->commit($stream, BlobScope::forUpload(
-                'tenant',
-                $context->operation->tenant->id,
-                $context->operation->scope->id,
-            ));
+            if (fwrite($stream, $bytes) !== strlen($bytes) || !rewind($stream)) {
+                throw new WorkbookProblem('runtime_failed', 503);
+            }
 
-            return $blob->id;
+            return $this->contentStore->stage($stream);
         } finally {
             fclose($stream);
         }
@@ -1055,6 +1085,10 @@ final readonly class WorkbookExchange
         return $db->table($this->schema->table('sheets_exchange_jobs'));
     }
 
+    /**
+     * @param  positive-int $default
+     * @return positive-int
+     */
     private function intConfig(string $key, int $default): int
     {
         $value = config($key, $default);

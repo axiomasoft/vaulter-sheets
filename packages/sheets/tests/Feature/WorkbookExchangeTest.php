@@ -16,6 +16,8 @@ use Vaulter\Drive\Testing\Drive\DriveTestHelpers;
 use Vaulter\Drive\Testing\Http\V1;
 use Vaulter\Exceptions\Database\ConcurrentUpdateException;
 use Vaulter\Media\Contracts\Cas\BlobPins;
+use Vaulter\Media\Contracts\Cas\ContentStore;
+use Vaulter\Media\Contracts\Cas\StagedObject;
 use Vaulter\Schema\SchemaHelpers;
 use Vaulter\Sheets\Console\RecoverWorkbookJobs;
 use Vaulter\Sheets\Content\WorkbookCodec;
@@ -791,8 +793,41 @@ it('returns retryable contention if exchange admission cannot obtain a fresh dat
     expect(DB::table('v_sheets_exchange_jobs')->count())->toBe(0);
 })->with([
     'PostgreSQL serialization conflict' => [new PDOException('serialization failure', 40001)],
+    'PostgreSQL deadlock' => [tap(new PDOException('deadlock detected'), static function (PDOException $error): void {
+        $error->errorInfo = ['40P01', 7, 'deadlock detected'];
+    })],
     'unresolved Media write conflict' => [new ConcurrentUpdateException(new RuntimeException('concurrent blob write'))],
 ]);
+
+it('allows a configured exchange limit above eight to outlast a default-sized PostgreSQL burst', function (): void {
+    config(['vaulter-sheets.exchange.max_active_per_actor' => 12]);
+    $real = app(ContentStore::class);
+    $stagedPath = null;
+    $staging = Mockery::mock(ContentStore::class);
+    $staging->shouldReceive('stage')->once()->andReturnUsing(function (mixed $stream) use ($real, &$stagedPath): StagedObject {
+        $staged = $real->stage($stream);
+        $stagedPath = $staged->path();
+
+        return $staged;
+    });
+    app()->when(WorkbookExchange::class)->needs(ContentStore::class)->give(fn () => $staging);
+    $url = createExchangeWorkbookUrl($this);
+    $head = $this->getJson($url)->assertOk();
+    $attempts = 0;
+    DB::connection()->beforeExecuting(static function (string $sql) use (&$attempts): void {
+        if (str_contains($sql, 'sheets_exchange_admissions') && str_starts_with($sql, 'insert into') && ++$attempts <= 9) {
+            throw new PDOException('serialization failure', 40001);
+        }
+    });
+
+    $this->postJson($url.'/exchanges', [
+        'request_key' => 'large-cap', 'kind' => 'export', 'format' => 'csv',
+        'source' => ['generation' => $head->json('data.marker.generation'), 'position' => $head->json('data.marker.position')],
+    ])->assertStatus(202);
+    expect($attempts)->toBe(10)
+        ->and($stagedPath)->toBeString()
+        ->and(is_file($stagedPath))->toBeFalse();
+});
 
 it('counts existing unfinished jobs on the first admission after an upgrade', function (): void {
     $migration = require dirname(__DIR__, 2).'/database/migrations/0001_01_01_000610_create_sheets_exchange_admissions.php';

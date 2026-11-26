@@ -19,6 +19,10 @@ Check the caller's access before looking up or exposing an outcome. A matching c
 
 The owner assigns a worker token and deadline before execution. An expired lease can be reclaimed. The owner checks token, permissions, generation and base marker again under the document lock. The payload, position and receipt commit on the same connection. Only the committed version can reach consumers. Restoration advances the generation, and a worker from the previous generation cannot publish into the new head.
 
+During an upgrade, run migration 000610 before serving the new code. Its partial index on active jobs is built in a transaction. PostgreSQL blocks writes to the jobs table while it builds the index, so schedule the migration according to the size of the retained job history. Drain instances predating actor admission before depending on the quota across the whole deployment.
+
+A fresh registration stages its authorized source locally once. The actor transaction promotes and pins the staged object only upon admission. Media reconciliation handles canonical objects left by a storage success followed by a database rollback. Snapshot conflicts allow one retry per configured place, up to 32 retries. A caller that receives 503 `contention` may retry with the same request key.
+
 Register imports against an authorized existing workbook. Pin the source blob until job retention permits cleanup. An export captures a specific document version, which gives a retry a stable source after later edits. Check download access again before serving output. Garbage collection releases expired pins before Media collects unreferenced blobs.
 
 In journal mode, a write must pass the active collaboration owner fence. Room recovery uses acknowledged journal positions and checkpoints. Switching a document between snapshot and journal mode is an authorized operation with an expected head. [Configuration](reference/configuration.md)
