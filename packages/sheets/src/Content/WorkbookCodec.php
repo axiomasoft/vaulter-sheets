@@ -90,7 +90,7 @@ final class WorkbookCodec implements ManagedDocumentCodec
     }
 
     /**
-     * @param array<string, mixed> $raw
+     * @param array<array-key, mixed> $raw
      */
     public function decode(array $raw, int $schemaVersion): WorkbookContent
     {
@@ -111,7 +111,7 @@ final class WorkbookCodec implements ManagedDocumentCodec
     }
 
     /**
-     * @param array<string, mixed> $raw
+     * @param array<array-key, mixed> $raw
      */
     public function decodeStored(array $raw, int $schemaVersion): DocumentContent
     {
@@ -216,8 +216,8 @@ final class WorkbookCodec implements ManagedDocumentCodec
     }
 
     /**
-     * @param array<string, mixed>|null $previous
-     * @param array<string, mixed>|null $next
+     * @param array<array-key, mixed>|null $previous
+     * @param array<array-key, mixed>|null $next
      */
     public function replacePayloadReference(string $kind, string $id, ?array $previous, ?array $next): void
     {
@@ -267,7 +267,7 @@ final class WorkbookCodec implements ManagedDocumentCodec
     }
 
     /**
-     * @param array<string, mixed>|null $payload
+     * @param array<array-key, mixed>|null $payload
      */
     private static function blobId(?array $payload): ?string
     {
@@ -283,7 +283,7 @@ final class WorkbookCodec implements ManagedDocumentCodec
     }
 
     /**
-     * @param array<string, mixed> $raw
+     * @param array<array-key, mixed> $raw
      */
     private function shape(array $raw): stdClass
     {

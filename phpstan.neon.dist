@@ -46,14 +46,3 @@ parameters:
         -
             constant: CURLOPT_RESOLVE
             message: 'Pin connections explicitly without CURLOPT_RESOLVE.'
-
-    ignoreErrors:
-        # Vaulter\Documents\Contracts\ManagedDocumentCodec declares decodeStored() and
-        # replacePayloadReference() with a bare array, while DocumentCodec::decode()
-        # documents array<string, mixed>. Stored payloads are JSON objects, so the codec
-        # keeps the precise type; drop this once the base contract documents it too.
-        -
-            identifier: method.childParameterType
-            message: '#^Parameter \#\d+ \$(raw|previous|next) \(array<string, mixed>(\|null)?\) of method Vaulter\\Sheets\\Content\\WorkbookCodec::(decodeStored|replacePayloadReference)\(\) should be contravariant#'
-            path: packages/sheets/src/Content/WorkbookCodec.php
-            count: 3
