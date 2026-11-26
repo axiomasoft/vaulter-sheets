@@ -9,6 +9,23 @@ async function drainExchangeWorker(request: import('@playwright/test').APIReques
     expect(res.ok(), await res.text()).toBe(true);
 }
 
+/** queue:work --once can run before the job is visible; drain until the exchange leaves queued/running. */
+async function waitForExchange(
+    request: import('@playwright/test').APIRequestContext,
+    url: string,
+): Promise<{state: string; result_receipt_id?: string; [key: string]: unknown}> {
+    for (let i = 0; i < 30; i++) {
+        await drainExchangeWorker(request);
+        const res = await request.get(url);
+        expect(res.ok(), await res.text()).toBe(true);
+        const data = (await res.json()).data;
+        if (data.state !== 'queued' && data.state !== 'running') {
+            return data;
+        }
+    }
+    throw new Error(`exchange ${url} did not settle`);
+}
+
 test('imports XLSX, edits in browser UI, exports XLSX and CSV with security headers and reopens cleanly', async ({page, browser, request, baseURL}) => {
     const created = await request.post('/api/test/workbooks');
     expect(created.ok(), await created.text()).toBe(true);
@@ -44,10 +61,7 @@ test('imports XLSX, edits in browser UI, exports XLSX and CSV with security head
     expect(impQueued.status()).toBe(202);
     const {exchange_id: impId} = (await impQueued.json()).data;
 
-    await drainExchangeWorker(request);
-    const impDone = await request.get(`${workbookUrl}/exchanges/${impId}`);
-    expect(impDone.ok()).toBe(true);
-    const impStatus = (await impDone.json()).data;
+    const impStatus = await waitForExchange(request, `${workbookUrl}/exchanges/${impId}`);
     expect(impStatus.state).toBe('succeeded');
     expect(impStatus.result_receipt_id).toBeTruthy();
 
@@ -82,9 +96,7 @@ test('imports XLSX, edits in browser UI, exports XLSX and CSV with security head
     });
     expect(expXlsxQueued.status()).toBe(202);
     const {exchange_id: expXlsxId} = (await expXlsxQueued.json()).data;
-    await drainExchangeWorker(request);
-
-    const expXlsxStatus = await (await request.get(`${workbookUrl}/exchanges/${expXlsxId}`)).json();
+    const expXlsxStatus = {data: await waitForExchange(request, `${workbookUrl}/exchanges/${expXlsxId}`)};
     expect(expXlsxStatus.data.state).toBe('succeeded');
 
     const dlXlsx = await request.get(`${workbookUrl}/exchanges/${expXlsxId}/download`);
@@ -105,7 +117,7 @@ test('imports XLSX, edits in browser UI, exports XLSX and CSV with security head
     });
     expect(expCsvQueued.status()).toBe(202);
     const {exchange_id: expCsvId} = (await expCsvQueued.json()).data;
-    await drainExchangeWorker(request);
+    expect((await waitForExchange(request, `${workbookUrl}/exchanges/${expCsvId}`)).state).toBe('succeeded');
 
     const dlCsv = await request.get(`${workbookUrl}/exchanges/${expCsvId}/download`);
     expect(dlCsv.ok()).toBe(true);
