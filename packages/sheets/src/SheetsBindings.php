@@ -29,14 +29,14 @@ final class SheetsBindings implements ModuleBindings
         $config->set('queue.connections.sheets-exchange', $config->get('queue.connections.sheets-exchange') ?? [
             'driver' => 'database', 'table' => 'jobs', 'queue' => 'sheets-exchange', 'retry_after' => 90, 'after_commit' => true,
         ]);
-        $app->bind(WorkbookOperations::class, LaravelWorkbookOperations::class);
+        $app->scoped(WorkbookOperations::class, LaravelWorkbookOperations::class);
         if (!$app->bound(WorkbookRecoveryContext::class)) {
-            $app->bind(WorkbookRecoveryContext::class, LaravelWorkbookRecoveryContext::class);
+            $app->scoped(WorkbookRecoveryContext::class, LaravelWorkbookRecoveryContext::class);
         }
-        $app->bind(WorkbookRuntime::class, static fn (Application $app): WorkbookRuntime => $app->make(
+        $app->scoped(WorkbookRuntime::class, static fn (Application $app): WorkbookRuntime => $app->make(
             self::usesHttpRuntime($app) ? HttpWorkbookRuntime::class : NodeWorkbookRuntime::class,
         ));
-        $app->bind(WorkbookExchangeRuntime::class, static fn (Application $app): WorkbookExchangeRuntime => $app->make(
+        $app->scoped(WorkbookExchangeRuntime::class, static fn (Application $app): WorkbookExchangeRuntime => $app->make(
             self::usesHttpRuntime($app) ? HttpWorkbookExchangeRuntime::class : NodeWorkbookExchangeRuntime::class,
         ));
     }
