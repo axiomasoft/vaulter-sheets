@@ -4,13 +4,15 @@ All notable changes to **Vaulter Sheets** (`axiomasoft/vaulter-sheets` and the
 `@vaulter/sheets-*` npm packages) are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the
-packages adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each package is
-released on its own line (`release/packages.json`); an entry names the package it affects.
+packages adhere to [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Release targets are listed in `release/packages.json`. Until the public PHP APIs stabilize, publish Sheets and its required Vaulter PHP packages at the same version. npm packages have separate release targets.
 
 ## [Unreleased]
 
 ### Fixed
 
+- `@vaulter/sheets-runtime` and `axiomasoft/vaulter-sheets` accept the optional IronCalc diagnostic on the calculation wire. PHP responses can include `checks.ironcalc_verification` on apply and recalculate.
+- `@vaulter/sheets-runtime` filters dynamic data exchange links and program calls on XLSX import and export.
+- `axiomasoft/vaulter-sheets` returns HTTP 422 `invalid_command` for an empty or oversized range sheet ID.
 - `axiomasoft/vaulter-sheets`: a malformed cell range (`A0`, `ZZZZ1`, `B2:A1`, plain text) is
   answered `422 invalid_command` before the workbook is loaded. It used to reach the runtime and
   come back as `503 runtime_failed`, which told clients to retry a request that cannot succeed;
@@ -28,6 +30,9 @@ released on its own line (`release/packages.json`); an entry names the package i
 
 ### Changed
 
+- `@vaulter/sheets-realtime` derives presence identity from admitted room credentials, closes expired peers with 4001, and periodically rechecks every peer. New generations receive the full state even when the sequence number is unchanged. Presence updates are coalesced over 50 ms.
+- `@vaulter/sheets-realtime` bounds pending connections per client address and limits queued intents per peer. Configure `SHEETS_REALTIME_PENDING_PER_ADDRESS` and `SHEETS_REALTIME_TRUSTED_PROXIES` when deploying behind a reverse proxy.
+- `axiomasoft/vaulter-sheets` migration 000610 adds an actor admission row and a partial index of active jobs. Concurrent admissions now enforce the configured quota before committing a source blob. Existing imports and exports remain addressable with their original request keys.
 - `axiomasoft/vaulter-sheets`: an actor may have at most `exchange.max_active_per_actor` (default
   8, `SHEETS_EXCHANGE_MAX_ACTIVE_PER_ACTOR`) unfinished imports and exports in a project scope; a
   new registration beyond that is answered `429 too_many_exchanges`. Replaying an existing
