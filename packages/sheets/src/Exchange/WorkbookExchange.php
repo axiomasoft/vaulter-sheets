@@ -142,8 +142,10 @@ final readonly class WorkbookExchange
         }
 
         $wbState = $this->loadWorkbook($context, $node);
-        $scope = $this->scope($context, $wbState->documentId, $requestKey);
+        $actor = ExchangeActorScope::from($context);
+        $scope = $actor->columns() + ['document_id' => $wbState->documentId, 'request_key' => $requestKey];
 
+        $maxActive = $this->intConfig('vaulter-sheets.exchange.max_active_per_actor', 8);
         if ($kind === 'import') {
             if (!$this->access->canEdit($context, $node)) {
                 throw new WorkbookProblem('permission_denied', 403);
@@ -151,6 +153,7 @@ final readonly class WorkbookExchange
             if (!$wbState->editable || $wbState->collabProtocol !== null) {
                 throw new WorkbookProblem('unsupported_content', 422);
             }
+            $this->assertCapacity($this->database->connection(), $actor, $scope, $maxActive);
             $prepared = $this->prepareImportSource($context, $wbState, $format, $source, $optionsRaw, $sourceContext);
         } else {
             $abilities = $this->driveHandle($context, $context->operation->scope->id)->nodes()->abilities($node)->flags;
@@ -164,6 +167,7 @@ final readonly class WorkbookExchange
             if ($replay !== null) {
                 return $replay;
             }
+            $this->assertCapacity($this->database->connection(), $actor, $scope, $maxActive);
             try {
                 $prepared = $this->prepareExportSource($context, $node, $wbState, $format, $sourceIdentity, $shaExpected, $optionsRaw);
             } catch (WorkbookProblem $problem) {
@@ -178,11 +182,11 @@ final readonly class WorkbookExchange
         $storedOptions->_node_id = $node;
 
         $keepSeconds = $this->intConfig('vaulter-sheets.exchange.keep_seconds', 7 * 86_400);
-        $maxActive = $this->intConfig('vaulter-sheets.exchange.max_active_per_actor', 8);
         $jobId = (string) Str::uuid7();
 
         /** @var array{created: bool, job: array<string, mixed>} $result */
         $result = $this->database->transaction(function (Connection $db) use (
+            $actor,
             $scope,
             $kind,
             $format,
@@ -192,21 +196,10 @@ final readonly class WorkbookExchange
             $maxActive,
             $jobId,
         ): array {
-            // A new registration (not a replay of its own key) waits behind the actor's unfinished ones,
-            // so one caller cannot pin source files and fill the exchange queue without bound. The count
-            // reads the prefix of the unique scope key; two racing registrations may overshoot it by one.
-            if (!$this->records($db)->where($scope)->exists()) {
-                $active = $this->records($db)
-                    ->where('tenant_id', $scope['tenant_id'])
-                    ->where('project_scope', $scope['project_scope'])
-                    ->where('subject_type', $scope['subject_type'])
-                    ->where('subject_id', $scope['subject_id'])
-                    ->whereIn('state', ['queued', 'running'])
-                    ->count();
-                if ($active >= $maxActive) {
-                    throw new WorkbookProblem('too_many_exchanges', 429, ['limit' => $maxActive]);
-                }
-            }
+            // PostgreSQL serializes admission for this actor across workbooks. SQLite
+            // serializes writers and refuses to promote a stale snapshot to a writer.
+            $this->database->advisoryLock($actor->lockKey());
+            $this->assertCapacity($db, $actor, $scope, $maxActive);
             $insertedRows = $this->records($db)->insertOrIgnoreReturning($scope + [
                 'id' => $jobId,
                 'fingerprint' => $prepared['fingerprint'],
@@ -398,7 +391,7 @@ final readonly class WorkbookExchange
         $wbState = $this->loadWorkbook($context, $node);
         $db = $this->schema->dbConnection();
         $row = $this->records($db)
-            ->where($this->jobScope($context, $wbState->documentId, $exchangeId))
+            ->where(ExchangeActorScope::from($context)->columns() + ['document_id' => $wbState->documentId, 'id' => $exchangeId])
             ->first();
         if (!$row instanceof stdClass) {
             throw new WorkbookProblem('resource_unavailable', 404);
@@ -423,7 +416,7 @@ final readonly class WorkbookExchange
 
         $db = $this->schema->dbConnection();
         $row = $this->records($db)
-            ->where($this->jobScope($context, $wbState->documentId, $exchangeId))
+            ->where(ExchangeActorScope::from($context)->columns() + ['document_id' => $wbState->documentId, 'id' => $exchangeId])
             ->first();
         if (!$row instanceof stdClass) {
             throw new WorkbookProblem('resource_unavailable', 404);
@@ -1025,38 +1018,13 @@ final readonly class WorkbookExchange
         ];
     }
 
-    /**
-     * @return array{tenant_id: int|string, project_scope: string, subject_type: string, subject_id: int|string, document_id: string, request_key: string}
-     */
-    private function scope(DriveContext $context, string $documentId, string $requestKey): array
+    /** @param array{tenant_id: int|string, project_scope: string, subject_type: string, subject_id: int|string, document_id: string, request_key: string} $scope */
+    private function assertCapacity(Connection $db, ExchangeActorScope $actor, array $scope, int $limit): void
     {
-        $actor = $context->actor->ref();
-
-        return [
-            'tenant_id' => $context->operation->tenant->id ?? 0,
-            'project_scope' => $context->operation->scope->kind.':'.$context->operation->scope->id,
-            'subject_type' => $actor->type ?? 'user',
-            'subject_id' => $actor->id ?? 0,
-            'document_id' => $documentId,
-            'request_key' => $requestKey,
-        ];
-    }
-
-    /**
-     * @return array{tenant_id: int|string, project_scope: string, subject_type: string, subject_id: int|string, document_id: string, id: string}
-     */
-    private function jobScope(DriveContext $context, string $documentId, string $exchangeId): array
-    {
-        $actor = $context->actor->ref();
-
-        return [
-            'tenant_id' => $context->operation->tenant->id ?? 0,
-            'project_scope' => $context->operation->scope->kind.':'.$context->operation->scope->id,
-            'subject_type' => $actor->type ?? 'user',
-            'subject_id' => $actor->id ?? 0,
-            'document_id' => $documentId,
-            'id' => $exchangeId,
-        ];
+        $active = $this->records($db)->where($actor->columns())->whereIn('state', ['queued', 'running']);
+        if ($active->count() >= $limit && !$this->records($db)->where($scope)->exists()) {
+            throw new WorkbookProblem('too_many_exchanges', 429, ['limit' => $limit]);
+        }
     }
 
     private function records(Connection $db): Builder

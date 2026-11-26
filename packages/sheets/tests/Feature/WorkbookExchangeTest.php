@@ -24,6 +24,7 @@ use Vaulter\Sheets\Exchange\ExchangeWire;
 use Vaulter\Sheets\Exchange\WorkbookExchange;
 use Vaulter\Sheets\Exchange\ZipArchiveGuard;
 use Vaulter\Sheets\Jobs\RunWorkbookExchange;
+use Vaulter\Testing\Concurrency\ForkRace;
 use Vaulter\Testing\Fixtures\TestUser;
 
 beforeEach(function (): void {
@@ -526,7 +527,7 @@ it('resolves a competing registration that inserts after the first request check
     $interleaved = false;
     $competingRequest = $sameOptions ? $request : $request + ['options' => ['delimiter' => ';']];
     $connection->beforeExecuting(function (string $sql) use ($table, $url, $competingRequest, $separateConnection, &$interleaved, &$competingId): void {
-        if (!$interleaved && str_starts_with($sql, 'insert into "'.$table.'"')) {
+        if (!$interleaved && str_contains($sql, 'count(*)') && str_contains($sql, $table)) {
             $interleaved = true;
             $register = fn () => $this->postJson($url.'/exchanges', $competingRequest)->assertStatus(202)->json('data.exchange_id');
             $competingId = $separateConnection ? DB::usingConnection('sheets_competitor', $register) : $register();
@@ -540,8 +541,7 @@ it('resolves a competing registration that inserts after the first request check
         $outer->assertStatus(409)->assertJsonPath('code', 'idempotency_conflict');
     }
     expect($interleaved)->toBeTrue()->and($competingId)->toBeString();
-    // The in-memory SQLite test's competing request shares the outer transaction's rollback.
-    $expected = $separateConnection || $sameOptions ? 1 : 0;
+    $expected = 1;
     expect($connection->table($table)->count())->toBe($expected)
         ->and(app(BlobPins::class)->countByOwner()[WorkbookExchange::SOURCE_PIN_OWNER] ?? 0)->toBe($expected);
 })->with(['identical options' => [true], 'different options' => [false]]);
@@ -741,4 +741,21 @@ it('holds a new exchange back while the actor has as many unfinished ones as all
 
     app()->call([new RunWorkbookExchange($first), 'handle']);
     $register('active-3')->assertStatus(202);
+});
+
+it('admits exactly one simultaneous export when the actor has one free slot across workbooks', function (): void {
+    ForkRace::skipUnlessSupported($this);
+    config(['vaulter-sheets.exchange.max_active_per_actor' => 1]);
+    $tasks = [];
+    foreach (['first', 'second'] as $key) {
+        $url = createExchangeWorkbookUrl($this);
+        $head = $this->getJson($url)->assertOk();
+        $source = ['generation' => $head->json('data.marker.generation'), 'position' => $head->json('data.marker.position')];
+        $tasks[] = fn (): int => $this->postJson($url.'/exchanges', [
+            'request_key' => $key, 'kind' => 'export', 'format' => 'csv', 'source' => $source,
+        ])->getStatusCode();
+    }
+    $results = ForkRace::run($tasks);
+    expect(array_column($results, 'value'))->toEqualCanonicalizing([202, 429])
+        ->and(DB::table('v_sheets_exchange_jobs')->count())->toBe(1);
 });
