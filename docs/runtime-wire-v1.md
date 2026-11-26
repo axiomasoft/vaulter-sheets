@@ -1,92 +1,65 @@
-# Приватный обмен PHP ↔ Node в vaulter-sheets (wire v1)
+# Workbook calculation wire v1
 
-Документ-владелец формата сообщений между PHP-владельцем книги и вычислителем `@vaulter/sheets-runtime`. Транспорт (CLI, HTTP, лимиты процесса) описан в [sheets.md](sheets.md#внутренний-обмен-php-и-node), запись под блокировкой — там же в разделе «Атомарная запись». Пользовательский API (`http-v1.yaml`) и wire Office SDK ([agent-sdk.md](../agent-sdk.md)) этим документом не задаются.
+This protocol connects the PHP workbook owner to the Node calculation runtime. The PHP owner controls access and publication. The runtime computes a candidate or reads ranges. The schema defines message shapes. The rules below define framing, lossless decoding, digests and concurrency. [JSON Schema](../contracts/runtime-v1.schema.json) · [Transport configuration](reference/configuration.md) · [Public HTTP API](../contracts/http-v1.yaml)
 
-**Образец** → upstream `workbook-operation` reference prototype (Univer 1.5.2, Node 24.12, PHP 8.4); контрактный гейт в этом репозитории — `scripts/ci/workbook-contract.sh`. Целевые файлы: `contracts/runtime-v1.schema.json`, `packages/runtime/src/protocol.ts`, `packages/sheets/src/Runtime/`. Схема — канон формы сообщений. Правила, которые JSON Schema выразить не может (строгий разбор, digest, политики), заданы ниже.
+## Frames and decoding
 
-## 1. Кадр и строгий разбор
+A message is one UTF-8 JSON object followed by LF. The response occupies exactly one line. Reject malformed UTF-8, missing LF and trailing data. Enforce the configured byte budget on both ends. Oversized input gives `limit_exceeded`. The original reference profile used 8 MiB. The operator reference records shipped transport limits and fallbacks.
 
-1. Одно сообщение — один JSON-объект UTF-8 и завершающий LF. Ответ — ровно одна строка. Невалидный UTF-8, отсутствие LF и лишние данные после объекта дают `invalid_message`. Предел сообщения в образце 8 МиБ (`limit_exceeded`).
-2. Декодер обеих сторон отвергает повтор ключа объекта, нечисловые IEEE-значения (`NaN`, `Infinity`, переполнение вроде `1e400`) и вложенность глубже 256. Стандартные `JSON.parse` и `json_decode` для этого непригодны: первый молча берёт последний ключ, оба теряют разряды.
-3. **Целые токены.** Токен без дробной части и экспоненты вне ±(2^53−1) принимается, только если он побайтно совпадает с ES-печатью полученного double (`String(Number(token))`). Иначе разряды потеряны, и это `invalid_message`. Примеры: `9007199254740993` отвергается, `10000000000000000` (1e16) и `123456789012345680000` принимаются. Формулировка «отвергать всё вне безопасного диапазона» была бы ошибкой: ячейка 1e16 после `save()` печатается целым токеном, и снимок стал бы неотправляемым. Координаты, `count`, `generation`, `position` дополнительно обязаны быть безопасными целыми.
+Both decoders reject duplicate object keys, a nesting depth greater than 256 and non-finite numbers, including exponent overflow. An integer token without a decimal point or exponent outside ±(2⁵³−1) must exactly match the ECMAScript string representation of the parsed double. For example, `9007199254740993` loses a digit and must be rejected. Both `10000000000000000` and `123456789012345680000` round-trip and are accepted as workbook values. Coordinates, counts, generation and position must also be safe integers. Represent objects and arrays distinctly throughout decoding and encoding.
 
-## 2. Запрос
+## Requests
 
-`{version:1, request_id, operation, base:{generation, position, sha256}, profile_id, workbook, commands | selector, limits?}`.
+Every request carries `version: 1`, `request_id`, `operation`, `base: {generation, position, sha256}`, `profile_id` and `workbook`. The workbook is a v2 envelope containing `format_version`, `profile`, `native` and `tables`. A table binding includes stable table, sheet, row and column IDs alongside one-based row and column coordinates. The adapter converts these to zero-based engine indexes.
 
-- `operation:"apply"` — непустой список `commands`, не более 64. `operation:"read"|"recalculate"` — `selector:{ranges:[{sheet_id, range}]}` без `commands`.
-- `workbook` — обёртка v2 `{format_version:2, profile, native, tables}`. `tables` — привязки устойчивых ID: `{table_id, sheet_id, header_row, columns:[{column_id, column}], rows:[{row_id, row}]}`. Все координаты на wire и в `tables` нумеруются с единицы. Переход к нумерации движка с нуля происходит в одном месте адаптера (`engineIndex()` в `src/engine/univer.ts`, проверка S5).
-- `limits` может только уменьшить пределы профиля (`max_commands`, `max_cells_per_command`, `calculation_timeout_ms`), но не увеличить.
-- Runtime сверяет `base.sha256` с digest полученного `workbook` (`base_mismatch`), профиль (`profile_mismatch`), список ресурсов `native` с профилем (`unsupported_content`, `detail.reason:"unknown_resource"`) **до** открытия движка.
+An `apply` request contains 1–64 commands. A `read` or `recalculate` request carries a selector with `ranges: [{sheet_id, range}]`. Optional `limits` lower the profile's command count, cells per command or calculation timeout. Before opening the engine, verify the workbook digest against `base.sha256`, match the profile and verify its supported resources. Unknown resources give `unsupported_content` with reason `unknown_resource`.
 
-### Содержимое ячейки
+### Cell content and addressing
 
-Предусловие и прочитанное содержимое передаются теговым `CellContent`: `null` (пустая ячейка) | `{"number":n}` | `{"text":s}` | `{"boolean":b}` | `{"formula":"=…"}`. Ровно один тег. Голое `"expected":5` запрещено, потому что не отличает число 5, текст «5» и формулу со значением 5. Формула сравнивается по исходному тексту, а не по вычисленному значению. Значения пакетной записи (`set_values.values`) — `Literal`: `null | {number} | {text}`. Формула вводится только отдельной командой.
+`CellContent` is null for an empty cell or an object containing exactly one of `number`, `text`, `boolean` or `formula`. Preconditions compare typed content. For formulas, compare the formula source. Text `"5"`, number `5` and a formula returning five therefore have distinct preconditions. A literal in `set_values` is null or a tagged number, text or boolean. Use a formula command to write formula source.
 
-### Команды профиля
+| Operation | Addressing and checks |
+| --- | --- |
+| Scalar setters | Supply sheet, row, column, expected content and the new value or formula. Check every addressed cell before changing it. |
+| `set_values` | Supply the top-left cell and equally sized, rectangular expected-content and literal-value matrices. Validate the entire rectangle and its cell budget before writing. |
+| `insert_row_before` | Supply sheet, row and count. Inside a logical table the owner supplies exactly `count` unused IDs in `new_row_ids[table_id]`. An insertion outside all tables requires no IDs. Reuse owner-assigned IDs on replay. |
+| `fill_formula` | Resolve sheet, table, destination column and row IDs against the supplied workbook. Validate the expression, expected destinations and declared input preconditions. `fixed_members` operates only on the listed row IDs. `current_rows` requires exact current membership in table order and reports expected and actual IDs on `scope_changed`. |
 
-| `kind` | Поля | Отказы |
-| --- | --- | --- |
-| `set_number`, `set_text`, `set_formula` | `sheet_id, row, column, expected: CellContent`, `value` / `formula` | `precondition_failed`, `unknown_target` |
-| `set_values` | `sheet_id, row, column`, прямоугольные `expected: CellContent[][]` и `values: Literal[][]` одного размера | вся область проверяется до первой записи; `limit_exceeded` по числу ячеек |
-| `insert_row_before` | `sheet_id, row, count`, `new_row_ids?: {table_id: [row_id…]}` | `identity_required` |
-| `fill_formula` | `sheet_id, table_id, scope: fixed_members\|current_rows, row_ids, destination_column_id, expression:{op:"subtract", left_column_id, right_column_id}, expected_destination: CellContent[]` | `unknown_target`, `precondition_failed`, `scope_changed` |
+The schema lists the remaining structural and formatting commands, formula expressions and their fields. Unknown operations outside the selected profile give `unsupported_command`. Validate all targets and preconditions for a command before its first write.
 
-Незнакомая команда или выражение вне профиля — `unsupported_command` до экспорта. Все цели и предусловия команды разрешаются и проверяются до первой записи в движок.
+## Responses
 
-**Выдача row ID.** Runtime сам ID не придумывает. Если вставка попадает внутрь логической таблицы, владелец передаёт в `new_row_ids[table_id]` ровно `count` новых, ещё не занятых ID. Иначе runtime возвращает `identity_required`. Вставка вне таблиц ID не требует. Так ID одинаковы при повторном расчёте и в журнале, а владелец может записать их в квитанцию.
+A successful `apply` or `recalculate` returns the version, request ID, operation, base digest, candidate workbook and digest, changed ranges, calculation and checks. The checks report resource preservation and readback cells with sheet ID, address, coordinates, formula and value. A successful `read` returns the base digest, calculation and ranges of cells.
 
-**`fill_formula`.** `fixed_members` разрешает каждый `row_id` в текущую строку. Строки, вставленные позже, не затрагиваются. `current_rows` дополнительно требует, чтобы активный состав таблицы совпадал с `row_ids` (порядок из `tables`). Иначе `scope_changed` с `detail.expected/actual`, и ничего не пишется.
+Wait for the engine to finish calculation and apply the results. A successful calculation reports `state: "ready"` and the digest of its source. Readback must reflect the completed calculation, including when a snapshot initially contains stale cached values. On timeout, return `calculation_timeout`. Verify that the exported workbook retains the input resources required by its profile. Report a lost resource as `unsupported_content` with reason `resource_lost`.
 
-## 3. Ответ
+A failure returns `{version, request_id, ok:false, error:{code, message, detail?}}`. The request ID may be null if it could not be decoded. Discard the candidate on failure.
 
-- Успех `apply`/`recalculate`: `{version, request_id, ok:true, operation, base_sha256, workbook, candidate_sha256, changed_ranges, calculation:{state:"ready", source_sha256}, checks:{resources_preserved, cells}}`. `cells` — контрольное чтение изменённых ячеек `{sheet_id, a1, row, column, formula, value}` после барьера расчёта.
-- Успех `read`: `{…, ok:true, operation:"read", base_sha256, calculation, data:{ranges:[{sheet_id, range, cells}]}}` без новой книги.
-- Отказ: `{version, request_id|null, ok:false, error:{code, message, detail?}}`. При любом отказе копия книги в процессе уничтожается.
-- `calculation.state` в v1 всегда `ready` и привязан к `candidate_sha256`. Runtime ждёт барьер `executeCalculation` + `onCalculationResultApplied(timeout)`. Кэш, прочитанный из снимка, ready не означает (сценарий 999 → 41). Тайм-аут барьера — `calculation_timeout`. Состояние `pending` в v1 на wire не передаётся.
-- Ресурсы плагинов: `save()` обязан вернуть все ресурсы профиля, которые были во входе. Потеря ресурса — `unsupported_content` с `detail.reason:"resource_lost"`.
+| Runtime error | Public outcome from PHP |
+| --- | --- |
+| `precondition_failed` | HTTP 409 `version_conflict` |
+| `scope_changed` | HTTP 409 `scope_changed` |
+| `unknown_target` | HTTP 422 `unknown_target` |
+| `identity_required` | HTTP 422 `invalid_command` |
+| `profile_mismatch`, `unsupported_command`, `unsupported_content` | HTTP 422 `unsupported_content` |
+| `limit_exceeded` | HTTP 413 `limit_exceeded` |
+| `calculation_timeout` | HTTP 503 `calculation_pending` |
+| `invalid_message`, `unsupported_version`, `base_mismatch`, invalid output, process failure or mismatched request ID | HTTP 503 `runtime_failed` |
 
-### Коды ошибок и их отображение у PHP
+## Canonicalization and publication
 
-Публикации нет ни при одном коде. Источник — `WorkbookOwner::mapRuntimeError`.
+Compute SHA-256 over the RFC 8785 canonical encoding of the **entire workbook envelope**, including profile and table bindings. Use lowercase hex. Sort object keys by UTF-16 code units, print numbers using ECMAScript rules and preserve the difference between an empty object and an empty array. PHP represents objects as `stdClass`. The workbook supports fractional and large double values in cell content. Its digest uses that numeric profile independently of Office proposal digests.
 
-| Код runtime | Когда | Публичный код PHP, HTTP |
-| --- | --- | --- |
-| `precondition_failed` | `expected` не совпал с содержимым ячейки | `version_conflict`, 409 |
-| `scope_changed` | состав `current_rows` изменился | `scope_changed`, 409 |
-| `unknown_target` | нет листа, строки, колонки, таблицы или row ID | `unknown_target`, 422 |
-| `identity_required` | вставка внутри таблицы без `new_row_ids` или с занятым ID | `invalid_command`, 422 |
-| `unsupported_command`, `unsupported_content`, `profile_mismatch` | вне профиля, неизвестный или потерянный ресурс | `unsupported_content`, 422 |
-| `limit_exceeded` | размер сообщения, число команд или ячеек | `limit_exceeded`, 413 |
-| `calculation_timeout` | барьер расчёта не завершился | `calculation_pending`, 503 |
-| `invalid_message`, `unsupported_version`, `base_mismatch` | ошибка самого PHP | `runtime_failed`, 503 |
+The owner independently verifies that the echoed base digest matches the supplied workbook, the candidate digest matches its own encoding of the returned workbook, and the calculation source digest matches the candidate. It also checks the profile and the document size limit before publishing. Some Univer operations generate new style IDs. Equivalent workbooks produced in separate runs can therefore have different candidate digests. Bind idempotency to the command fingerprint, policy, preconditions and saved receipt. Return the recorded outcome on replay and use the stored journal material to recover the acknowledged version.
 
-Ненулевой код выхода, не одна строка stdout, нарушение схемы, чужой `request_id` → `runtime_failed`, 503.
+### Changes to the head during calculation
 
-## 4. Канонизация и digest
+Calculate outside the transaction. Lock the document before publication and compare generation, position and digest with the base that was calculated.
 
-`base.sha256`, `base_sha256`, `candidate_sha256`, `calculation.source_sha256` — SHA-256 (hex, нижний регистр) над RFC 8785 (JCS) всей обёртки `workbook`, включая `profile` и `tables`. Ключи сортируются по кодовым единицам UTF-16, числа печатаются по ES, `{}` и `[]` различаются (PHP-кодек декодирует объекты в `stdClass`). PHP и Node дают одинаковые байты на 407 векторах (проверка S4: пример RFC, кириллица, порядок UTF-16, случайные double).
+| Policy | Owner behavior |
+| --- | --- |
+| `exact_base` | Require `If-Match` for edits using exact addresses. Discard the candidate and return `version_conflict` if the head moves. Structural edits use this policy. |
+| `rebase_cells` | Require `If-Match`. Reapply eligible cell edits on the new head and check each expected value again. Return `version_conflict` if a cell changed, an intervening structural receipt affects its sheet, or the receipt history has a gap. Return `generation_changed` after a generation change. |
+| `revalidate_by_id` | Supply the expected generation and omit `If-Match`. Resolve stable IDs again on the new head. Validate fixed or current membership. After the retry budget is exhausted, return HTTP 503 `contention`. A generation change gives `generation_changed`. |
 
-Профиль чисел здесь шире, чем у digest предложения AI ([agent-sdk.md](../agent-sdk.md), п. 2 «Подготовка»): книга содержит дроби и большие double, поэтому они печатаются по ES, а не отвергаются. Это два разных digest, путать их профили нельзя.
-
-Владелец ничему из ответа не верит без пересчёта (`WorkbookOwner::verifyCandidate`). Он проверяет: `base_sha256` равен голове, на которой запущен расчёт; собственный JCS-digest `workbook` равен `candidate_sha256`; `calculation.source_sha256` равен тому же digest; `profile` не изменился; размер в пределе Documents.
-
-**Digest кандидата невоспроизводим, и это норма.** В Univer 1.5.2 `setNumberFormat` создаёт в `native.styles` стиль со случайным ID. Две сборки одного содержимого дают разный `candidate_sha256` (проверка S7). Apply по одному и тому же снимку без нового стиля даёт одинаковые байты (S6). Поэтому:
-
-- идемпотентность повтора определяется отпечатком команды (`command_id` + JCS от команд, политики, If-Match, ожидаемого поколения) и сохранённой квитанцией, а не пересчётом и сравнением digest;
-- повтор с тем же ключом возвращает сохранённую квитанцию без вызова runtime;
-- replay журнала 6.1 применяет сохранённые байты/команды из квитанции, а не ожидает совпадения digest нового расчёта. Проверка «пересчитали — digest совпал» в приёмке 6.1 недопустима.
-
-## 5. Политики владельца при движении головы
-
-Расчёт идёт вне транзакции. Под блокировкой владелец повторно сравнивает generation, position и sha256 головы с основанием кандидата. Если голова сдвинулась, поведение задаёт политика команды. Политика входит в отпечаток. Vue выбирает политику сам (`policyFor` в `src/vue-client.ts`): только команды содержимого — `rebase_cells`, иначе `exact_base`. Проверка: сценарии D1–D3 в `check.mjs`, включая мутант без структурной защиты, который пишет цену груш в строку слив.
-
-| Политика | Кто использует | Голова сдвинулась |
-| --- | --- | --- |
-| `exact_base` | UI по адресам A1 для структурных команд, обязателен `If-Match` | `version_conflict`, кандидат отброшен |
-| `rebase_cells` | UI по адресам A1, только команды содержимого (`set_number`, `set_text`, `set_formula`, `set_values`), обязателен `If-Match` | те же команды выполняются на новой голове, runtime заново сверяет каждое `expected`. Правка другой ячейки другим пользователем — не конфликт. Изменённая ячейка — `precondition_failed` → `version_conflict`. Перебазирование запрещено (`version_conflict`, `detail.structural_receipts`), если между `If-Match` и головой есть квитанция со структурной командой на том же листе (`structural_sheets` в квитанции) или публикация без квитанции (restore, импорт): адрес A1 мог перейти к другой записи с тем же содержимым. Смена поколения — `generation_changed` |
-| `revalidate_by_id` | SDK, команды по ID (`fill_formula`), `If-Match` запрещён, передаётся ожидаемое поколение | новый вызов runtime на новой голове, до 3 попыток (иначе `contention`, 503). ID разрешаются заново, `fixed_members` получает новые координаты, `current_rows` — `scope_changed`. Смена поколения — `generation_changed` |
-
-## 6. Что подтверждает образец и что остаётся пакету
-
-Образец проходит алгоритм на закреплённых версиях: настоящий Univer в отдельных процессах Node, PHP-владелец, барьеры через pipe, файловое хранилище с flock. Пакетная приёмка 4.2/5.1 дополнительно требует `AtomicDocumentMutation` на PostgreSQL, Drive ACL, HTTP-транспорт `server.ts`, Symfony Process, Vue-компонент в браузере, SDK-адаптер и испытание restore. Перечень — в разделе «Автономный образец и будущая приёмка пакета» журнала ревью `audits/plan-review-2026-11-20/area-3.md`.
+The command contract script exercises real calculations against the PHP owner. ACID publication, HTTP transport, ACL enforcement, browser edits, restore and collaboration also have package-level tests. [Testing guide](guides/testing-and-ci.md)

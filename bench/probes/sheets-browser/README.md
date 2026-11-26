@@ -1,19 +1,19 @@
-# Проверка Univer Sheets OSS в Vue и Chromium
+# Univer Sheets in Vue and Chromium
 
-Из корня репозитория с установленными Node.js, npm и Google Chrome:
+Run the probe from the repository root with Node.js, npm and Chrome installed.
 
 ```bash
 CHROME_BIN=/usr/bin/google-chrome bash bench/probes/sheets-browser/run.sh
 ```
 
-Без `CHROME_BIN` скрипт использует Chromium сборки Playwright. При первом запуске для этого нужна загрузка браузера. Скрипт копирует эталонную книгу из соседнего файла `snapshot-v1.json`, устанавливает зависимости по собственному lock-файлу в новый временный каталог и запускает Vite на свободном порту loopback. Код и зависимости приложения Vaulter в сценарии не участвуют.
+Omit `CHROME_BIN` to use Playwright Chromium. The first run downloads the browser. The probe copies `snapshot-v1.json`, installs its locked dependencies in a temporary directory and starts Vite on a free loopback port. Vue mounts Univer into its own DOM container.
 
-Проверено 20 ноября 2026 на Linux, Node.js 24.12.0, npm 11.6.2, Google Chrome 156.0.8078.47 и Chrome for Testing 149.0.7827.55 (Playwright Chromium), Vue 3.5.39, Vite 6.4.3, Playwright 1.61.1 и Univer 1.5.2. Пресет использует React и React DOM 19.3.1 и RxJS 7.8.2. Vue монтирует экземпляр Univer в собственный DOM-контейнер. Основа интеграции описана в [руководстве Univer](https://docs.univer.ai/guides/sheets/getting-started/installation).
+On 20 November 2026 the probe used Linux, Node 24.12.0, npm 11.6.2, Google Chrome 156.0.8078.47 and Chrome for Testing 149.0.7827.55, Vue 3.5.39, Vite 6.4.3, Playwright 1.61.1, Univer 1.5.2, React and React DOM 19.3.1, and RxJS 7.8.2.
 
-| Действие | Проверяемый результат |
+| Action | Expected result |
 | --- | --- |
-| Открыть книгу `vaulter-smoke` и нажать вкладку Summary | Facade возвращает число 35 из B2. При переходе на этот лист canvas рисует текст `35.00`. |
-| Нажать Detail, щёлкнуть по центру C3 и ввести клавиши 7, Enter | После клика активна C3. Цена меняется с 5 на 7, произведение D3 с 15 на 21. На вкладке Summary число B2 становится 41, canvas рисует `41.00`. |
-| Вставить строку через `insertRowBefore(1)` в тот же экземпляр книги | Цена 7 и произведение 21 переезжают в C4/D4. Формула строки становится `=B4*C4`, формула B2 становится `=SUM(Detail!D3:D4)`, результат равен 41. |
+| Open `vaulter-smoke` and click Summary | The facade reads 35 in B2 and the canvas draws `35.00`. |
+| Select Detail!C3 with the mouse, type 7 and press Enter | C3 changes from 5 to 7, D3 from 15 to 21 and Summary!B2 to 41. The canvas draws `41.00`. |
+| Call `insertRowBefore(1)` on the same workbook | C4 and D4 contain 7 and 21. The formulas become `=B4*C4` and `=SUM(Detail!D3:D4)`. The total remains 41. |
 
-Проверка измеряет выбор конкретной ячейки мышью, ввод с клавиатуры, переключение реальных DOM-вкладок, команды отрисовки текста в canvas и пересчёт одной книги. Перехват `fillText` фиксирует текст, переданный движку рисования. Пиксельное сравнение, мобильный редактор, вставка строки через меню, повторное открытие после серверного сохранения, параллельные редакторы и производительность больших книг остаются отдельными проверками.
+The probe observes selection, keyboard input, DOM tab changes, canvas `fillText` calls and calculation. Pixel comparison, mobile editing, menu-driven insertion, server persistence, concurrent editors and large workbooks have separate test requirements.

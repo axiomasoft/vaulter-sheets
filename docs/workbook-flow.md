@@ -1,49 +1,11 @@
-# Как проходит одна правка книги
+# Following a workbook edit
 
-Пример из [workbook.json](../examples/workbook.json). В Vue пользователь меняет цену груш в `Detail!C3` с 5 на 7. Версия книги 1, итог до изменения 35. Используется одиночный профиль со строгой проверкой версии. Узел уже создан через Documents.
+In the sample workbook, changing `Detail!C3` from 5 to 7 increases `Detail!D3` from 15 to 21 and `Summary!B2` from 35 to 41. The browser probe checks the displayed values and the row-shift formulas. [Browser probe](../bench/probes/sheets-browser/README.md)
 
-```mermaid
-sequenceDiagram
-    actor User as Пользователь
-    participant Vue as Sheets Vue
-    participant PHP as PHP владельца
-    participant DB as PostgreSQL
-    participant JS as Sheets runtime
-    participant Worker as Проектор
-    User->>Vue: Открыть книгу
-    Vue->>PHP: GET /workbooks/{nodeId}
-    PHP->>DB: Проверить Drive ACL, прочитать голову и payload
-    PHP-->>Vue: Снимок, профиль, версия и ETag
-    User->>Vue: Ввести 7 в C3
-    Vue->>PHP: POST commands с ключом, ETag и set_number
-    PHP->>DB: Проверить доступ и зарегистрировать или найти ключ
-    alt Прежняя фиксация с тем же fingerprint внутри окна
-        PHP-->>Vue: Исходная квитанция и позиция 2
-    else Первая попытка
-        PHP->>JS: apply с проверенным входом и base_sha256
-        JS-->>PHP: Кандидат, формулы, digest, состояние расчёта
-        PHP->>DB: Проверить ACL, lease и голову под блокировкой, зафиксировать
-        PHP-->>Vue: Квитанция и позиция 2
-        DB-->>Worker: Доступно событие outbox
-        Worker->>DB: Опубликовать сборку проекции одной версии
-    end
-    Vue->>PHP: Прочитать изменённый диапазон
-    PHP-->>Vue: D3 = 21, Summary!B2 = 41
-```
+1. Open the workbook by Drive node ID. PHP checks access, document type, schema version and write mode. It reads the current inline snapshot or its pinned Media blob and returns the workbook, profile, head marker and ETag.
+2. Send a `set_number` command with the observed content, command ID, expected generation, policy and ETag. The runtime receives the snapshot and base digest and evaluates formulas outside the owner's database transaction.
+3. PHP verifies the candidate digest and calculation result. Under a lock, it rechecks permissions, lease and head and atomically commits the payload and receipt. A conflicting write using a stale ETag follows the chosen policy.
+4. If the HTTP response is lost, query `GET /workbooks/{node}/commands/{command}` or retry the original request. With continued access and a live replay window, the recorded receipt gives the original generation and position even if later work has moved the head. A different request under the same ID conflicts.
+5. Insert a row before the data row, save and reopen. The native workbook updates the addresses and formulas. Stable table row IDs continue to identify the intended members across supported structural edits. A restore advances generation, invalidating reads and pending work tied to the former generation.
 
-Полные префиксы маршрутов, форматы сообщений, способы выдачи артефакта и ограничения размеров определены в [контракте Sheets](sheets.md); сообщения PHP ↔ Node, коды ошибок и digest — в [wire-контракте](runtime-wire-v1.md). Частные процессы, сети и очереди указаны в [Docker-карте](processes.md).
-
-**Образец.** Весь путь этой страницы пройден в upstream-образце `workbook-operation`: точка вызова из Vue — `src/vue-client.ts:submitWorkbookCommand`; вычисление с барьером — `src/operation.ts:runOperation`; перепроверка головы под блокировкой и публикация — `php/Owner.php` `WorkbookOwner::commit` (замыкание `state->locked`), проверка digest — `WorkbookOwner::verifyCandidate`. Сценарии A0–A8 (35 → 41, вставка, повтор по ключу, устаревшая C3, холодное открытие, кэш 999, потеря ответа) покрыты контрактным гейтом `scripts/ci/workbook-contract.sh`.
-
-| Шаг | Что выполнить | Что сохраняется или проверяется |
-| --- | --- | --- |
-| Открытие | PHP разрешает `node_id` в `v_documents.id`, проверяет ACL, `type`, `schema_version` и `write_mode`. Загрузить `v_document_payloads.content` либо удерживаемый Media-объект по manifest | Браузер получает только разрешённую версию. Ни модель, ни Node не получают DSN |
-| Вычисление | В процессе `sheets-runtime` выполнить `set_number`. В ячейке D3 хранится формула, в Summary B2 межлистовая сумма. Дождаться барьера вычисления по полученному снимку | Подтверждённый числовой результат 21 и 41. Ожидание/ошибка расчёта имеет отдельное состояние. PostgreSQL-транзакция не держится во время обращения к Node |
-| Фиксация | На том же соединении владельца перечитать полномочия, режим, epoch, state_version и исходные условия. Через доменный writer атомарно обновить рабочий payload/ссылку, версию головы, запись `v_sheets_commands` и событие доставки | Встречный PUT устаревшего снимка не выигрывает гонку. Если HTTP-ответ потерялся, `GET /workbooks/{nodeId}/commands/{commandId}` возвращает тот же результат при сохранении прав |
-| Адресное чтение агентом | Запросить `sheet_catalog`, затем `sheet_table` с нужными колонками/row_ids. Проектор читает сохранённый снимок и публикует `v_sheets_projection_heads` при готовности всех строк сборки. Читающий запрос присоединяет один `build_id` | Для поздней проекции отдаётся явное ожидание или подтверждённое чтение у владельца. Значения предыдущего поколения не подтверждают новую квитанцию |
-| Вставка и восстановление | Вставить строку перед исходной строкой 2. Сохранить, закрыть браузер и процесс Node, открыть снова | Теперь C3 соответствует яблокам (10), C4 грушам (7). D3/D4 и сумма пересчитаны, результат 41. Изменение по прежнему адресу с исходным ETag отвергается |
-| Обмен файлом | Сохранить входной XLSX как исходный Media blob; worker обрабатывает задание обмена. При экспорте брать закреплённую ревизию и удерживать входные данные до окончания | ID исходного файла, ID рабочего документа, позиция расчёта и ID экспортируемой ревизии различимы. Неуспешная конверсия не публикует частично изменённую книгу |
-
-При включённом режиме `journal` шаг фиксации выполняется через протокол realtime и fence активного поколения. Недоступность сервера оставляет команду в предусмотренном состоянии отказа/ожидания. Переход к записи снимка возможен только явной авторизованной операцией после дренирования журнала. [Приёмка совместной книги](../../phases/06-extensions.md)
-
-**Регрессия для исполнителя 4.2 и 6.1.** На тестовом хосте потерять HTTP-ответ сразу после commit правки C3. Убедиться через отдельное соединение, что цена 7 и квитанция записаны. В 4.2 изменить соседнюю ячейку обычной командой. В 6.1 дополнительно переключить книгу из snapshot в journal. Отправить исходный POST с тем же ключом, телом и старым If-Match. Сверить с GET status идентификатор квитанции, поколение и позицию первоначального commit. Счётчики вызовов apply и append, версия головы и число событий изменяются только от самостоятельных действий стенда. Новый ключ с тем же старым маркером должен получить конфликт. Повторить с отозванным доступом и удостовериться, что статус и POST скрывают содержимое. Порядок ответов при конфликте ключа и окончании срока задан в [словаре Sheets](database.md).
+Journal-mode clients submit edits through the room owner and recover from the confirmed journal head. The CLI and HTTP calculation runtimes require no database credentials. [Calculation wire](runtime-wire-v1.md) · [Storage](database.md) · [Package architecture](concepts/architecture.md)

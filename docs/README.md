@@ -8,7 +8,5 @@
 | Guides | [Testing and CI](guides/testing-and-ci.md) |
 | Project | [Contributing](../CONTRIBUTING.md) · [Security policy](../SECURITY.md) · [Changelog](../CHANGELOG.md) |
 
-The four design notes at the top of this directory (`spreadsheets-spec.md`, `workbook-flow.md`,
-`database.md`, `runtime-wire-v1.md`) were carried over from the planning repository and are still
-being migrated. They are in Russian and will be translated into this tree once that migration is
-finished; the pages above do not depend on them.
+[Follow a workbook edit](workbook-flow.md) through authorization, calculation, commit and replay.
+The [data ownership reference](database.md) describes storage and recovery. The [private calculation wire](runtime-wire-v1.md) defines framing, preconditions and digest verification.
