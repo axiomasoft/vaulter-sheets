@@ -464,8 +464,12 @@ export function decodeRequest(value: Json): Request {
     const base = object(raw.base, 'base');
     only(base, ['generation', 'position', 'sha256'], 'base');
     if (typeof base.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(base.sha256)) throw new WireError('invalid_message', 'base.sha256 must be lowercase hex SHA-256');
+    if (raw.ironcalc_verify !== undefined && typeof raw.ironcalc_verify !== 'boolean') {
+        throw new WireError('invalid_message', 'ironcalc_verify must be boolean');
+    }
     const common = {
         version: 1 as const, request_id,
+        ironcalc_verify: raw.ironcalc_verify,
         base: {generation: counter(base.generation, 'base.generation', 0), position: counter(base.position, 'base.position', 0), sha256: base.sha256},
         profile_id: string(raw.profile_id, 'profile_id'),
         workbook: workbook(raw.workbook),
@@ -882,9 +886,8 @@ function shiftCfResources(
  * widen the allow-list and observe the second, post-save line of defence.
  */
 export async function runOperation(message: Json, profile: ProfileRef = WIRE_PROFILE, resources: readonly string[] = PROFILE_RESOURCES): Promise<Response> {
-    const ironcalcVerify = process.env.SHEETS_ENGINE_IRONCALC_VERIFY === '1'
-        || (message !== null && typeof message === 'object' && !Array.isArray(message) && message.ironcalc_verify === true);
     const request = decodeRequest(message);
+    const ironcalcVerify = process.env.SHEETS_ENGINE_IRONCALC_VERIFY === '1' || request.ironcalc_verify === true;
     const limits: Limits = {
         max_commands: Math.min(request.limits?.max_commands ?? DEFAULT_LIMITS.max_commands, DEFAULT_LIMITS.max_commands),
         max_cells_per_command: Math.min(request.limits?.max_cells_per_command ?? DEFAULT_LIMITS.max_cells_per_command, DEFAULT_LIMITS.max_cells_per_command),

@@ -46,6 +46,8 @@ A failure returns `{version, request_id, ok:false, error:{code, message, detail?
 | `calculation_timeout` | HTTP 503 `calculation_pending` |
 | `invalid_message`, `unsupported_version`, `base_mismatch`, invalid output, process failure or mismatched request ID | HTTP 503 `runtime_failed` |
 
+When the runtime has the optional IronCalc package installed, a boolean `ironcalc_verify` or the runtime environment switch enables an additional comparison for apply and recalculate. The optional `checks.ironcalc_verification` contains the engine name, counts of checked, matched, mismatched and unsupported formulas, and the discrepancies with their sheet, address, formula and engine values.
+
 ## Canonicalization and publication
 
 Compute SHA-256 over the RFC 8785 canonical encoding of the **entire workbook envelope**, including profile and table bindings. Use lowercase hex. Sort object keys by UTF-16 code units, print numbers using ECMAScript rules and preserve the difference between an empty object and an empty array. PHP represents objects as `stdClass`. The workbook supports fractional and large double values in cell content. Its digest uses that numeric profile independently of Office proposal digests.

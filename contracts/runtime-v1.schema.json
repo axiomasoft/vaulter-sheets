@@ -365,7 +365,8 @@
         "version": {"const": 1}, "request_id": {"$ref": "#/$defs/id"}, "operation": {"const": "apply"},
         "base": {"$ref": "#/$defs/base"}, "profile_id": {"$ref": "#/$defs/id"}, "workbook": {"$ref": "#/$defs/workbook"},
         "commands": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/command"}},
-        "limits": {"$ref": "#/$defs/limits"}
+        "limits": {"$ref": "#/$defs/limits"},
+        "ironcalc_verify": {"type": "boolean"}
       }
     },
     "readRequest": {
@@ -378,7 +379,30 @@
           "type": "object", "additionalProperties": false, "required": ["ranges"],
           "properties": {"ranges": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/range"}}}
         },
-        "limits": {"$ref": "#/$defs/limits"}
+        "limits": {"$ref": "#/$defs/limits"},
+        "ironcalc_verify": {"type": "boolean"}
+      }
+    },
+    "ironcalcVerification": {
+      "type": "object", "additionalProperties": false,
+      "required": ["engine", "checked_formulas", "matched", "mismatched", "skipped_unsupported", "discrepancies"],
+      "properties": {
+        "engine": {"const": "@ironcalc/nodejs"},
+        "checked_formulas": {"type": "integer", "minimum": 0},
+        "matched": {"type": "integer", "minimum": 0},
+        "mismatched": {"type": "integer", "minimum": 0},
+        "skipped_unsupported": {"type": "integer", "minimum": 0},
+        "discrepancies": {
+          "type": "array", "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["sheet_id", "a1", "formula", "univer_value", "ironcalc_value", "reason"],
+            "properties": {
+              "sheet_id": {"type": "string"}, "a1": {"type": "string"}, "formula": {"type": "string"},
+              "univer_value": {"type": ["number", "string", "boolean", "null"]},
+              "ironcalc_value": {"type": "string"}, "reason": {"enum": ["value_mismatch", "error_mismatch"]}
+            }
+          }
+        }
       }
     },
     "candidateResponse": {
@@ -391,7 +415,7 @@
         "calculation": {"$ref": "#/$defs/calculation"},
         "checks": {
           "type": "object", "additionalProperties": false, "required": ["resources_preserved", "cells"],
-          "properties": {"resources_preserved": {"type": "array", "items": {"type": "string"}}, "cells": {"type": "array", "items": {"$ref": "#/$defs/readback"}}}
+          "properties": {"resources_preserved": {"type": "array", "items": {"type": "string"}}, "cells": {"type": "array", "items": {"$ref": "#/$defs/readback"}}, "ironcalc_verification": {"$ref": "#/$defs/ironcalcVerification"}}
         }
       }
     },

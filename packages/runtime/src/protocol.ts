@@ -5,6 +5,7 @@
  */
 import {createHash} from 'node:crypto';
 import {WireError} from './wire-error.ts';
+import type {IronCalcVerificationResult} from './engine/ironcalc.ts';
 
 export const WIRE_VERSION = 1;
 
@@ -92,8 +93,8 @@ export interface RangeSelector {sheet_id: string; range: string}
 export interface Limits {max_commands: number; max_cells_per_command: number; calculation_timeout_ms: number}
 
 export type Request =
-    | {version: 1; request_id: string; operation: 'apply'; base: Base; profile_id: string; workbook: WorkbookV2; commands: Command[]; limits?: Partial<Limits>}
-    | {version: 1; request_id: string; operation: 'read' | 'recalculate'; base: Base; profile_id: string; workbook: WorkbookV2; selector: {ranges: RangeSelector[]}; limits?: Partial<Limits>};
+    | {version: 1; request_id: string; operation: 'apply'; base: Base; profile_id: string; workbook: WorkbookV2; commands: Command[]; limits?: Partial<Limits>; ironcalc_verify?: boolean}
+    | {version: 1; request_id: string; operation: 'read' | 'recalculate'; base: Base; profile_id: string; workbook: WorkbookV2; selector: {ranges: RangeSelector[]}; limits?: Partial<Limits>; ironcalc_verify?: boolean};
 
 export interface CellReadback {sheet_id: string; a1: string; row: number; column: number; formula: string | null; value: number | string | boolean | null}
 
@@ -118,7 +119,7 @@ export type Response =
         version: 1; request_id: string; ok: true; operation: 'apply' | 'recalculate';
         base_sha256: string; workbook: WorkbookV2; candidate_sha256: string;
         changed_ranges: RangeSelector[]; calculation: Calculation;
-        checks: {resources_preserved: string[]; cells: CellReadback[]};
+        checks: {resources_preserved: string[]; cells: CellReadback[]; ironcalc_verification?: IronCalcVerificationResult};
     }
     | {
         version: 1; request_id: string; ok: true; operation: 'read';

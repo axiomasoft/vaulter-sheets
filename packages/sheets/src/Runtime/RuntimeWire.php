@@ -84,13 +84,34 @@ final class RuntimeWire
                 throw new WorkbookProblem('runtime_failed', 503);
             }
         } elseif (!($response->workbook ?? null) instanceof stdClass || !is_string($response->candidate_sha256 ?? null)
-            || !($response->checks ?? null) instanceof stdClass || !self::only($response->checks, ['cells', 'resources_preserved'])
+            || !($response->checks ?? null) instanceof stdClass || !self::only($response->checks, ['cells', 'resources_preserved', 'ironcalc_verification'])
+            || (property_exists($response->checks, 'ironcalc_verification') && !self::validVerification($response->checks->ironcalc_verification))
             || !is_array($response->checks->cells ?? null) || !is_array($response->checks->resources_preserved ?? null)
             || !is_array($response->changed_ranges ?? null)) {
             throw new WorkbookProblem('runtime_failed', 503);
         }
 
         return $response;
+    }
+
+    private static function validVerification(mixed $report): bool
+    {
+        if (!$report instanceof stdClass || ($report->engine ?? null) !== '@ironcalc/nodejs'
+            || !self::only($report, ['engine', 'checked_formulas', 'matched', 'mismatched', 'skipped_unsupported', 'discrepancies'])
+            || !is_array($report->discrepancies ?? null) || !array_is_list($report->discrepancies)) {
+            return false;
+        }
+        foreach (['checked_formulas', 'matched', 'mismatched', 'skipped_unsupported'] as $name) {
+            if (!is_int($report->{$name} ?? null) || $report->{$name} < 0) {
+                return false;
+            }
+        }
+
+        return array_all($report->discrepancies, static fn (mixed $row): bool => $row instanceof stdClass
+            && self::only($row, ['sheet_id', 'a1', 'formula', 'univer_value', 'ironcalc_value', 'reason'])
+            && is_string($row->sheet_id ?? null) && is_string($row->a1 ?? null) && is_string($row->formula ?? null)
+            && property_exists($row, 'univer_value') && ($row->univer_value === null || is_scalar($row->univer_value))
+            && is_string($row->ironcalc_value ?? null) && in_array($row->reason ?? null, ['error_mismatch', 'value_mismatch'], true));
     }
 
     /**
