@@ -9,7 +9,7 @@ use XMLReader;
 use ZipArchive;
 
 /**
- * Inspects OOXML (.xlsx) ZIP archives strictly before parsing or decompression.
+ * Validates the ZIP directory, bounded entry streams and XML structure before workbook import.
  * Never unpacks entries to disk; validates entry paths, UNIX file types (refusing
  * symlinks S_IFLNK), compression ratio/size quotas, XML DTD/ENTITY/XInclude,
  * and external relationship targets via bounded stream reads.
@@ -147,11 +147,8 @@ final class ZipArchiveGuard
             $content = $this->readBoundedEntry($zip, $i, $rawName, $size, $remaining);
             $actualTotal += strlen($content);
 
-            if ($isRels) {
-                $this->assertSafeXmlText($content, $rawName);
-                $this->assertSafeRelationships($content, $rawName);
-            } elseif ($isXml) {
-                $this->assertSafeXmlText($content, $rawName);
+            if ($isXml || $isRels) {
+                $this->inspectXml($content, $rawName, $isRels);
             }
         }
     }
@@ -225,46 +222,14 @@ final class ZipArchiveGuard
         return $buf;
     }
 
-    private function assertSafeXmlText(string $xml, string $entry): void
+    private function inspectXml(string $xml, string $entry, bool $relationships): void
     {
         if (str_contains($xml, "\0") || !mb_check_encoding($xml, 'UTF-8')) {
             throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'invalid_xml_encoding', 'entry' => $entry]);
         }
-        if (preg_match('/<!\s*(?:DOCTYPE|ENTITY)\b/i', $xml) === 1 || str_contains($xml, self::XINCLUDE_NS)
-            || (str_contains($xml, '&#') && $this->bindsXIncludeThroughCharacterReferences($xml))) {
-            throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'xxe_or_xinclude', 'entry' => $entry]);
-        }
-    }
-
-    /**
-     * Only an xmlns attribute can put an element in the XInclude namespace, and without a DTD (refused
-     * above) the only escapes its value may hold are character and predefined entity references. Decoding
-     * just those values finds a namespace spelled as "http&#58;//..." that the plain substring check misses,
-     * without parsing the whole part.
-     */
-    private function bindsXIncludeThroughCharacterReferences(string $xml): bool
-    {
-        $found = preg_match_all('/\bxmlns(?::[^\s=\/>]+)?\s*=\s*(?:"([^"]*)"|\'([^\']*)\')/', $xml, $matches, PREG_SET_ORDER);
-        if ($found === false) {
-            return true;
-        }
-        foreach ($matches as $match) {
-            $value = ($match[1] ?? '') !== '' ? $match[1] : ($match[2] ?? '');
-            if (html_entity_decode($value, ENT_QUOTES | ENT_XML1, 'UTF-8') === self::XINCLUDE_NS) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private function assertSafeRelationships(string $xml, string $entry): void
-    {
-        // XMLReader refuses an empty source with a ValueError; in an archive that is
-        // a malformed relationships part, not an internal error. Parsing is lazy, so
-        // every other malformation surfaces through read() and libxml below.
+        $malformed = $relationships ? 'malformed_rels' : 'malformed_xml';
         if ($xml === '') {
-            throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'malformed_rels', 'entry' => $entry]);
+            throw new WorkbookProblem('unsafe_archive', 422, ['reason' => $malformed, 'entry' => $entry]);
         }
         $reader = XMLReader::fromString($xml, 'UTF-8', LIBXML_NONET | LIBXML_NOERROR | LIBXML_NOWARNING);
         $prevInternal = libxml_use_internal_errors(true);
@@ -272,15 +237,23 @@ final class ZipArchiveGuard
         try {
             while ($reader->read()) {
                 if (in_array($reader->nodeType, [XMLReader::DOC_TYPE, XMLReader::ENTITY, XMLReader::ENTITY_REF], true)) {
-                    throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'xxe_doctype', 'entry' => $entry]);
+                    throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'xxe_or_xinclude', 'entry' => $entry]);
                 }
                 if ($reader->nodeType !== XMLReader::ELEMENT) {
                     continue;
                 }
                 if ($reader->namespaceURI === self::XINCLUDE_NS) {
-                    throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'xxe_xinclude', 'entry' => $entry]);
+                    throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'xxe_or_xinclude', 'entry' => $entry]);
                 }
-                if ($reader->localName !== 'Relationship') {
+                if ($reader->moveToFirstAttribute()) {
+                    do {
+                        if ($reader->namespaceURI === 'http://www.w3.org/2000/xmlns/' && $reader->value === self::XINCLUDE_NS) {
+                            throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'xxe_or_xinclude', 'entry' => $entry]);
+                        }
+                    } while ($reader->moveToNextAttribute());
+                    $reader->moveToElement();
+                }
+                if (!$relationships || $reader->localName !== 'Relationship') {
                     continue;
                 }
                 $targetMode = $reader->getAttribute('TargetMode') ?? '';
@@ -295,7 +268,7 @@ final class ZipArchiveGuard
                 }
             }
             if (libxml_get_last_error() !== false) {
-                throw new WorkbookProblem('unsafe_archive', 422, ['reason' => 'malformed_rels', 'entry' => $entry]);
+                throw new WorkbookProblem('unsafe_archive', 422, ['reason' => $malformed, 'entry' => $entry]);
             }
         } finally {
             $reader->close();

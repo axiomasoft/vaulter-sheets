@@ -113,38 +113,19 @@ export function assertSafeXmlBytes(bytes: Buffer, entryName: string): string {
     } catch {
         fail(`XML entry is not valid UTF-8: ${entryName}`, 'invalid_utf8_xml', {entry: entryName});
     }
-    if (/<!\s*(?:DOCTYPE|ENTITY)\b/i.test(text) || text.includes(XINCLUDE_NS)) {
-        fail(`XML entry contains disallowed DTD/ENTITY/XInclude construct: ${entryName}`, 'xxe_or_xinclude', {entry: entryName});
-    }
     return text;
 }
 
-export function assertSafeXmlStructure(xmlText: string, entryName: string): void {
+function inspectXml(xmlText: string, entryName: string, relationships: boolean): void {
     const parser = new SaxesParser({xmlns: true, position: false});
     parser.on('doctype', () => {
         fail(`XML DOCTYPE is forbidden: ${entryName}`, 'xxe_doctype', {entry: entryName});
     });
     parser.on('opentag', tag => {
-        if (tag.uri === XINCLUDE_NS) {
+        if (tag.uri === XINCLUDE_NS || Object.values(tag.ns).includes(XINCLUDE_NS)) {
             fail(`XML XInclude is forbidden: ${entryName}`, 'xxe_xinclude', {entry: entryName});
         }
-    });
-    parser.on('error', err => {
-        fail(`Malformed XML in ${entryName}: ${err.message}`, 'malformed_xml', {entry: entryName});
-    });
-    parser.write(xmlText).close();
-}
-
-export function assertSafeRelationships(xmlText: string, entryName: string): void {
-    const parser = new SaxesParser({xmlns: true, position: false});
-    parser.on('doctype', () => {
-        fail(`Relationship XML DOCTYPE is forbidden: ${entryName}`, 'xxe_doctype', {entry: entryName});
-    });
-    parser.on('opentag', tag => {
-        if (tag.uri === XINCLUDE_NS) {
-            fail(`Relationship XML XInclude is forbidden: ${entryName}`, 'xxe_xinclude', {entry: entryName});
-        }
-        if (tag.local !== 'Relationship') return;
+        if (!relationships || tag.local !== 'Relationship') return;
         const targetMode = tag.attributes.TargetMode?.value ?? '';
         if (targetMode.toLowerCase() !== 'external') return;
         const relType = tag.attributes.Type?.value ?? '';
@@ -158,7 +139,7 @@ export function assertSafeRelationships(xmlText: string, entryName: string): voi
         }
     });
     parser.on('error', err => {
-        fail(`Malformed relationship XML in ${entryName}: ${err.message}`, 'malformed_xml', {entry: entryName});
+        fail(`Malformed XML in ${entryName}: ${err.message}`, 'malformed_xml', {entry: entryName});
     });
     parser.write(xmlText).close();
 }
@@ -313,15 +294,10 @@ export async function inspectAndReadXlsxZip(buffer: Buffer): Promise<VerifiedZip
             actualTotal += bytes.length;
             files.set(name, bytes);
 
-            if (lower.endsWith('.rels')) {
+            const relationships = lower.endsWith('.rels');
+            if (relationships || lower.endsWith('.xml')) {
                 const xmlText = assertSafeXmlBytes(bytes, name);
-                assertSafeRelationships(xmlText, name);
-                xmlTexts.set(name, xmlText);
-            } else if (lower.endsWith('.xml')) {
-                const xmlText = assertSafeXmlBytes(bytes, name);
-                if (!lower.includes('worksheets/sheet') && !lower.includes('sharedstrings')) {
-                    assertSafeXmlStructure(xmlText, name);
-                }
+                inspectXml(xmlText, name, relationships);
                 xmlTexts.set(name, xmlText);
             }
         }

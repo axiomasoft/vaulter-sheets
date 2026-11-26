@@ -15,7 +15,7 @@ import {
     type ImportResult,
     type SheetExchangeSummary,
 } from './types.ts';
-import {assertSafeXmlStructure, inspectAndReadXlsxZip} from './zip-guard.ts';
+import {inspectAndReadXlsxZip} from './zip-guard.ts';
 
 const MAX_XLSX_SHEETS = 100;
 const MAX_XLSX_CELLS = 250_000;
@@ -1008,7 +1008,6 @@ export async function importXlsx(bytes: Buffer, options: JsonObject): Promise<Im
         if (!sheetXml) {
             throw new ExchangeError('unsupported_content', `Missing worksheet XML ${sheetPath}`, {reason: 'missing_worksheet'});
         }
-        assertSafeXmlStructure(sheetXml, sheetPath);
 
         const cellData: Record<string, Record<string, JsonObject>> = {};
         const columnData: Record<string, JsonObject> = {};

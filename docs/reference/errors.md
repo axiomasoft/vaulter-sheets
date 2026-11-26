@@ -80,7 +80,8 @@ The Node runtime answers with its own codes, which PHP maps before they reach a 
 | `unknown_target` | `unknown_target` 422 | `unknown_target` 422 |
 | `identity_required` | `invalid_command` 422 | — |
 | `invalid_message` | — | `invalid_command` 422 |
-| `profile_mismatch`, `unsupported_command`, `unsupported_content`, `unsupported_version` | `unsupported_content` 422 | `unsupported_content` 422 |
+| `profile_mismatch`, `unsupported_command`, `unsupported_content` | `unsupported_content` 422 | `unsupported_content` 422 |
+| `unsupported_version` | `runtime_failed` 503 | `unsupported_content` 422 |
 | `format_disabled` | — | `format_disabled` 422 |
 | `unsafe_archive` | — | `unsafe_archive` 422 |
 | `limit_exceeded` | `limit_exceeded` 413 | `limit_exceeded` 413 |
@@ -89,7 +90,7 @@ The Node runtime answers with its own codes, which PHP maps before they reach a 
 
 ### `unsafe_archive` reasons
 
-The PHP archive guard (`Exchange\ZipArchiveGuard`) checks an XLSX before any XML is parsed:
+The PHP archive guard reads each entry within its size budget and parses XML before import.
 
 | Reason | Meaning |
 | --- | --- |
@@ -98,6 +99,7 @@ The PHP archive guard (`Exchange\ZipArchiveGuard`) checks an XLSX before any XML
 | `unsafe_entry_path`, `symlink_entry`, `special_file_entry` | Path traversal, absolute paths, symlinks or device entries |
 | `too_many_entries`, `entry_size_limit`, `total_size_limit`, `compression_ratio_limit`, `zip_bomb_overflow` | Quotas against ZIP bombs |
 | `xxe_doctype`, `xxe_xinclude`, `xxe_or_xinclude`, `invalid_xml_encoding` | DOCTYPE, XInclude or a non-UTF-8 declaration in an XML part |
+| `malformed_xml` | An XML part is empty or malformed |
 | `malformed_rels`, `oversized_rels`, `disallowed_external_relationship` | A relationships part is empty, unparsable, too large, or points outside the package |
 
 The runtime may add its own `unsafe_archive` reasons for checks it performs on the decoded

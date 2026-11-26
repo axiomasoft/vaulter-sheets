@@ -141,3 +141,13 @@ it('bounds the compressed size while reading an upload stream', function (): voi
     expect(fn () => ZipArchiveGuard::inspectStream($stream, 1024))->toThrow(WorkbookProblem::class, 'limit_exceeded');
     fclose($stream);
 });
+
+it('distinguishes namespace declarations from literal workbook text', function (): void {
+    $text = '<sst><si><t>See http://www.w3.org/2001/XInclude for background</t></si></sst>';
+    expect(guardProblem(guardZip([['name' => 'xl/sharedStrings.xml', 'data' => $text]])))->toBeNull();
+});
+
+it('reports malformed XML in an ordinary workbook part', function (): void {
+    $problem = guardProblem(guardZip([['name' => 'xl/worksheets/sheet1.xml', 'data' => '<worksheet>']]));
+    expect($problem?->status)->toBe(422)->and($problem?->detail['reason'])->toBe('malformed_xml');
+});

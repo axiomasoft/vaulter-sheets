@@ -9,6 +9,7 @@ import {runOperation} from '../src/operation.ts';
 import {WIRE_PROFILE} from '../src/profile.ts';
 import {canonicalize, sha256Canonical, type JsonObject, type WorkbookV2} from '../src/protocol.ts';
 import {importCsv, exportCsv} from '../src/exchange/csv.ts';
+import {inspectAndReadXlsxZip} from '../src/exchange/zip-guard.ts';
 import {importXlsx, exportXlsx, hasDynamicExchangeLink} from '../src/exchange/xlsx.ts';
 import {
     createExchangeHttpHandler,
@@ -816,4 +817,13 @@ test('CSV export neutralises each leading formula trigger in text cells, and not
         exported.report.diagnostics.filter(d => d.code === 'formula_injection_escaped').map(d => d.target),
         ['R1C1', 'R1C2', 'R1C3', 'R1C4'],
     );
+});
+
+test('parses worksheet and string parts and accepts namespace URLs as cell text', async () => {
+    const strings = '<sst><si><t>See http://www.w3.org/2001/XInclude</t></si></sst>';
+    const checked = await inspectAndReadXlsxZip(makeMinimalXlsx({'xl/sharedStrings.xml': strings}));
+    assert.equal(checked.xmlTexts.get('xl/sharedStrings.xml'), strings);
+    for (const name of ['xl/sharedStrings.xml', 'xl/worksheets/sheet1.xml']) {
+        await assert.rejects(inspectAndReadXlsxZip(makeMinimalXlsx({[name]: '<unclosed>'})), /Malformed XML/);
+    }
 });
