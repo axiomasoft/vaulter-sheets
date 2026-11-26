@@ -55,7 +55,7 @@ setup).
 | `invalid_message` | 400 | no | An exchange request carried an `input_b64` that is not valid base64 |
 | `runtime_failed` | 503 | yes | The Node runtime is unreachable, overloaded (503 from its queue), crashed, or returned a response that failed validation or digest checks |
 | `calculation_pending` | 503 | yes | The runtime timed out (`calculation_timeout`) |
-| `contention` | 503 | yes | Another worker holds the workbook lock; the command was released for retry |
+| `contention` | 503 | yes | Another writer prevented a command from committing or an exchange from obtaining admission within the retry budget |
 | `lease_lost` | 503 | yes | The worker's lease expired before it could commit; recovery will run the command again |
 | `snapshot_unavailable` | 503 | yes | A stored snapshot or exchange file could not be read from Media |
 | `room_unavailable` | 503 | yes | The room process or the database clock could not be reached |

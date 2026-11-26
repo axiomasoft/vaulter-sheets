@@ -14,6 +14,7 @@ use Vaulter\Drive\Data\UploadSource;
 use Vaulter\Drive\Facades\Vaulter;
 use Vaulter\Drive\Testing\Drive\DriveTestHelpers;
 use Vaulter\Drive\Testing\Http\V1;
+use Vaulter\Exceptions\Database\ConcurrentUpdateException;
 use Vaulter\Media\Contracts\Cas\BlobPins;
 use Vaulter\Schema\SchemaHelpers;
 use Vaulter\Sheets\Console\RecoverWorkbookJobs;
@@ -743,11 +744,11 @@ it('holds a new exchange back while the actor has as many unfinished ones as all
     $register('active-3')->assertStatus(202);
 });
 
-it('admits exactly one simultaneous export when the actor has one free slot across workbooks', function (string $isolation): void {
+it('enforces the configured capacity for simultaneous exports across workbooks', function (string $isolation, int $limit): void {
     ForkRace::skipUnlessSupported($this);
-    config(['vaulter-sheets.exchange.max_active_per_actor' => 1]);
+    config(['vaulter-sheets.exchange.max_active_per_actor' => $limit]);
     $tasks = [];
-    foreach (['first', 'second'] as $key) {
+    foreach (range(1, $limit + 1) as $key) {
         $url = createExchangeWorkbookUrl($this);
         $head = $this->getJson($url)->assertOk();
         $source = ['generation' => $head->json('data.marker.generation'), 'position' => $head->json('data.marker.position')];
@@ -755,7 +756,7 @@ it('admits exactly one simultaneous export when the actor has one free slot acro
             DB::statement('SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL '.$isolation);
 
             $response = $this->postJson($url.'/exchanges', [
-                'request_key' => $key, 'kind' => 'export', 'format' => 'csv', 'source' => $source,
+                'request_key' => 'export-'.$key, 'kind' => 'export', 'format' => 'csv', 'source' => $source,
             ]);
             if ($response->getStatusCode() === 500) {
                 throw new RuntimeException($response->exception?->getMessage() ?? $response->getContent());
@@ -765,10 +766,33 @@ it('admits exactly one simultaneous export when the actor has one free slot acro
         };
     }
     $results = ForkRace::run($tasks);
-    expect(array_column($results, 'message'))->toBe([null, null])
-        ->and(array_column($results, 'value'))->toEqualCanonicalizing([202, 429])
-        ->and(DB::table('v_sheets_exchange_jobs')->count())->toBe(1);
-})->with(['read committed' => 'READ COMMITTED', 'repeatable read' => 'REPEATABLE READ']);
+    expect(array_column($results, 'message'))->toBe(array_fill(0, $limit + 1, null))
+        ->and(array_column($results, 'value'))->toEqualCanonicalizing([...array_fill(0, $limit, 202), 429])
+        ->and(DB::table('v_sheets_exchange_jobs')->count())->toBe($limit);
+})->with([
+    'one place, read committed' => ['READ COMMITTED', 1],
+    'one place, repeatable read' => ['REPEATABLE READ', 1],
+    'four places, repeatable read' => ['REPEATABLE READ', 4],
+]);
+
+it('returns retryable contention if exchange admission cannot obtain a fresh database snapshot', function (Throwable $conflict): void {
+    $url = createExchangeWorkbookUrl($this);
+    $head = $this->getJson($url)->assertOk();
+    DB::connection()->beforeExecuting(static function (string $sql) use ($conflict): void {
+        if (str_contains($sql, 'sheets_exchange_admissions') && str_starts_with($sql, 'insert into')) {
+            throw $conflict;
+        }
+    });
+
+    $this->postJson($url.'/exchanges', [
+        'request_key' => 'contended', 'kind' => 'export', 'format' => 'csv',
+        'source' => ['generation' => $head->json('data.marker.generation'), 'position' => $head->json('data.marker.position')],
+    ])->assertStatus(503)->assertJsonPath('code', 'contention');
+    expect(DB::table('v_sheets_exchange_jobs')->count())->toBe(0);
+})->with([
+    'PostgreSQL serialization conflict' => [new PDOException('serialization failure', 40001)],
+    'unresolved Media write conflict' => [new ConcurrentUpdateException(new RuntimeException('concurrent blob write'))],
+]);
 
 it('counts existing unfinished jobs on the first admission after an upgrade', function (): void {
     $migration = require dirname(__DIR__, 2).'/database/migrations/0001_01_01_000610_create_sheets_exchange_admissions.php';

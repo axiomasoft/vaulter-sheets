@@ -8,6 +8,7 @@ use Illuminate\Database\Connection;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Str;
 use JsonException;
+use PDOException;
 use stdClass;
 use Vaulter\Database\VaulterDatabase;
 use Vaulter\Documents\Contracts\AtomicDocumentMutation;
@@ -24,6 +25,7 @@ use Vaulter\Drive\Exceptions\Profiles\ProfileRestrictionException;
 use Vaulter\Drive\Operations\DriveContext;
 use Vaulter\Drive\Operations\NodeEditAccess;
 use Vaulter\Drive\Vaulter;
+use Vaulter\Exceptions\Database\ConcurrentUpdateException;
 use Vaulter\Media\Contracts\Cas\BlobPins;
 use Vaulter\Media\Contracts\Cas\BlobStore;
 use Vaulter\Media\ValueObjects\Cas\BlobScope;
@@ -42,6 +44,8 @@ use Vaulter\Sheets\Types\SpreadsheetDocumentType;
 
 final readonly class WorkbookExchange
 {
+    private const int DEFAULT_ACTIVE_LIMIT = 8;
+
     public const string SOURCE_PIN_OWNER = 'sheets.exchange_source';
 
     public const string OUTPUT_PIN_OWNER = 'sheets.exchange_output';
@@ -146,7 +150,7 @@ final readonly class WorkbookExchange
         $actor = ExchangeActorScope::from($context);
         $scope = $actor->columns() + ['document_id' => $wbState->documentId, 'request_key' => $requestKey];
 
-        $maxActive = $this->intConfig('vaulter-sheets.exchange.max_active_per_actor', 8);
+        $maxActive = $this->intConfig('vaulter-sheets.exchange.max_active_per_actor', self::DEFAULT_ACTIVE_LIMIT);
         if ($kind === 'import') {
             if (!$this->access->canEdit($context, $node)) {
                 throw new WorkbookProblem('permission_denied', 403);
@@ -221,8 +225,8 @@ final readonly class WorkbookExchange
         $keepSeconds = $this->intConfig('vaulter-sheets.exchange.keep_seconds', 7 * 86_400);
         $jobId = (string) Str::uuid7();
 
-        /** @var array{created: bool, job: array<string, mixed>} $result */
-        $result = $this->database->transaction(function (Connection $db) use (
+        /** @return array{created: bool, job: array<string, mixed>} */
+        $admit = function (Connection $db) use (
             $context,
             $actor,
             $scope,
@@ -285,9 +289,20 @@ final readonly class WorkbookExchange
             });
 
             return ['created' => true, 'job' => $this->presentJob($inserted)];
-        });
+        };
 
-        return $result;
+        try {
+            // Each accepted writer can invalidate one concurrent PostgreSQL snapshot.
+            // Bound retries while allowing all default slots to fill before rejecting the next job.
+            return $this->database->transaction($admit, attempts: self::DEFAULT_ACTIVE_LIMIT + 1);
+        } catch (ConcurrentUpdateException|PDOException $error) {
+            if ($this->database->connection()->transactionLevel() !== 0
+                || ($error instanceof PDOException && (string) $error->getCode() !== '40001')) {
+                throw $error;
+            }
+
+            throw new WorkbookProblem('contention', 503);
+        }
     }
 
     /**

@@ -157,6 +157,7 @@ paths:
         '413': {description: File or workbook limit exceeded}
         '422': {description: Invalid exchange payload or format disabled}
         '429': {description: Active exchange quota reached for this actor and project (too_many_exchanges)}
+        '503': {description: Concurrent registrations exhausted the transaction retry budget (contention)}
   /workbooks/{node}/exchanges/{exchange}:
     parameters:
       - $ref: '#/components/parameters/node'
