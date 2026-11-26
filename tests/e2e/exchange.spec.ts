@@ -14,16 +14,21 @@ async function waitForExchange(
     request: import('@playwright/test').APIRequestContext,
     url: string,
 ): Promise<{state: string; result_receipt_id?: string; [key: string]: unknown}> {
-    for (let i = 0; i < 30; i++) {
-        await drainExchangeWorker(request);
+    type Status = {state: string; result_receipt_id?: string; [key: string]: unknown};
+    const readStatus = async (): Promise<Status> => {
         const res = await request.get(url);
         expect(res.ok(), await res.text()).toBe(true);
-        const data = (await res.json()).data;
-        if (data.state !== 'queued' && data.state !== 'running') {
-            return data;
+        return (await res.json()).data;
+    };
+    let status = await readStatus();
+    await expect.poll(async () => {
+        if (status.state === 'queued' || status.state === 'running') {
+            await drainExchangeWorker(request);
+            status = await readStatus();
         }
-    }
-    throw new Error(`exchange ${url} did not settle`);
+        return status.state;
+    }, {timeout: 30_000, intervals: [100, 250, 500, 1_000]}).not.toMatch(/^(queued|running)$/);
+    return status;
 }
 
 test('imports XLSX, edits in browser UI, exports XLSX and CSV with security headers and reopens cleanly', async ({page, browser, request, baseURL}) => {
