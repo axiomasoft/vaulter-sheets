@@ -24,14 +24,6 @@ arch('classes are final')
     ->ignoring('Vaulter\Sheets\Tests');
 
 it('imports no class another Vaulter or Packman package marks #[Internal]', function (): void {
-    // Known debt, not a precedent: the realtime profile switch takes the documents module's
-    // write-mode enum, which the base repository has not published yet. Remove the entry once
-    // the base marks it #[Api] (or exposes an equivalent) and the import moves to it.
-    $accepted = [
-        'Realtime/WorkbookRealtimeController.php -> Vaulter\Documents\Enums\Documents\DocumentWriteMode',
-        'Realtime/WorkbookRoomSession.php -> Vaulter\Documents\Enums\Documents\DocumentWriteMode',
-    ];
-
     $root = dirname(__DIR__, 2).'/src/';
     $imports = [];
     $files = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($root, FilesystemIterator::SKIP_DOTS));
@@ -54,8 +46,7 @@ it('imports no class another Vaulter or Packman package marks #[Internal]', func
             $internal[] = "{$path} -> {$import}";
         }
     }
-    sort($internal);
 
     expect($imports)->not->toBeEmpty()
-        ->and($internal)->toBe($accepted);
+        ->and($internal)->toBeEmpty();
 });
