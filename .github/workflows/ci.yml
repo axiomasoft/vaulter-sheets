@@ -33,6 +33,9 @@ env:
 
 jobs:
   changes:
+    permissions:
+      contents: read
+      pull-requests: read
     name: Changes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -57,7 +60,7 @@ jobs:
           filters: |
             php:
               - "**/*.php"
-              - "composer.json"
+              - "**/composer.json"
               - "phpstan*"
               - "pint.json"
               - "rector.php"
