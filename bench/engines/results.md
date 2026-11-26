@@ -1,4 +1,4 @@
-# Engine comparison 4.1
+# Engine comparison
 
 Decision: `univer-oss-basic-1` on `@univerjs/core@1.5.2` (Apache-2.0).
 IronCalc `@ironcalc/nodejs@0.9.1` (MIT OR Apache-2.0) is the calculation cross-check and is not the browser engine.

@@ -1,7 +1,6 @@
 {
   "schema": "vaulter-sheets-engine-profile/v1",
   "schemaVersion": 1,
-  "task": "4.1",
   "decision": "univer-oss-basic-1",
   "engine": "@univerjs/core@1.5.2",
   "license": "Apache-2.0",

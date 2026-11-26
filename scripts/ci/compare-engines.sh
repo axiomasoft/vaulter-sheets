@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Decision Gate 4.1. Runs the pinned Univer probes, the IronCalc cross-check and
-# the offline Handsontable/HyperFormula benchmark, then writes bench/results/4.1.
+# Runs the pinned Univer probes, the IronCalc cross-check and
+# the offline Handsontable/HyperFormula benchmark, then writes bench/results/engine-comparison.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-OUT="${ROOT}/bench/results/4.1"
+OUT="${ROOT}/bench/results/engine-comparison"
 mkdir -p "${OUT}/headless"
 export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-/tmp/npm-cache}"
 # Chrome's singleton socket must fit in the 108-byte sockaddr limit. The

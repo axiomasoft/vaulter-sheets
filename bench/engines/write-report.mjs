@@ -1,5 +1,5 @@
 /**
- * Turns bench JSON into bench/engines/results.md and bench/results/4.1/manifest.json.
+ * Turns bench JSON into bench/engines/results.md and bench/results/engine-comparison/manifest.json.
  * Run with: node --experimental-strip-types bench/engines/write-report.mjs
  */
 import { createHash } from 'node:crypto';
@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { PROFILE_MANIFEST, PROFILE_RESOURCES } from '../../packages/runtime/src/profile.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '../..');
-const outDir = join(root, 'bench/results/4.1');
+const outDir = join(root, 'bench/results/engine-comparison');
 
 function readJson(name) {
     try {
@@ -48,7 +48,6 @@ const resourceDelta = univer
 const manifest = {
     schema: 'vaulter-sheets-engine-profile/v1',
     schemaVersion: PROFILE_MANIFEST.schemaVersion,
-    task: '4.1',
     decision: PROFILE_MANIFEST.id,
     engine: PROFILE_MANIFEST.engine,
     license: PROFILE_MANIFEST.license,
@@ -82,7 +81,7 @@ function timing(block) {
 }
 
 const lines = [
-    '# Engine comparison 4.1',
+    '# Engine comparison',
     '',
     `Decision: \`${PROFILE_MANIFEST.id}\` on \`${PROFILE_MANIFEST.engine}\` (${PROFILE_MANIFEST.license}).`,
     'IronCalc `@ironcalc/nodejs@0.9.1` (MIT OR Apache-2.0) is the calculation cross-check and is not the browser engine.',

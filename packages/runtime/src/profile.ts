@@ -1,6 +1,4 @@
 /**
- * Decision Gate 4.1 for vaulter-sheets.
- *
  * Production engine: Univer OSS `@univerjs/*@1.5.2` (Apache-2.0), manual Plugin Mode.
  * IronCalc `@ironcalc/nodejs@0.9.1` (MIT OR Apache-2.0) is the calculation cross-check.
  * It does not share a Univer snapshot, so it is not the browser engine.
@@ -113,8 +111,7 @@ export const DEFAULT_LIMITS = {
 } as const;
 
 /**
- * Node isolation for the calculator (4.2 implements the pool).
- * `worker_threads` share one V8 heap and are forbidden.
+ * The calculator pool forks a process with its own heap limit and restart policy.
  */
 export const RUNTIME_PROCESS = {
     isolation: 'child_process.fork',
