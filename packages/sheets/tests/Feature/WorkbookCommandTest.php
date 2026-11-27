@@ -3,8 +3,11 @@
 declare(strict_types=1);
 
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Str;
 use Vaulter\Database\VaulterDatabase;
+use Vaulter\Documents\DocumentsManager;
+use Vaulter\Documents\Events\Documents\DocumentContentUpdated;
 use Vaulter\Drive\Access\Roles\RoleRegistry;
 use Vaulter\Drive\Access\ValueObjects\Subject;
 use Vaulter\Drive\Data\Access\GrantInput;
@@ -21,7 +24,9 @@ use Vaulter\Sheets\Content\WorkbookCodec;
 use Vaulter\Sheets\Contracts\WorkbookOperations;
 use Vaulter\Sheets\Contracts\WorkbookRuntime;
 use Vaulter\Sheets\Data\WorkbookProblem;
+use Vaulter\Sheets\Projections\PublishCellProjection;
 use Vaulter\Sheets\Runtime\NodeWorkbookRuntime;
+use Vaulter\Sheets\Types\SpreadsheetDocumentType;
 use Vaulter\Testing\Fixtures\TestUser;
 
 beforeEach(function (): void {
@@ -352,13 +357,24 @@ it('revalidates logical row IDs after insertion and rejects a changed table memb
         ->assertJsonPath('data.0.cells.0.value', null)->assertJsonPath('data.0.cells.1.value', -2);
 });
 
-it('slices WorkbookOperations::readTable before enforcing the 64-range limit', function (): void {
+it('projects the workbook from a checkpoint and rejects malformed state', function (): void {
+    $type = app(SpreadsheetDocumentType::class);
+    $content = $type->defaultContent();
+    $checkpoint = '{"workbook":'.$content->canonicalBytes().',"update_id":null}';
+
+    expect($type->projectFromState($checkpoint)?->contentHash())->toBe($content->contentHash())
+        ->and($type->projectFromState('{"workbook":{"format_version":1}}'))->toBeNull()
+        ->and($type->projectFromState('{"workbook":'))->toBeNull();
+});
+
+it('reads over 100 projected table cells without the runtime and refuses an older publication after restore', function (): void {
+    config(['vaulter-sheets.inline_snapshot_bytes' => 64]);
     $workbook = $this->workbook;
     $rows = [];
     $cellData = [
         '0' => ['0' => ['t' => 1, 'v' => 'Row'], '1' => ['t' => 1, 'v' => 'Qty'], '2' => ['t' => 1, 'v' => 'Price']],
     ];
-    for ($i = 1; $i <= 22; $i++) {
+    for ($i = 1; $i <= 35; $i++) {
         $rowNum = $i + 1;
         $rows[] = ['row_id' => 'row_'.$i, 'row' => $rowNum];
         $cellData[(string) ($rowNum - 1)] = [
@@ -368,6 +384,9 @@ it('slices WorkbookOperations::readTable before enforcing the 64-range limit', f
         ];
     }
     $workbook['native']['sheets']['detail']['cellData'] = $cellData;
+    $workbook['native']['sheets']['detail']['cellData'][0][4] = ['f' => '=SEQUENCE(3)'];
+    $workbook['native']['sheets']['detail']['cellData'][0][5] = ['f' => '=1/0'];
+    $workbook['native']['sheets']['detail']['rowData'][4]['s'] = ['n' => ['pattern' => '0.00']];
     $workbook['tables'] = [[
         'table_id' => 'items',
         'sheet_id' => 'detail',
@@ -381,17 +400,140 @@ it('slices WorkbookOperations::readTable before enforcing the 64-range limit', f
     ]];
     $url = createWorkbookTestUrl($this, $workbook);
     $nodeId = basename($url);
-    $ops = app(WorkbookOperations::class);
     $ctx = DriveContext::system($this->driveHandle->model(), 'readTable slicing test');
+    $documents = app(DocumentsManager::class)->forContext($ctx);
+    $base = $documents->content($nodeId);
+    $head = $this->getJson($url)->assertOk();
+    $receipt = $this->postJson($url.'/commands', workbookTestPlan($base->epoch, 'project-table', [
+        'kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 2, 'column' => 2,
+        'expected' => ['number' => 1], 'value' => 42,
+    ]), ['If-Match' => $head->headers->get('ETag')])->assertOk();
+    $schema = app(SchemaHelpers::class);
+    $heads = $schema->dbConnection()->table($schema->table('sheets_projection_heads'))->where('document_id', $base->documentId);
+    $build = $heads->value('build_id');
+    expect($build)->toBeString();
+    expect($base->content->toArray()['storage'])->toBe('media_blob');
 
-    expect(fn (): array => $ops->readTable($ctx, $nodeId, 'items'))
-        ->toThrow(WorkbookProblem::class, 'limit_exceeded');
+    $runtime = app(WorkbookRuntime::class);
+    app()->instance(WorkbookRuntime::class, new class implements WorkbookRuntime
+    {
+        public function exchange(stdClass $request): stdClass
+        {
+            throw new LogicException('Indexed reads must not start the workbook runtime.');
+        }
+    });
+    $ops = app(WorkbookOperations::class);
+    $db = $schema->dbConnection();
+    $db->flushQueryLog();
+    $db->enableQueryLog();
+    $all = $ops->readTable($ctx, $nodeId, 'items');
+    $queries = array_column($db->getQueryLog(), 'query');
+    $db->disableQueryLog();
+    expect(array_sum(array_map(static fn (stdClass $range): int => count($range->cells), $all['ranges'])))->toBe(105);
+    expect(array_filter($queries, static fn (string $sql): bool => str_contains($sql, 'sheets_projection_cells')))->toHaveCount(1);
+    expect(array_filter($queries, static fn (string $sql): bool => str_contains($sql, '"payload"."content"')))->toBe([]);
+    $this->getJson($url)->assertOk()->assertJsonPath('data.workbook.native.sheets.detail.cellData.1.1.v', 42);
+
+    $this->getJson($url.'/ranges?sheet_id=detail&range=B2&fields=literal,display_text,number_format,calc_error,calculated_position')
+        ->assertOk()->assertJsonPath('data.0.cells.0.literal', 42)->assertJsonPath('data.0.cells.0.display_text', '42')
+        ->assertJsonPath('data.0.cells.0.number_format', null)->assertJsonPath('data.0.cells.0.calc_error', null)
+        ->assertJsonPath('data.0.cells.0.calculated_position', $receipt->json('data.marker.position'))
+        ->assertJsonMissingPath('data.0.cells.0.value');
+    $this->getJson($url.'/ranges?sheet_id=detail&range=E2&fields=display_text')->assertOk()
+        ->assertJsonPath('data.0.cells.0.display_text', '2');
+    $this->getJson($url.'/ranges?sheet_id=detail&range=F1&fields=calc_error')->assertOk()
+        ->assertJsonPath('data.0.cells.0.calc_error', '#DIV/0!');
+    $this->getJson($url.'/ranges?sheet_id=detail&range=D5&fields=number_format')->assertOk()
+        ->assertJsonPath('data.0.cells.0.number_format', '0.00');
 
     $sliced = $ops->readTable($ctx, $nodeId, 'items', ['quantity', 'price'], ['row_15']);
-    expect($sliced['table']->rows)->toHaveCount(22)
-        ->and($sliced['ranges'])->toHaveCount(2)
+    expect($sliced['table']->rows)->toHaveCount(35)
+        ->and($sliced['ranges'])->toHaveCount(1)
         ->and($sliced['ranges'][0]->cells[0]->value)->toBe(15)
-        ->and($sliced['ranges'][1]->cells[0]->value)->toBe(150);
+        ->and($sliced['ranges'][0]->cells[1]->value)->toBe(150);
+
+    app()->instance(WorkbookRuntime::class, $runtime);
+    $restored = $documents->restore($nodeId, $base->headRevisionId);
+    $restoredBuild = $heads->value('build_id');
+    expect($restoredBuild)->toBeString()->not->toBe($build);
+    expect(app(PublishCellProjection::class)->publish($nodeId, $base->epoch, $base->stateVersion))->toBeFalse();
+    expect($heads->value('build_id'))->toBe($restoredBuild);
+    expect($db->table($schema->table('sheets_projection_builds'))->where('id', $build)->exists())->toBeFalse();
+    $this->getJson($url.'/ranges?sheet_id=detail&range=B2&fields=value,calculated_position')->assertOk()
+        ->assertJsonPath('data.0.cells.0.value', 1)->assertJsonPath('data.0.cells.0.calculated_position', $restored->stateVersion);
+});
+
+it('falls back from a stale head and rebuilds it through the document outbox', function (): void {
+    $url = createWorkbookTestUrl($this);
+    $head = $this->getJson($url)->assertOk();
+    $generation = $head->json('data.marker.generation');
+    $command = ['kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 3, 'column' => 3];
+    $first = $this->postJson($url.'/commands', workbookTestPlan($generation, 'project-first', $command + [
+        'expected' => ['number' => 5], 'value' => 7,
+    ]), ['If-Match' => $head->headers->get('ETag')])->assertOk();
+    $second = Event::fakeFor(
+        fn () => $this->postJson($url.'/commands', workbookTestPlan($generation, 'project-second', $command + [
+            'expected' => ['number' => 7], 'value' => 9,
+        ]), ['If-Match' => $first->headers->get('ETag')])->assertOk(),
+        [DocumentContentUpdated::class],
+    );
+
+    $schema = app(SchemaHelpers::class);
+    $db = $schema->dbConnection();
+    $heads = $db->table($schema->table('sheets_projection_heads'));
+    $builds = $db->table($schema->table('sheets_projection_builds'));
+    expect($builds->where('id', $heads->value('build_id'))->value('source_position'))->toBe($first->json('data.marker.position'));
+    $this->getJson($url.'/ranges?sheet_id=detail&range=C3&fields=literal,calculated_position')->assertOk()
+        ->assertJsonPath('data.0.cells.0.literal', 9)
+        ->assertJsonPath('data.0.cells.0.calculated_position', $second->json('data.marker.position'));
+
+    $this->artisan('vaulter:relay', ['--once' => true, '--consumer' => PublishCellProjection::ID])->assertSuccessful();
+    expect($db->table($schema->table('sheets_projection_builds'))->where('id', $heads->value('build_id'))->value('source_position'))
+        ->toBe($second->json('data.marker.position'));
+});
+
+it('discards an in-flight build when a restore publishes a newer generation', function (): void {
+    $url = createWorkbookTestUrl($this);
+    $node = basename($url);
+    $ctx = DriveContext::system($this->driveHandle->model(), 'projection race test');
+    $documents = app(DocumentsManager::class)->forContext($ctx);
+    $base = $documents->content($node);
+    $head = $this->getJson($url)->assertOk();
+    $receipt = Event::fakeFor(
+        fn () => $this->postJson($url.'/commands', workbookTestPlan($base->epoch, 'project-race', [
+            'kind' => 'set_number', 'sheet_id' => 'detail', 'row' => 3, 'column' => 3,
+            'expected' => ['number' => 5], 'value' => 7,
+        ]), ['If-Match' => $head->headers->get('ETag')])->assertOk(),
+        [DocumentContentUpdated::class],
+    );
+
+    $restore = static function () use ($documents, $node, $base): void {
+        expect(app(VaulterDatabase::class)->connection()->transactionLevel())->toBe(0);
+        $documents->restore($node, $base->headRevisionId);
+    };
+    app()->instance(WorkbookRuntime::class, new class(app(WorkbookRuntime::class), $restore) implements WorkbookRuntime
+    {
+        private bool $restored = false;
+
+        public function __construct(private readonly WorkbookRuntime $runtime, private readonly Closure $restore) {}
+
+        public function exchange(stdClass $request): stdClass
+        {
+            if (!$this->restored) {
+                $this->restored = true;
+                ($this->restore)();
+            }
+
+            return $this->runtime->exchange($request);
+        }
+    });
+
+    expect(app(PublishCellProjection::class)->publish($node, $base->epoch, $receipt->json('data.marker.position')))->toBeFalse();
+    $schema = app(SchemaHelpers::class);
+    $builds = $schema->dbConnection()->table($schema->table('sheets_projection_builds'))->where('document_id', $base->documentId);
+    expect($builds->count())->toBe(1);
+    expect($builds->value('generation'))->toBe($base->epoch + 1);
+    $this->getJson($url.'/ranges?sheet_id=detail&range=C3&fields=value')->assertOk()->assertJsonPath('data.0.cells.0.value', 5);
 });
 
 it('durably rejects fill_formula when expected_inputs changed and keeps rejection across replay after input restoration', function (): void {

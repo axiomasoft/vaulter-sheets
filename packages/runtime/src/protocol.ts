@@ -94,9 +94,17 @@ export interface Limits {max_commands: number; max_cells_per_command: number; ca
 
 export type Request =
     | {version: 1; request_id: string; operation: 'apply'; base: Base; profile_id: string; workbook: WorkbookV2; commands: Command[]; limits?: Partial<Limits>; ironcalc_verify?: boolean}
-    | {version: 1; request_id: string; operation: 'read' | 'recalculate'; base: Base; profile_id: string; workbook: WorkbookV2; selector: {ranges: RangeSelector[]}; limits?: Partial<Limits>; ironcalc_verify?: boolean};
+    | {version: 1; request_id: string; operation: 'read' | 'recalculate'; base: Base; profile_id: string; workbook: WorkbookV2; selector: {ranges: RangeSelector[]; sparse?: true}; limits?: Partial<Limits>; ironcalc_verify?: boolean};
 
-export interface CellReadback {sheet_id: string; a1: string; row: number; column: number; formula: string | null; value: number | string | boolean | null}
+export interface CellReadback {
+    sheet_id: string; a1: string; row: number; column: number;
+    formula: string | null; value: number | string | boolean | null;
+    literal?: number | string | boolean | null;
+    display_text?: string;
+    number_format?: string | null;
+    calc_error?: string | null;
+    calculated_position?: number;
+}
 
 export interface Calculation {state: 'ready'; source_sha256: string}
 

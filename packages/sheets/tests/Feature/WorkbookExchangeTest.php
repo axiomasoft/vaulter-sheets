@@ -215,6 +215,15 @@ it('imports 1900 and 1904 XLSX fixtures through Media and queue, verifies loss r
 
     $afterImport = $this->getJson($url)->assertOk();
     expect($afterImport->headers->get('ETag'))->not->toBe($preImportEtag);
+    $schema = app(SchemaHelpers::class);
+    $tables = $schema->dbConnection();
+    $build = $tables->table($schema->table('sheets_projection_heads'))->value('build_id');
+    expect($build)->toBeString();
+    expect($tables->table($schema->table('sheets_projection_builds'))->where('id', $build)->value('source_sha256'))
+        ->toBe($afterImport->json('data.marker.sha256'));
+    $this->getJson($url.'/ranges?sheet_id=sheet_1&range=E2&fields=literal,calculated_position')->assertOk()
+        ->assertJsonPath('data.0.cells.0.literal', '#REF!')
+        ->assertJsonPath('data.0.cells.0.calculated_position', $afterImport->json('data.marker.position'));
     // Stale 999 cached in C2 was recalculated via CalculationMode.FORCED using TaxRate (0.2) -> 180; E2 external ref -> #REF!
     expect((float) $afterImport->json('data.workbook.native.sheets.sheet_1.cellData.1.2.v'))->toBe(180.0)
         ->and($afterImport->json('data.workbook.native.sheets.sheet_1.cellData.1.4.v'))->toBe('#REF!')

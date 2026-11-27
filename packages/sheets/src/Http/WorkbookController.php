@@ -81,8 +81,8 @@ final readonly class WorkbookController
                 || ($fields !== null && !is_string($fields))) {
                 throw new WorkbookProblem('invalid_command', 422);
             }
-            $fields = $fields === null ? [] : explode(',', $fields);
-            if (array_diff($fields, ['value', 'formula']) !== []) {
+            $fields = $fields === null ? ['value', 'formula'] : explode(',', $fields);
+            if (array_diff($fields, ['value', 'formula', 'literal', 'display_text', 'number_format', 'calc_error', 'calculated_position']) !== []) {
                 throw new WorkbookProblem('invalid_command', 422);
             }
             $context = $this->contexts->resolve($request, $node);

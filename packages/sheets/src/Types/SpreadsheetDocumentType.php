@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Vaulter\Sheets\Types;
 
 use Packman\Attributes\Api;
+use stdClass;
 use Vaulter\Documents\Contracts\DocumentCodec;
 use Vaulter\Documents\Contracts\DocumentContent;
 use Vaulter\Documents\Contracts\DocumentType;
@@ -12,7 +13,10 @@ use Vaulter\Documents\Contracts\RequiresCommandWrite;
 use Vaulter\Documents\Contracts\SupportsCollaboration;
 use Vaulter\Documents\Data\Types\DocumentFeatures;
 use Vaulter\Documents\Data\Types\DocumentViewer;
+use Vaulter\Documents\Exceptions\InvalidDocumentContentException;
 use Vaulter\Sheets\Content\WorkbookCodec;
+use Vaulter\Sheets\Runtime\StrictJson;
+use Vaulter\Sheets\Runtime\WireException;
 
 #[Api]
 final readonly class SpreadsheetDocumentType implements DocumentType, RequiresCommandWrite, SupportsCollaboration
@@ -72,6 +76,16 @@ final readonly class SpreadsheetDocumentType implements DocumentType, RequiresCo
 
     public function projectFromState(string $state): ?DocumentContent
     {
-        return null;
+        try {
+            $checkpoint = StrictJson::decode($state);
+            if (!$checkpoint instanceof stdClass || !($checkpoint->workbook ?? null) instanceof stdClass) {
+                return null;
+            }
+            $workbook = get_object_vars($checkpoint->workbook);
+
+            return $this->workbookCodec->decode($workbook, $this->schemaVersion());
+        } catch (WireException|InvalidDocumentContentException) {
+            return null;
+        }
     }
 }
